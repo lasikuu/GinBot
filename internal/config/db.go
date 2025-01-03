@@ -12,7 +12,7 @@ type DBOptions struct {
 func dbName() string {
 	value := os.Getenv("GINBOT_DB_NAME")
 	if value == "" {
-		return "mangatsu"
+		return "ginbot"
 	}
 	return value
 }
