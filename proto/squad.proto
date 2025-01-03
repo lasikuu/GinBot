@@ -11,10 +11,5 @@ service SquadService {
 
 // Message representing a Squad
 message Squad {
-  // ID of the Record
-  string uuid = 1;
-  // Amount of currency at the time of 'datetime'
-  int64 amount = 2;
-  // The point in time when the Record was stored
-  google.protobuf.Timestamp datetime = 3;
+  // TODO
 }
