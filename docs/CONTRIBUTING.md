@@ -8,9 +8,10 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
 
 ### Protocol Buffers
 
-- Install the Protocol Buffers compiler: `brew install protobuf`
--
-`protoc --go_out=pkg/gen --go_opt=paths=source_relative --go-grpc_out=pkg/gen --go-grpc_opt=paths=source_relative .\proto\common.proto .\proto\utility.proto .\proto\reminder.proto .\proto\trigger.proto .\proto\entertainment.proto .\proto\discord.proto .\proto\analytics.proto`
+- Generate Protocol Buffers:
+  ```
+    protoc --go_out=pkg/gen --go_opt=paths=source_relative --go-grpc_out=pkg/gen --go-grpc_opt=paths=source_relative .\proto\common.proto .\proto\utility.proto .\proto\reminder.proto .\proto\trigger.proto .\proto\entertainment.proto .\proto\discord.proto .\proto\analytics.proto
+  ```
 
 ### 🚧 Building and running
 
@@ -19,7 +20,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
 ### 💾 Database migrations
 
 - Automatically run when the server is launched. Can be disabled by setting `GINBOT_DB_MIGRATIONS=false` in `.env`.
-- Manually: `goose -dir pkg/db/migrations sqlite3 ./PATH/TO/mangatsu.sqlite <up|down|status>`
+- Run manually: TODO
 
 ### 🔬 Testing
 
@@ -35,7 +36,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
 
 - Go 1.23+
 - [Protocol Buffers Edition 2023+](https://github.com/protocolbuffers/protobuf/releases)
-  - Set the `bin` directory to the `PATH`
+    - Set the `bin` directory to the `PATH`
 - Go Protocol Buffers plugins
   ```
   go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
