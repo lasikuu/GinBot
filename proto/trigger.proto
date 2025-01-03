@@ -1,0 +1,149 @@
+edition = "2023";
+
+package ginbot.trigger;
+
+option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+
+import "google/protobuf/timestamp.proto";
+
+import "proto/common.proto";
+
+service TriggerService {
+  rpc TryTrigger(TryTriggerReq) returns (TryTriggerResp);
+  rpc GetTrigger(GetTriggerReq) returns (GetTriggerResp);
+  rpc ListTriggers(ListTriggersReq) returns (ListTriggersResp);
+  rpc CreateTrigger(CreateTriggerReq) returns (CreateTriggerResp);
+  rpc ModifyTrigger(ModifyTriggerReq) returns (ModifyTriggerResp);
+  rpc DeleteTrigger(DeleteTriggerReq) returns (DeleteTriggerResp);
+}
+
+// Message representing a Trigger
+message Trigger {
+  // ID of the Trigger
+  int64 id = 1;
+  // Phrase to trigger the response
+  string phrase = 2;
+  // Reply to send in response to the trigger
+  string reply = 3;
+  // File to send in response to the trigger
+  string filename = 4;
+  // User ID of the creator
+  int64 user_id = 5;
+  // Platform to trigger the response
+  TriggerPlatformConfig platform_config = 6;
+  // Chance of the trigger to be triggered
+  int32 chance = 7;
+  // Created at
+  google.protobuf.Timestamp created_at = 8;
+  // Updated at
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message TriggerPlatformConfig {
+  // Platform type
+  common.Platform platform = 1;
+  // Required information for the platform
+  oneof oneof_platform {
+    int64 discord_server_id = 2;
+    string matrix_room_id = 3;
+  }
+}
+
+message TryTriggerReq {
+  // Platform to trigger the response
+  TriggerPlatformConfig platform_config = 1;
+  // Phrase to trigger the response
+  string phrase = 2;
+  // User ID of the triggerer
+  int64 user_id = 3;
+}
+
+message TryTriggerResp {
+  // ID of the Trigger
+  int64 id = 1;
+  oneof oneof_reply {
+    // Reply to send in response to the trigger
+    string reply = 2;
+    // File to send in response to the trigger
+    string filename = 3;
+  }
+}
+
+message GetTriggerReq {
+  // ID of the Trigger
+  int64 id = 1;
+}
+
+message GetTriggerResp {
+  Trigger trigger = 1;
+}
+
+message ListTriggersReq {
+  // Limit the number of triggers returned
+  int64 limit = 1;
+  // Offset the triggers returned
+  int64 offset = 2;
+  // Search field for trigger phrases
+  string phrase = 3;
+  // Search field for trigger replies
+  string reply = 4;
+  // User ID of the creator
+  int64 user_id = 5;
+  // Platform to trigger the response
+  TriggerPlatformConfig platform_config = 6;
+  // Search for triggers starting from this date
+  google.protobuf.Timestamp period_start = 7;
+  // Search for triggers ending at this date
+  google.protobuf.Timestamp period_end = 8;
+}
+
+message ListTriggersResp {
+  repeated Trigger triggers = 1;
+}
+
+message CreateTriggerReq {
+  // Phrase to trigger the response
+  string phrase = 1;
+  // Reply to send in response to the trigger
+  string reply = 2;
+  // File to send in response to the trigger
+  string filename = 3;
+  // User ID of the creator
+  int64 user_id = 4;
+  // Platform to trigger the response
+  TriggerPlatformConfig platform_config = 5;
+  // Chance of the trigger to be triggered
+  int32 chance = 6;
+}
+
+message CreateTriggerResp {
+  Trigger trigger = 1;
+}
+
+message ModifyTriggerReq {
+  // ID of the Trigger
+  int64 id = 1;
+  // Phrase to trigger the response
+  string phrase = 2;
+  // Reply to send in response to the trigger
+  string reply = 3;
+  // File to send in response to the trigger
+  string filename = 4;
+  // User ID of the creator
+  int64 user_id = 5;
+  // Chance of the trigger to be triggered
+  int32 chance = 7;
+}
+
+message ModifyTriggerResp {
+  Trigger trigger = 1;
+}
+
+message DeleteTriggerReq {
+  // ID of the Trigger
+  int64 id = 1;
+}
+
+message DeleteTriggerResp {
+  bool success = 1;
+}

@@ -1,0 +1,69 @@
+edition = "2023";
+
+package ginbot.analytics;
+
+option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+
+import "google/protobuf/timestamp.proto";
+
+enum ActionType {
+  UNKNOWN = 0;
+  TRIGGER_OCCURRED = 1;
+  TRIGGER_CALLED = 2;
+  REMINDER_CREATED = 3;
+  REMINDER_DELIVERED = 4;
+  SQUAD_RALLIED = 5;
+  SQUAD_FORMED = 6;
+}
+
+service ActionRecordedService {
+  rpc CreateActionRecord(CreateActionRecordReq) returns (CreateActionRecordResp);
+  rpc ListActionRecords(ListActionRecordsReq) returns (ListActionRecordsResp);
+}
+
+// Message representing a ActionRecord
+message ActionRecord {
+  // ID of the Action
+  int64 id = 1;
+  // Type of the Action
+  ActionType action_type = 2;
+  // Date and time of the Action
+  google.protobuf.Timestamp action_timestamp = 3;
+  // Time taken to perform the Action in milliseconds
+  int64 action_time = 4;
+  // User ID of the actor
+  int64 actor_id = 5;
+}
+
+message CreateActionRecordReq {
+  // Type of the Action
+  ActionType action_type = 1;
+  // Time taken to perform the Action in milliseconds
+  int64 action_time = 2;
+  // User ID of the actor
+  int64 actor_id = 3;
+}
+
+message CreateActionRecordResp {
+  // ID of the ActionRecord
+  int64 id = 1;
+}
+
+message ListActionRecordsReq {
+  // Limit the number of recorded actions returned
+  int64 limit = 1;
+  // Offset the recorded actions returned
+  int64 offset = 2;
+  // Type of the action to search for
+  ActionType action_type = 3;
+  // Search for recorded actions by this actor
+  int64 actor_id = 4;
+  // Search for recorded actions starting from this date
+  google.protobuf.Timestamp period_start = 5;
+  // Search for recorded actions ending at this date
+  google.protobuf.Timestamp period_end = 6;
+}
+
+message ListActionRecordsResp {
+  repeated ActionRecord action_records = 1;
+}

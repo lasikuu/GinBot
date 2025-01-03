@@ -1,0 +1,20 @@
+edition = "2023";
+
+package ginbot.squad;
+
+option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+
+import "google/protobuf/timestamp.proto";
+
+service SquadService {
+}
+
+// Message representing a Squad
+message Squad {
+  // ID of the Record
+  string uuid = 1;
+  // Amount of currency at the time of 'datetime'
+  int64 amount = 2;
+  // The point in time when the Record was stored
+  google.protobuf.Timestamp datetime = 3;
+}

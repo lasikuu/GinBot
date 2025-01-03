@@ -1,0 +1,10 @@
+edition = "2023";
+
+package ginbot.common;
+
+option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+
+enum Platform {
+  Discord = 0;
+  MatrixProtocol = 1;
+}

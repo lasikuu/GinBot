@@ -1,0 +1,143 @@
+edition = "2023";
+
+package ginbot.reminder;
+
+option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+
+import "google/protobuf/timestamp.proto";
+
+enum ReminderDestination {
+  Discord = 0;
+  MatrixProtocol = 1;
+  Telegram = 2;
+  Email = 3;
+  SnailMail = 4;
+}
+
+service ReminderService {
+  rpc GetReminder(GetReminderReq) returns (GetReminderResp);
+  rpc ListReminders(ListRemindersReq) returns (ListRemindersResp);
+  rpc CreateReminder(CreateReminderReq) returns (CreateReminderResp);
+  rpc ModifyReminder(ModifyReminderReq) returns (ModifyReminderResp);
+  rpc DeleteReminder(DeleteReminderReq) returns (DeleteReminderResp);
+}
+
+// Message representing a Reminder
+message Reminder {
+  // ID of the Reminder
+  int64 id = 1;
+  // Date and time of the Reminder (UTC+0)
+  google.protobuf.Timestamp datetime = 2;
+  // Timezone of the Reminder
+  string timezone = 3;
+  // Reminder message
+  string message = 4;
+  // User ID of the creator
+  int64 user_id = 5;
+  // Destinations to send the reminder to
+  repeated ReminderDestinationConfig destination_configs = 6;
+  // Repeat interval in seconds
+  int64 repeat_interval = 7;
+  // Parent reminder ID
+  int64 parent_id = 8;
+  // Created at
+  google.protobuf.Timestamp created_at = 9;
+  // Updated at
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+// Destination to send the reminder to
+message ReminderDestinationConfig {
+  // Destination type
+  ReminderDestination reminderDestination = 1;
+  // Order of priority for the destinations
+  int32 priority_order = 2;
+  // Destination ID or other information required to send the reminder to its destination
+  oneof oneof_destination {
+    int64 discord_channel_id = 3;
+    string telegram_chat_id = 4;
+    string matrix_room_id = 5;
+    string email_address = 6;
+    string real_address = 7;
+  }
+}
+
+message GetReminderReq {
+  // ID of the Reminder
+  int64 id = 1;
+}
+
+message GetReminderResp {
+  Reminder reminder = 1;
+}
+
+message ListRemindersReq {
+  // Limit the number of reminders returned
+  int64 limit = 1;
+  // Offset the reminders returned
+  int64 offset = 2;
+  // Search field for reminders
+  string message = 3;
+  // User ID of the creator
+  int64 user_id = 4;
+  // Search for reminders starting from this date
+  google.protobuf.Timestamp period_start = 5;
+  // Search for reminders ending at this date
+  google.protobuf.Timestamp period_end = 6;
+}
+
+message ListRemindersResp {
+  repeated Reminder reminders = 1;
+}
+
+message CreateReminderReq {
+  // Date and time of the Reminder (UTC+0)
+  google.protobuf.Timestamp datetime = 2;
+  // Timezone of the Reminder
+  string timezone = 3;
+  // Reminder message
+  string message = 4;
+  // User ID of the creator
+  int64 user_id = 5;
+  // Destinations to send the reminder to
+  repeated ReminderDestinationConfig destination_configs = 6;
+  // Repeat interval in seconds
+  int64 repeat_interval = 7;
+  // Parent reminder ID
+  int64 parent_id = 8;
+}
+
+message CreateReminderResp {
+  Reminder reminder = 1;
+}
+
+message ModifyReminderReq {
+  // ID of the Reminder
+  int64 id = 1;
+  // Date and time of the Reminder (UTC+0)
+  google.protobuf.Timestamp datetime = 2;
+  // Timezone of the Reminder
+  string timezone = 3;
+  // Reminder message
+  string message = 4;
+  // User ID of the creator
+  int64 user_id = 5;
+  // Destinations to send the reminder to
+  repeated ReminderDestinationConfig destination_configs = 6;
+  // Repeat interval in seconds
+  int64 repeat_interval = 7;
+  // Parent reminder ID
+  int64 parent_id = 8;
+}
+
+message ModifyReminderResp {
+  Reminder reminder = 1;
+}
+
+message DeleteReminderReq {
+  int64 id = 1;
+}
+
+message DeleteReminderResp {
+  bool success = 1;
+}
