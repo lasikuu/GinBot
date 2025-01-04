@@ -13,6 +13,7 @@ import (
 type OptionsModel struct {
 	Discord DiscordOptions
 	DB      DBOptions
+	GRPC    GRPCServerOptions
 }
 
 type CredentialsModel struct {
@@ -41,9 +42,21 @@ func LoadEnv() {
 func SetEnv() {
 	Options = &OptionsModel{
 		Discord: DiscordOptions{
-			OwnerId:  ownerId(),
-			BotToken: botToken(),
-			ClientId: clientId(),
+			GRPCClientOptions: GRPCClientOptions{
+				DialOptions: dialOptions(),
+			},
+			OwnerId:         ownerId(),
+			BotToken:        botToken(),
+			ClientId:        clientId(),
+			EraseCommands:   eraseCommands(),
+			CommandPrefixes: commandPrefixes(),
+		},
+		GRPC: GRPCServerOptions{
+			Host:          gRPCHost(),
+			Port:          gRPCPort(),
+			TLS:           gRPCTLS(),
+			CertsPath:     certsPath(),
+			ServerOptions: serverOptions(),
 		},
 		DB: DBOptions{
 			Name:       dbName(),
