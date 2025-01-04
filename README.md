@@ -8,7 +8,7 @@ Discord and other platforms.
 ### Origin of the name
 
 GinBot was originally named **TohsakaBot**, or **Rin** for the short-form, which is the name (遠坂凛) of one of the
-heroins in the game Fate/stay night.
+heroines in the game Fate/stay night.
 While the original version was written in Ruby, for the rewrite we chose to use Go, which brings us the name **GinBot** (Go+Rin).
 
 ## License
