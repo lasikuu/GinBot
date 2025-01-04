@@ -4,7 +4,6 @@ package ginbot.discord;
 
 option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 
-import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 
 enum DiscordActivityType {
@@ -16,7 +15,7 @@ enum DiscordActivityType {
   Competing = 5;
 }
 
-service UtilityService {
+service DiscordService {
   rpc SetDiscordActivityType(SetDiscordActivityTypeReq) returns (google.protobuf.Empty);
 }
 

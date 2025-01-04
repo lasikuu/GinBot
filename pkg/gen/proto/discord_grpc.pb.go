@@ -20,101 +20,101 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	UtilityService_SetDiscordActivityType_FullMethodName = "/ginbot.discord.UtilityService/SetDiscordActivityType"
+	DiscordService_SetDiscordActivityType_FullMethodName = "/ginbot.discord.DiscordService/SetDiscordActivityType"
 )
 
-// UtilityServiceClient is the client API for UtilityService service.
+// DiscordServiceClient is the client API for DiscordService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type UtilityServiceClient interface {
+type DiscordServiceClient interface {
 	SetDiscordActivityType(ctx context.Context, in *SetDiscordActivityTypeReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
-type utilityServiceClient struct {
+type discordServiceClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewUtilityServiceClient(cc grpc.ClientConnInterface) UtilityServiceClient {
-	return &utilityServiceClient{cc}
+func NewDiscordServiceClient(cc grpc.ClientConnInterface) DiscordServiceClient {
+	return &discordServiceClient{cc}
 }
 
-func (c *utilityServiceClient) SetDiscordActivityType(ctx context.Context, in *SetDiscordActivityTypeReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *discordServiceClient) SetDiscordActivityType(ctx context.Context, in *SetDiscordActivityTypeReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, UtilityService_SetDiscordActivityType_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, DiscordService_SetDiscordActivityType_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// UtilityServiceServer is the server API for UtilityService service.
-// All implementations must embed UnimplementedUtilityServiceServer
+// DiscordServiceServer is the server API for DiscordService service.
+// All implementations must embed UnimplementedDiscordServiceServer
 // for forward compatibility.
-type UtilityServiceServer interface {
+type DiscordServiceServer interface {
 	SetDiscordActivityType(context.Context, *SetDiscordActivityTypeReq) (*emptypb.Empty, error)
-	mustEmbedUnimplementedUtilityServiceServer()
+	mustEmbedUnimplementedDiscordServiceServer()
 }
 
-// UnimplementedUtilityServiceServer must be embedded to have
+// UnimplementedDiscordServiceServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedUtilityServiceServer struct{}
+type UnimplementedDiscordServiceServer struct{}
 
-func (UnimplementedUtilityServiceServer) SetDiscordActivityType(context.Context, *SetDiscordActivityTypeReq) (*emptypb.Empty, error) {
+func (UnimplementedDiscordServiceServer) SetDiscordActivityType(context.Context, *SetDiscordActivityTypeReq) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetDiscordActivityType not implemented")
 }
-func (UnimplementedUtilityServiceServer) mustEmbedUnimplementedUtilityServiceServer() {}
-func (UnimplementedUtilityServiceServer) testEmbeddedByValue()                        {}
+func (UnimplementedDiscordServiceServer) mustEmbedUnimplementedDiscordServiceServer() {}
+func (UnimplementedDiscordServiceServer) testEmbeddedByValue()                        {}
 
-// UnsafeUtilityServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to UtilityServiceServer will
+// UnsafeDiscordServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to DiscordServiceServer will
 // result in compilation errors.
-type UnsafeUtilityServiceServer interface {
-	mustEmbedUnimplementedUtilityServiceServer()
+type UnsafeDiscordServiceServer interface {
+	mustEmbedUnimplementedDiscordServiceServer()
 }
 
-func RegisterUtilityServiceServer(s grpc.ServiceRegistrar, srv UtilityServiceServer) {
-	// If the following call pancis, it indicates UnimplementedUtilityServiceServer was
+func RegisterDiscordServiceServer(s grpc.ServiceRegistrar, srv DiscordServiceServer) {
+	// If the following call pancis, it indicates UnimplementedDiscordServiceServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&UtilityService_ServiceDesc, srv)
+	s.RegisterService(&DiscordService_ServiceDesc, srv)
 }
 
-func _UtilityService_SetDiscordActivityType_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _DiscordService_SetDiscordActivityType_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetDiscordActivityTypeReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(UtilityServiceServer).SetDiscordActivityType(ctx, in)
+		return srv.(DiscordServiceServer).SetDiscordActivityType(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: UtilityService_SetDiscordActivityType_FullMethodName,
+		FullMethod: DiscordService_SetDiscordActivityType_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UtilityServiceServer).SetDiscordActivityType(ctx, req.(*SetDiscordActivityTypeReq))
+		return srv.(DiscordServiceServer).SetDiscordActivityType(ctx, req.(*SetDiscordActivityTypeReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// UtilityService_ServiceDesc is the grpc.ServiceDesc for UtilityService service.
+// DiscordService_ServiceDesc is the grpc.ServiceDesc for DiscordService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var UtilityService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.discord.UtilityService",
-	HandlerType: (*UtilityServiceServer)(nil),
+var DiscordService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "ginbot.discord.DiscordService",
+	HandlerType: (*DiscordServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "SetDiscordActivityType",
-			Handler:    _UtilityService_SetDiscordActivityType_Handler,
+			Handler:    _DiscordService_SetDiscordActivityType_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

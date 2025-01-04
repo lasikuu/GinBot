@@ -16,7 +16,7 @@ enum ActionType {
   SQUAD_FORMED = 6;
 }
 
-service ActionRecordedService {
+service AnalyticsService {
   rpc CreateActionRecord(CreateActionRecordReq) returns (CreateActionRecordResp);
   rpc ListActionRecords(ListActionRecordsReq) returns (ListActionRecordsResp);
 }

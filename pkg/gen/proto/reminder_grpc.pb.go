@@ -22,7 +22,7 @@ const (
 	ReminderService_GetReminder_FullMethodName    = "/ginbot.reminder.ReminderService/GetReminder"
 	ReminderService_ListReminders_FullMethodName  = "/ginbot.reminder.ReminderService/ListReminders"
 	ReminderService_CreateReminder_FullMethodName = "/ginbot.reminder.ReminderService/CreateReminder"
-	ReminderService_ModifyReminder_FullMethodName = "/ginbot.reminder.ReminderService/ModifyReminder"
+	ReminderService_UpdateReminder_FullMethodName = "/ginbot.reminder.ReminderService/UpdateReminder"
 	ReminderService_DeleteReminder_FullMethodName = "/ginbot.reminder.ReminderService/DeleteReminder"
 )
 
@@ -33,7 +33,7 @@ type ReminderServiceClient interface {
 	GetReminder(ctx context.Context, in *GetReminderReq, opts ...grpc.CallOption) (*GetReminderResp, error)
 	ListReminders(ctx context.Context, in *ListRemindersReq, opts ...grpc.CallOption) (*ListRemindersResp, error)
 	CreateReminder(ctx context.Context, in *CreateReminderReq, opts ...grpc.CallOption) (*CreateReminderResp, error)
-	ModifyReminder(ctx context.Context, in *ModifyReminderReq, opts ...grpc.CallOption) (*ModifyReminderResp, error)
+	UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*UpdateReminderResp, error)
 	DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*DeleteReminderResp, error)
 }
 
@@ -75,10 +75,10 @@ func (c *reminderServiceClient) CreateReminder(ctx context.Context, in *CreateRe
 	return out, nil
 }
 
-func (c *reminderServiceClient) ModifyReminder(ctx context.Context, in *ModifyReminderReq, opts ...grpc.CallOption) (*ModifyReminderResp, error) {
+func (c *reminderServiceClient) UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*UpdateReminderResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ModifyReminderResp)
-	err := c.cc.Invoke(ctx, ReminderService_ModifyReminder_FullMethodName, in, out, cOpts...)
+	out := new(UpdateReminderResp)
+	err := c.cc.Invoke(ctx, ReminderService_UpdateReminder_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ type ReminderServiceServer interface {
 	GetReminder(context.Context, *GetReminderReq) (*GetReminderResp, error)
 	ListReminders(context.Context, *ListRemindersReq) (*ListRemindersResp, error)
 	CreateReminder(context.Context, *CreateReminderReq) (*CreateReminderResp, error)
-	ModifyReminder(context.Context, *ModifyReminderReq) (*ModifyReminderResp, error)
+	UpdateReminder(context.Context, *UpdateReminderReq) (*UpdateReminderResp, error)
 	DeleteReminder(context.Context, *DeleteReminderReq) (*DeleteReminderResp, error)
 	mustEmbedUnimplementedReminderServiceServer()
 }
@@ -123,8 +123,8 @@ func (UnimplementedReminderServiceServer) ListReminders(context.Context, *ListRe
 func (UnimplementedReminderServiceServer) CreateReminder(context.Context, *CreateReminderReq) (*CreateReminderResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateReminder not implemented")
 }
-func (UnimplementedReminderServiceServer) ModifyReminder(context.Context, *ModifyReminderReq) (*ModifyReminderResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ModifyReminder not implemented")
+func (UnimplementedReminderServiceServer) UpdateReminder(context.Context, *UpdateReminderReq) (*UpdateReminderResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateReminder not implemented")
 }
 func (UnimplementedReminderServiceServer) DeleteReminder(context.Context, *DeleteReminderReq) (*DeleteReminderResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteReminder not implemented")
@@ -204,20 +204,20 @@ func _ReminderService_CreateReminder_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ReminderService_ModifyReminder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ModifyReminderReq)
+func _ReminderService_UpdateReminder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateReminderReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ReminderServiceServer).ModifyReminder(ctx, in)
+		return srv.(ReminderServiceServer).UpdateReminder(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ReminderService_ModifyReminder_FullMethodName,
+		FullMethod: ReminderService_UpdateReminder_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ReminderServiceServer).ModifyReminder(ctx, req.(*ModifyReminderReq))
+		return srv.(ReminderServiceServer).UpdateReminder(ctx, req.(*UpdateReminderReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -260,8 +260,8 @@ var ReminderService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ReminderService_CreateReminder_Handler,
 		},
 		{
-			MethodName: "ModifyReminder",
-			Handler:    _ReminderService_ModifyReminder_Handler,
+			MethodName: "UpdateReminder",
+			Handler:    _ReminderService_UpdateReminder_Handler,
 		},
 		{
 			MethodName: "DeleteReminder",

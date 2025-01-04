@@ -18,7 +18,7 @@ service ReminderService {
   rpc GetReminder(GetReminderReq) returns (GetReminderResp);
   rpc ListReminders(ListRemindersReq) returns (ListRemindersResp);
   rpc CreateReminder(CreateReminderReq) returns (CreateReminderResp);
-  rpc ModifyReminder(ModifyReminderReq) returns (ModifyReminderResp);
+  rpc UpdateReminder(UpdateReminderReq) returns (UpdateReminderResp);
   rpc DeleteReminder(DeleteReminderReq) returns (DeleteReminderResp);
 }
 
@@ -111,7 +111,7 @@ message CreateReminderResp {
   Reminder reminder = 1;
 }
 
-message ModifyReminderReq {
+message UpdateReminderReq {
   // ID of the Reminder
   int64 id = 1;
   // Date and time of the Reminder (UTC+0)
@@ -130,7 +130,7 @@ message ModifyReminderReq {
   int64 parent_id = 8;
 }
 
-message ModifyReminderResp {
+message UpdateReminderResp {
   Reminder reminder = 1;
 }
 

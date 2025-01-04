@@ -19,139 +19,139 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ActionRecordedService_CreateActionRecord_FullMethodName = "/ginbot.analytics.ActionRecordedService/CreateActionRecord"
-	ActionRecordedService_ListActionRecords_FullMethodName  = "/ginbot.analytics.ActionRecordedService/ListActionRecords"
+	AnalyticsService_CreateActionRecord_FullMethodName = "/ginbot.analytics.AnalyticsService/CreateActionRecord"
+	AnalyticsService_ListActionRecords_FullMethodName  = "/ginbot.analytics.AnalyticsService/ListActionRecords"
 )
 
-// ActionRecordedServiceClient is the client API for ActionRecordedService service.
+// AnalyticsServiceClient is the client API for AnalyticsService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type ActionRecordedServiceClient interface {
+type AnalyticsServiceClient interface {
 	CreateActionRecord(ctx context.Context, in *CreateActionRecordReq, opts ...grpc.CallOption) (*CreateActionRecordResp, error)
 	ListActionRecords(ctx context.Context, in *ListActionRecordsReq, opts ...grpc.CallOption) (*ListActionRecordsResp, error)
 }
 
-type actionRecordedServiceClient struct {
+type analyticsServiceClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewActionRecordedServiceClient(cc grpc.ClientConnInterface) ActionRecordedServiceClient {
-	return &actionRecordedServiceClient{cc}
+func NewAnalyticsServiceClient(cc grpc.ClientConnInterface) AnalyticsServiceClient {
+	return &analyticsServiceClient{cc}
 }
 
-func (c *actionRecordedServiceClient) CreateActionRecord(ctx context.Context, in *CreateActionRecordReq, opts ...grpc.CallOption) (*CreateActionRecordResp, error) {
+func (c *analyticsServiceClient) CreateActionRecord(ctx context.Context, in *CreateActionRecordReq, opts ...grpc.CallOption) (*CreateActionRecordResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateActionRecordResp)
-	err := c.cc.Invoke(ctx, ActionRecordedService_CreateActionRecord_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, AnalyticsService_CreateActionRecord_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *actionRecordedServiceClient) ListActionRecords(ctx context.Context, in *ListActionRecordsReq, opts ...grpc.CallOption) (*ListActionRecordsResp, error) {
+func (c *analyticsServiceClient) ListActionRecords(ctx context.Context, in *ListActionRecordsReq, opts ...grpc.CallOption) (*ListActionRecordsResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListActionRecordsResp)
-	err := c.cc.Invoke(ctx, ActionRecordedService_ListActionRecords_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, AnalyticsService_ListActionRecords_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// ActionRecordedServiceServer is the server API for ActionRecordedService service.
-// All implementations must embed UnimplementedActionRecordedServiceServer
+// AnalyticsServiceServer is the server API for AnalyticsService service.
+// All implementations must embed UnimplementedAnalyticsServiceServer
 // for forward compatibility.
-type ActionRecordedServiceServer interface {
+type AnalyticsServiceServer interface {
 	CreateActionRecord(context.Context, *CreateActionRecordReq) (*CreateActionRecordResp, error)
 	ListActionRecords(context.Context, *ListActionRecordsReq) (*ListActionRecordsResp, error)
-	mustEmbedUnimplementedActionRecordedServiceServer()
+	mustEmbedUnimplementedAnalyticsServiceServer()
 }
 
-// UnimplementedActionRecordedServiceServer must be embedded to have
+// UnimplementedAnalyticsServiceServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedActionRecordedServiceServer struct{}
+type UnimplementedAnalyticsServiceServer struct{}
 
-func (UnimplementedActionRecordedServiceServer) CreateActionRecord(context.Context, *CreateActionRecordReq) (*CreateActionRecordResp, error) {
+func (UnimplementedAnalyticsServiceServer) CreateActionRecord(context.Context, *CreateActionRecordReq) (*CreateActionRecordResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateActionRecord not implemented")
 }
-func (UnimplementedActionRecordedServiceServer) ListActionRecords(context.Context, *ListActionRecordsReq) (*ListActionRecordsResp, error) {
+func (UnimplementedAnalyticsServiceServer) ListActionRecords(context.Context, *ListActionRecordsReq) (*ListActionRecordsResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListActionRecords not implemented")
 }
-func (UnimplementedActionRecordedServiceServer) mustEmbedUnimplementedActionRecordedServiceServer() {}
-func (UnimplementedActionRecordedServiceServer) testEmbeddedByValue()                               {}
+func (UnimplementedAnalyticsServiceServer) mustEmbedUnimplementedAnalyticsServiceServer() {}
+func (UnimplementedAnalyticsServiceServer) testEmbeddedByValue()                          {}
 
-// UnsafeActionRecordedServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to ActionRecordedServiceServer will
+// UnsafeAnalyticsServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to AnalyticsServiceServer will
 // result in compilation errors.
-type UnsafeActionRecordedServiceServer interface {
-	mustEmbedUnimplementedActionRecordedServiceServer()
+type UnsafeAnalyticsServiceServer interface {
+	mustEmbedUnimplementedAnalyticsServiceServer()
 }
 
-func RegisterActionRecordedServiceServer(s grpc.ServiceRegistrar, srv ActionRecordedServiceServer) {
-	// If the following call pancis, it indicates UnimplementedActionRecordedServiceServer was
+func RegisterAnalyticsServiceServer(s grpc.ServiceRegistrar, srv AnalyticsServiceServer) {
+	// If the following call pancis, it indicates UnimplementedAnalyticsServiceServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&ActionRecordedService_ServiceDesc, srv)
+	s.RegisterService(&AnalyticsService_ServiceDesc, srv)
 }
 
-func _ActionRecordedService_CreateActionRecord_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _AnalyticsService_CreateActionRecord_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateActionRecordReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ActionRecordedServiceServer).CreateActionRecord(ctx, in)
+		return srv.(AnalyticsServiceServer).CreateActionRecord(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ActionRecordedService_CreateActionRecord_FullMethodName,
+		FullMethod: AnalyticsService_CreateActionRecord_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ActionRecordedServiceServer).CreateActionRecord(ctx, req.(*CreateActionRecordReq))
+		return srv.(AnalyticsServiceServer).CreateActionRecord(ctx, req.(*CreateActionRecordReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ActionRecordedService_ListActionRecords_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _AnalyticsService_ListActionRecords_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListActionRecordsReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ActionRecordedServiceServer).ListActionRecords(ctx, in)
+		return srv.(AnalyticsServiceServer).ListActionRecords(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ActionRecordedService_ListActionRecords_FullMethodName,
+		FullMethod: AnalyticsService_ListActionRecords_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ActionRecordedServiceServer).ListActionRecords(ctx, req.(*ListActionRecordsReq))
+		return srv.(AnalyticsServiceServer).ListActionRecords(ctx, req.(*ListActionRecordsReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// ActionRecordedService_ServiceDesc is the grpc.ServiceDesc for ActionRecordedService service.
+// AnalyticsService_ServiceDesc is the grpc.ServiceDesc for AnalyticsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var ActionRecordedService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.analytics.ActionRecordedService",
-	HandlerType: (*ActionRecordedServiceServer)(nil),
+var AnalyticsService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "ginbot.analytics.AnalyticsService",
+	HandlerType: (*AnalyticsServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "CreateActionRecord",
-			Handler:    _ActionRecordedService_CreateActionRecord_Handler,
+			Handler:    _AnalyticsService_CreateActionRecord_Handler,
 		},
 		{
 			MethodName: "ListActionRecords",
-			Handler:    _ActionRecordedService_ListActionRecords_Handler,
+			Handler:    _AnalyticsService_ListActionRecords_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
