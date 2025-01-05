@@ -1,0 +1,12 @@
+version: '3.9'
+
+services:
+  psql:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    # shared memory limit
+    shm_size: 128mb
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: gin123

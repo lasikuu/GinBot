@@ -20,7 +20,11 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
 ### 💾 Database migrations
 
 - Automatically run when the server is launched. Can be disabled by setting `GINBOT_DB_MIGRATIONS=false` in `.env`.
-- Run manually: TODO
+- Run manually
+  - Create a new migration: `goose create <migration_name> sql`
+  - Check status: `goose -dir pkg/db/migrations  postgres "user=postgres dbname=postgres password=gin123 sslmode=disable" status`
+  - Run all migrations: `goose -dir pkg/db/migrations  postgres "user=postgres dbname=postgres password=gin123 sslmode=disable" up`
+  - Rollback the last migration: `goose -dir pkg/db/migrations  postgres "user=postgres dbname=postgres password=gin123 sslmode=disable" down`
 
 ### 🔬 Testing
 
