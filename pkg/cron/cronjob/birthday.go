@@ -17,6 +17,6 @@ func CongratulateBirthday() {
 	}
 
 	for _, user := range resp.GetUsers() {
-		log.Z.Debug("congratulating.", zap.Int64("userID", *user.Id))
+		log.Z.Debug("congratulating.", zap.String("userID", *user.Id))
 	}
 }

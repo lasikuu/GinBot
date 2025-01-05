@@ -1,7 +1,7 @@
 -- +goose Up
 -- +goose StatementBegin
 
-CREATE TABLE IF NOT EXISTS "user"
+CREATE TABLE IF NOT EXISTS "user_account"
 (
     id                    uuid UNIQUE NOT NULL,
     username              text        NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS "platform_user"
     created_at       timestamp        NOT NULL DEFAULT NOW(),
     updated_at       timestamp        NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id),
-    CONSTRAINT fk_platform_message_user FOREIGN KEY (user_id) REFERENCES "user" (id)
+    CONSTRAINT fk_platform_message_user FOREIGN KEY (user_id) REFERENCES "user_account" (id)
 );
 
 CREATE TABLE IF NOT EXISTS "platform_message"
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS "platform_message"
     created_at    timestamp        NOT NULL DEFAULT NOW(),
     updated_at    timestamp        NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id),
-    CONSTRAINT fk_platform_message_user FOREIGN KEY (user_id) REFERENCES "user" (id)
+    CONSTRAINT fk_platform_message_user FOREIGN KEY (user_id) REFERENCES "user_account" (id)
 );
 
 COMMENT ON COLUMN "platform_message".platform IS 'enum value of the platform the message was sent from';
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS "reminder"
     created_at timestamp   NOT NULL DEFAULT NOW(),
     updated_at timestamp   NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id),
-    CONSTRAINT fk_reminder_user FOREIGN KEY (user_id) REFERENCES "user" (id) ON DELETE CASCADE,
+    CONSTRAINT fk_reminder_user FOREIGN KEY (user_id) REFERENCES "user_account" (id) ON DELETE CASCADE,
     CONSTRAINT fk_reminder_file FOREIGN KEY (file_id) REFERENCES "file" (id)
 );
 
@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS "trigger"
     updated_at timestamp   NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id),
     CONSTRAINT fk_trigger_file FOREIGN KEY (file_id) REFERENCES "file" (id),
-    CONSTRAINT fk_trigger_user FOREIGN KEY (user_id) REFERENCES "user" (id)
+    CONSTRAINT fk_trigger_user FOREIGN KEY (user_id) REFERENCES "user_account" (id)
 );
 
 CREATE TABLE IF NOT EXISTS "highlight"
@@ -161,5 +161,6 @@ DROP TABLE IF EXISTS "reminder";
 DROP TABLE IF EXISTS "platform_attachment";
 DROP TABLE IF EXISTS "platform_message";
 DROP TABLE IF EXISTS "file";
-DROP TABLE IF EXISTS "user";
+DROP TABLE IF EXISTS "platform_user";
+DROP TABLE IF EXISTS "user_account";
 -- +goose StatementEnd

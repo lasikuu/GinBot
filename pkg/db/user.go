@@ -21,7 +21,7 @@ func CreateUser(username string, platform proto.Platform, platformUserId string,
 
 	_, err = db().Exec(
 		context.Background(),
-		"INSERT INTO \"user\" (id, username, locale) values($1, $2, $3)",
+		"INSERT INTO user_account (id, username, locale) values($1, $2, $3)",
 		userID, username, locale,
 	)
 	if err != nil {
@@ -31,7 +31,7 @@ func CreateUser(username string, platform proto.Platform, platformUserId string,
 
 	_, err = db().Exec(
 		context.Background(),
-		"INSERT INTO \"platform_user\" (user_id, platform, platform_user_id, metadata) values($1, $2, $3, $4)",
+		"INSERT INTO platform_user (user_id, platform, platform_user_id, metadata) values($1, $2, $3, $4)",
 		userID, platform, platformUserId, platformMetadata,
 	)
 	if err != nil {
@@ -42,11 +42,11 @@ func CreateUser(username string, platform proto.Platform, platformUserId string,
 	return &userID, err
 }
 
-func GetUser(id string) *proto.User {
-	var user proto.User
+func GetUser(id string) *proto.UserAccount {
+	var user proto.UserAccount
 	err := db().QueryRow(
 		context.Background(),
-		"SELECT * FROM \"user\" WHERE id = $1", id,
+		"SELECT * FROM user_account WHERE id = $1", id,
 	).Scan(&user)
 
 	if err != nil {

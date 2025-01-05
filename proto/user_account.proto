@@ -1,6 +1,6 @@
 edition = "2023";
 
-package ginbot.user;
+package ginbot.user_account;
 
 option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 
@@ -26,7 +26,7 @@ service UserService {
 }
 
 // Message representing a User
-message User {
+message UserAccount {
   // UUID of the User
   string id = 1;
   // Username of the User
@@ -55,7 +55,7 @@ message GetUserReq {
 }
 
 message GetUserResp {
-  User user = 1;
+  UserAccount user = 1;
 }
 
 message RegisterReq {
@@ -77,5 +77,5 @@ message RegisterResp {
 }
 
 message GetCongratulableBirthdaysResp {
-  repeated User users = 1;
+  repeated UserAccount users = 1;
 }

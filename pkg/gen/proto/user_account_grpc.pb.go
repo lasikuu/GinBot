@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.2
-// source: proto/user.proto
+// source: proto/user_account.proto
 
 package proto
 
@@ -20,9 +20,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	UserService_GetUser_FullMethodName                   = "/ginbot.user.UserService/GetUser"
-	UserService_Register_FullMethodName                  = "/ginbot.user.UserService/Register"
-	UserService_GetCongratulableBirthdays_FullMethodName = "/ginbot.user.UserService/GetCongratulableBirthdays"
+	UserService_GetUser_FullMethodName                   = "/ginbot.user_account.UserService/GetUser"
+	UserService_Register_FullMethodName                  = "/ginbot.user_account.UserService/Register"
+	UserService_GetCongratulableBirthdays_FullMethodName = "/ginbot.user_account.UserService/GetCongratulableBirthdays"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -177,7 +177,7 @@ func _UserService_GetCongratulableBirthdays_Handler(srv interface{}, ctx context
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var UserService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.user.UserService",
+	ServiceName: "ginbot.user_account.UserService",
 	HandlerType: (*UserServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -194,5 +194,5 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/user.proto",
+	Metadata: "proto/user_account.proto",
 }
