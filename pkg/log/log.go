@@ -13,7 +13,7 @@ var S *zap.SugaredLogger
 
 func InitializeLogger(env enum.Environment, logLevel zapcore.Level) {
 	var loggerErr error
-	if env == enum.Production {
+	if env == enum.PRODUCTION {
 		Z, loggerErr = zap.NewProduction(zap.IncreaseLevel(logLevel))
 	} else {
 		Z, loggerErr = zap.NewDevelopment(zap.IncreaseLevel(logLevel))

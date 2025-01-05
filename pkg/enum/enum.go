@@ -3,6 +3,6 @@ package enum
 type Environment string
 
 const (
-	Production  Environment = "production"
-	Development             = "development"
+	PRODUCTION  Environment = "production"
+	DEVELOPMENT             = "development"
 )

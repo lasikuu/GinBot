@@ -37,7 +37,7 @@ func main() {
 	pb.RegisterAnalyticsServiceServer(grpcServer, server.NewAnalyticsServer())
 
 	// Register reflection service on gRPC server.
-	if config.AppEnvironment == enum.Development {
+	if config.AppEnvironment == enum.DEVELOPMENT {
 		reflection.Register(grpcServer)
 	}
 

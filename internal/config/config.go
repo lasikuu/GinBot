@@ -72,10 +72,10 @@ func SetEnv() {
 func loadEnvironment() {
 	value := os.Getenv("GINBOT_ENV")
 	if value == "production" {
-		AppEnvironment = enum.Production
+		AppEnvironment = enum.PRODUCTION
 		return
 	}
-	AppEnvironment = enum.Development
+	AppEnvironment = enum.DEVELOPMENT
 }
 
 func loadLogLevel() {
