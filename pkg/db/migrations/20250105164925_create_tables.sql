@@ -5,8 +5,8 @@ CREATE TABLE IF NOT EXISTS "user"
 (
     id                    uuid UNIQUE NOT NULL,
     username              text        NOT NULL,
-    clearance             int UNIQUE  NOT NULL,
-    avatar                text        NOT NULL,
+    clearance             int         NOT NULL DEFAULT 0,
+    avatar                text,
     locale                text,
     timezone              text,
     birthday              timestamp,
