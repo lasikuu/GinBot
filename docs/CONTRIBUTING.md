@@ -10,7 +10,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
 
 - Generate Protocol Buffers:
   ```
-    protoc --go_out=pkg/gen --go_opt=paths=source_relative --go-grpc_out=pkg/gen --go-grpc_opt=paths=source_relative .\proto\common.proto .\proto\utility.proto .\proto\reminder.proto .\proto\trigger.proto .\proto\entertainment.proto .\proto\discord.proto .\proto\analytics.proto
+    protoc --go_out=pkg/gen --go_opt=paths=source_relative --go-grpc_out=pkg/gen --go-grpc_opt=paths=source_relative .\proto\common.proto .\proto\utility.proto .\proto\reminder.proto .\proto\trigger.proto .\proto\entertainment.proto .\proto\discord.proto .\proto\analytics.proto .\proto\user.proto .\proto\highlight.proto .\proto\highlight.proto
   ```
 
 ### 🚧 Building and running
