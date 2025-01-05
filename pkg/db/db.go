@@ -16,13 +16,18 @@ import (
 	"go.uber.org/zap"
 )
 
+//go:embed migrations
+var embedMigrations embed.FS
+
 // *pgx.Conn represents a single connection to the database and is not concurrency safe.
 // Using *pgxpool.Pool for a concurrency safe connection pool.
 // https://pkg.go.dev/github.com/jackc/pgx/v5#hdr-Connection_Pool
 var dbpool *pgxpool.Pool
 
-//go:embed migrations
-var embedMigrations embed.FS
+// db allows access to the database connection pool
+func db() *pgxpool.Pool {
+	return dbpool
+}
 
 // InitDB initializes the database connection pool
 func InitDB() {
@@ -43,11 +48,6 @@ func InitDB() {
 	if err != nil {
 		log.Z.Fatal("failed to connect to database.", zap.Error(err))
 	}
-}
-
-// db allows access to the database connection pool
-func db() *pgxpool.Pool {
-	return dbpool
 }
 
 // EnsureLatestVersion ensures that the database is at the latest version by running all migrations.
