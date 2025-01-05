@@ -6,11 +6,13 @@ import (
 
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/db"
+	"github.com/lasikuu/GinBot/pkg/enum"
 	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/server"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 func main() {
@@ -33,6 +35,11 @@ func main() {
 	pb.RegisterUtilityServiceServer(grpcServer, server.NewUtilityServer())
 	pb.RegisterReminderServiceServer(grpcServer, server.NewReminderServer())
 	pb.RegisterAnalyticsServiceServer(grpcServer, server.NewAnalyticsServer())
+
+	// Register reflection service on gRPC server.
+	if config.AppEnvironment == enum.Development {
+		reflection.Register(grpcServer)
+	}
 
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Z.Fatal("failed to serve.", zap.Error(err))
