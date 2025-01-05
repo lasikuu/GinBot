@@ -1,0 +1,78 @@
+edition = "2023";
+
+package ginbot.user;
+
+option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+import "proto/common.proto";
+
+enum UserClearance {
+  UNKNOWN = 0;
+  REGISTERED = 1;
+  MEMBER = 10;
+  MODERATOR = 20;
+  ADMINISTRATOR = 50;
+  OWNER = 100;
+}
+
+service UserService {
+  rpc GetUser(GetUserReq) returns (GetUserResp);
+  rpc Register(RegisterReq) returns (RegisterResp);
+  rpc GetCongratulableBirthdays(google.protobuf.Empty) returns (GetCongratulableBirthdaysResp);
+}
+
+// Message representing a User
+message User {
+  // ID of the User
+  int64 id = 1;
+  // Username of the User
+  string username = 2;
+  // Clearance level of the User
+  UserClearance clearance = 3;
+  // Avatar URL of the User
+  string avatar = 4;
+  // Locale of the User
+  string locale = 5;
+  // Timezone of the User
+  string timezone = 6;
+  // User ID of the creator
+  google.protobuf.Timestamp birthday = 7;
+  // Birthday last congratulated at
+  google.protobuf.Timestamp last_congratulated_at = 8;
+  // Created at
+  google.protobuf.Timestamp created_at = 9;
+  // Updated at
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message GetUserReq {
+  // ID of the User
+  int64 id = 1;
+}
+
+message GetUserResp {
+  User user = 1;
+}
+
+message RegisterReq {
+  // Platform where the user is registering
+  common.Platform platform = 1;
+  oneof oneof_platform {
+    // Discord user ID
+    int64 discord_user_id = 2;
+    // Matrix user ID
+    string matrix_user_id = 3;
+  }
+}
+
+message RegisterResp {
+  // User ID of the registered user
+  int64 user_id = 1;
+}
+
+message GetCongratulableBirthdaysResp {
+  repeated User users = 1;
+}

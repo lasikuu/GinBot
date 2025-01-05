@@ -6,8 +6,6 @@ option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 
 import "google/protobuf/empty.proto";
 
-import "proto/common.proto";
-
 enum HealthStatus {
   UNKNOWN = 0;
   OK = 1;
@@ -18,7 +16,6 @@ service UtilityService {
   rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResp);
   rpc Help(HelpReq) returns (HelpResp);
   rpc Ping(google.protobuf.Empty) returns (PingResp);
-  rpc Register(RegisterReq) returns (RegisterResp);
 }
 
 message HealthCheckResp {
@@ -39,20 +36,4 @@ message HelpResp {
 message PingResp {
   // Pong message
   string message = 1;
-}
-
-message RegisterReq {
-  // Platform where the user is registering
-  common.Platform platform = 1;
-  oneof oneof_platform {
-    // Discord user ID
-    int64 discord_user_id = 2;
-    // Matrix user ID
-    string matrix_user_id = 3;
-  }
-}
-
-message RegisterResp {
-  // User ID of the registered user
-  int64 user_id = 1;
 }

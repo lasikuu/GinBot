@@ -5,6 +5,7 @@ package ginbot.reminder;
 option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
 
 enum ReminderDestination {
   Discord = 0;
@@ -20,6 +21,7 @@ service ReminderService {
   rpc CreateReminder(CreateReminderReq) returns (CreateReminderResp);
   rpc UpdateReminder(UpdateReminderReq) returns (UpdateReminderResp);
   rpc DeleteReminder(DeleteReminderReq) returns (DeleteReminderResp);
+  rpc GetExpiredReminders(google.protobuf.Empty) returns (GetExpiredRemindersResp);
 }
 
 // Message representing a Reminder
@@ -140,4 +142,8 @@ message DeleteReminderReq {
 
 message DeleteReminderResp {
   bool success = 1;
+}
+
+message GetExpiredRemindersResp {
+  repeated Reminder reminders = 1;
 }

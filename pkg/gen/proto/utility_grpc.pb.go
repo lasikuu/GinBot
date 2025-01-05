@@ -23,7 +23,6 @@ const (
 	UtilityService_HealthCheck_FullMethodName = "/ginbot.utility.UtilityService/HealthCheck"
 	UtilityService_Help_FullMethodName        = "/ginbot.utility.UtilityService/Help"
 	UtilityService_Ping_FullMethodName        = "/ginbot.utility.UtilityService/Ping"
-	UtilityService_Register_FullMethodName    = "/ginbot.utility.UtilityService/Register"
 )
 
 // UtilityServiceClient is the client API for UtilityService service.
@@ -33,7 +32,6 @@ type UtilityServiceClient interface {
 	HealthCheck(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthCheckResp, error)
 	Help(ctx context.Context, in *HelpReq, opts ...grpc.CallOption) (*HelpResp, error)
 	Ping(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PingResp, error)
-	Register(ctx context.Context, in *RegisterReq, opts ...grpc.CallOption) (*RegisterResp, error)
 }
 
 type utilityServiceClient struct {
@@ -74,16 +72,6 @@ func (c *utilityServiceClient) Ping(ctx context.Context, in *emptypb.Empty, opts
 	return out, nil
 }
 
-func (c *utilityServiceClient) Register(ctx context.Context, in *RegisterReq, opts ...grpc.CallOption) (*RegisterResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RegisterResp)
-	err := c.cc.Invoke(ctx, UtilityService_Register_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // UtilityServiceServer is the server API for UtilityService service.
 // All implementations must embed UnimplementedUtilityServiceServer
 // for forward compatibility.
@@ -91,7 +79,6 @@ type UtilityServiceServer interface {
 	HealthCheck(context.Context, *emptypb.Empty) (*HealthCheckResp, error)
 	Help(context.Context, *HelpReq) (*HelpResp, error)
 	Ping(context.Context, *emptypb.Empty) (*PingResp, error)
-	Register(context.Context, *RegisterReq) (*RegisterResp, error)
 	mustEmbedUnimplementedUtilityServiceServer()
 }
 
@@ -110,9 +97,6 @@ func (UnimplementedUtilityServiceServer) Help(context.Context, *HelpReq) (*HelpR
 }
 func (UnimplementedUtilityServiceServer) Ping(context.Context, *emptypb.Empty) (*PingResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Ping not implemented")
-}
-func (UnimplementedUtilityServiceServer) Register(context.Context, *RegisterReq) (*RegisterResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Register not implemented")
 }
 func (UnimplementedUtilityServiceServer) mustEmbedUnimplementedUtilityServiceServer() {}
 func (UnimplementedUtilityServiceServer) testEmbeddedByValue()                        {}
@@ -189,24 +173,6 @@ func _UtilityService_Ping_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UtilityService_Register_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RegisterReq)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(UtilityServiceServer).Register(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: UtilityService_Register_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UtilityServiceServer).Register(ctx, req.(*RegisterReq))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // UtilityService_ServiceDesc is the grpc.ServiceDesc for UtilityService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -225,10 +191,6 @@ var UtilityService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Ping",
 			Handler:    _UtilityService_Ping_Handler,
-		},
-		{
-			MethodName: "Register",
-			Handler:    _UtilityService_Register_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

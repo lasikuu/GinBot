@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -19,11 +20,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ReminderService_GetReminder_FullMethodName    = "/ginbot.reminder.ReminderService/GetReminder"
-	ReminderService_ListReminders_FullMethodName  = "/ginbot.reminder.ReminderService/ListReminders"
-	ReminderService_CreateReminder_FullMethodName = "/ginbot.reminder.ReminderService/CreateReminder"
-	ReminderService_UpdateReminder_FullMethodName = "/ginbot.reminder.ReminderService/UpdateReminder"
-	ReminderService_DeleteReminder_FullMethodName = "/ginbot.reminder.ReminderService/DeleteReminder"
+	ReminderService_GetReminder_FullMethodName         = "/ginbot.reminder.ReminderService/GetReminder"
+	ReminderService_ListReminders_FullMethodName       = "/ginbot.reminder.ReminderService/ListReminders"
+	ReminderService_CreateReminder_FullMethodName      = "/ginbot.reminder.ReminderService/CreateReminder"
+	ReminderService_UpdateReminder_FullMethodName      = "/ginbot.reminder.ReminderService/UpdateReminder"
+	ReminderService_DeleteReminder_FullMethodName      = "/ginbot.reminder.ReminderService/DeleteReminder"
+	ReminderService_GetExpiredReminders_FullMethodName = "/ginbot.reminder.ReminderService/GetExpiredReminders"
 )
 
 // ReminderServiceClient is the client API for ReminderService service.
@@ -35,6 +37,7 @@ type ReminderServiceClient interface {
 	CreateReminder(ctx context.Context, in *CreateReminderReq, opts ...grpc.CallOption) (*CreateReminderResp, error)
 	UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*UpdateReminderResp, error)
 	DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*DeleteReminderResp, error)
+	GetExpiredReminders(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetExpiredRemindersResp, error)
 }
 
 type reminderServiceClient struct {
@@ -95,6 +98,16 @@ func (c *reminderServiceClient) DeleteReminder(ctx context.Context, in *DeleteRe
 	return out, nil
 }
 
+func (c *reminderServiceClient) GetExpiredReminders(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetExpiredRemindersResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetExpiredRemindersResp)
+	err := c.cc.Invoke(ctx, ReminderService_GetExpiredReminders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ReminderServiceServer is the server API for ReminderService service.
 // All implementations must embed UnimplementedReminderServiceServer
 // for forward compatibility.
@@ -104,6 +117,7 @@ type ReminderServiceServer interface {
 	CreateReminder(context.Context, *CreateReminderReq) (*CreateReminderResp, error)
 	UpdateReminder(context.Context, *UpdateReminderReq) (*UpdateReminderResp, error)
 	DeleteReminder(context.Context, *DeleteReminderReq) (*DeleteReminderResp, error)
+	GetExpiredReminders(context.Context, *emptypb.Empty) (*GetExpiredRemindersResp, error)
 	mustEmbedUnimplementedReminderServiceServer()
 }
 
@@ -128,6 +142,9 @@ func (UnimplementedReminderServiceServer) UpdateReminder(context.Context, *Updat
 }
 func (UnimplementedReminderServiceServer) DeleteReminder(context.Context, *DeleteReminderReq) (*DeleteReminderResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteReminder not implemented")
+}
+func (UnimplementedReminderServiceServer) GetExpiredReminders(context.Context, *emptypb.Empty) (*GetExpiredRemindersResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetExpiredReminders not implemented")
 }
 func (UnimplementedReminderServiceServer) mustEmbedUnimplementedReminderServiceServer() {}
 func (UnimplementedReminderServiceServer) testEmbeddedByValue()                         {}
@@ -240,6 +257,24 @@ func _ReminderService_DeleteReminder_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ReminderService_GetExpiredReminders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReminderServiceServer).GetExpiredReminders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReminderService_GetExpiredReminders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReminderServiceServer).GetExpiredReminders(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ReminderService_ServiceDesc is the grpc.ServiceDesc for ReminderService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -266,6 +301,10 @@ var ReminderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteReminder",
 			Handler:    _ReminderService_DeleteReminder_Handler,
+		},
+		{
+			MethodName: "GetExpiredReminders",
+			Handler:    _ReminderService_GetExpiredReminders_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
