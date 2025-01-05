@@ -1,73 +1,16 @@
 package discord
 
 import (
-	"context"
 	"os"
 	"os/signal"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/internal/config"
-	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 var discordSession *discordgo.Session
-
-var (
-	commands = []*discordgo.ApplicationCommand{
-		{
-			Name:        "healthcheck",
-			Description: "Health check of services such as DB.",
-			NameLocalizations: &map[discordgo.Locale]string{
-				discordgo.Japanese: "ヘルスチェック",
-			},
-			DescriptionLocalizations: &map[discordgo.Locale]string{
-				discordgo.Japanese: "DBなどのサービスのヘルスチェック。",
-			},
-		},
-	}
-
-	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
-		"healthcheck": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			// TODO: Separate setting metadata into its own function
-			var userID string
-			if i.Member != nil {
-				userID = i.Member.User.ID
-			} else if i.User != nil {
-				userID = i.User.ID
-			} else {
-				log.Z.Error("cannot get user ID.")
-				return
-			}
-			md := metadata.Pairs(
-				"user_id", userID,
-				"user_clearance", "0", // TODO: Implement user clearance
-			)
-			ctx := metadata.NewOutgoingContext(context.Background(), md)
-
-			resp, err := client.UtilityServiceClient.HealthCheck(ctx, &emptypb.Empty{})
-			if err != nil {
-				log.Z.Error("failed to call HealthCheck.", zap.Error(err))
-				return
-			}
-
-			response := resp.GetStatus().String()
-
-			err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: response,
-				},
-			})
-			if err != nil {
-				panic(err)
-			}
-		},
-	}
-)
 
 func InitializeDiscord() {
 	var err error
