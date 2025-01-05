@@ -26,6 +26,7 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(config.Options.GRPC.ServerOptions...)
+	pb.RegisterUserServiceServer(grpcServer, server.NewUserServer())
 	pb.RegisterUtilityServiceServer(grpcServer, server.NewUtilityServer())
 	pb.RegisterReminderServiceServer(grpcServer, server.NewReminderServer())
 	pb.RegisterAnalyticsServiceServer(grpcServer, server.NewAnalyticsServer())

@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc"
 )
 
+var UserServiceClient pb.UserServiceClient
 var UtilityServiceClient pb.UtilityServiceClient
 var ReminderServiceClient pb.ReminderServiceClient
 
@@ -20,6 +21,7 @@ func NewDiscordClient() {
 		return
 	}
 
+	UserServiceClient = pb.NewUserServiceClient(conn)
 	UtilityServiceClient = pb.NewUtilityServiceClient(conn)
 	ReminderServiceClient = pb.NewReminderServiceClient(conn)
 }

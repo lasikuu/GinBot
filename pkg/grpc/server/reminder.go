@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type ReminderServer struct {
@@ -66,4 +68,22 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateRemin
 	}
 
 	return nil, nil
+}
+
+func (s *ReminderServer) GetExpiredReminders(ctx context.Context, _ *emptypb.Empty) (*pb.GetExpiredRemindersResp, error) {
+	_, err := getMetadata(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+
+	expiredReminders, err := db.ExpiredReminders(&now)
+	if err != nil {
+		return nil, err
+	}
+
+	return &pb.GetExpiredRemindersResp{
+		Reminders: expiredReminders,
+	}, nil
 }
