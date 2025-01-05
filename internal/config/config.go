@@ -31,7 +31,7 @@ var Options *OptionsModel
 func LoadEnv() {
 	var err = godotenv.Load()
 	if err != nil {
-		fmt.Println("No .env file or environmentals found.")
+		fmt.Println("error loading environment vars:", err)
 	}
 
 	loadEnvironment()

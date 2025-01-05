@@ -16,15 +16,19 @@ import (
 )
 
 func main() {
+	// Environment variables and logger
 	config.LoadEnv()
 	log.InitializeLogger(config.AppEnvironment, config.LogLevel)
 	config.SetEnv()
+
+	// Database
 	db.InitDB()
 	defer db.CloseDB()
 	db.EnsureLatestVersion()
 
 	log.Z.Info("starting GinBot with gRPC.", zap.String("host", config.Options.GRPC.Host), zap.String("port", config.Options.GRPC.Port))
 
+	// gRPC
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%s", config.Options.GRPC.Host, config.Options.GRPC.Port))
 	if err != nil {
 		log.Z.Fatal("failed to listen.", zap.Error(err))
@@ -36,8 +40,8 @@ func main() {
 	pb.RegisterReminderServiceServer(grpcServer, server.NewReminderServer())
 	pb.RegisterAnalyticsServiceServer(grpcServer, server.NewAnalyticsServer())
 
-	// Register reflection service on gRPC server.
 	if config.AppEnvironment == enum.DEVELOPMENT {
+		// Register reflection service on gRPC server.
 		reflection.Register(grpcServer)
 	}
 
