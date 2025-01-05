@@ -6,6 +6,7 @@ option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
 
 import "proto/common.proto";
 
@@ -26,8 +27,8 @@ service UserService {
 
 // Message representing a User
 message User {
-  // ID of the User
-  int64 id = 1;
+  // UUID of the User
+  string id = 1;
   // Username of the User
   string username = 2;
   // Clearance level of the User
@@ -49,8 +50,8 @@ message User {
 }
 
 message GetUserReq {
-  // ID of the User
-  int64 id = 1;
+  // UUID of the User
+  string id = 1;
 }
 
 message GetUserResp {
@@ -60,17 +61,19 @@ message GetUserResp {
 message RegisterReq {
   // Platform where the user is registering
   common.Platform platform = 1;
-  oneof oneof_platform {
-    // Discord user ID
-    int64 discord_user_id = 2;
-    // Matrix user ID
-    string matrix_user_id = 3;
-  }
+  // User ID of the user registering (platform agnostic)
+  string platform_user_id = 2;
+  // Metadata of the platform (such as other identifiers)
+  google.protobuf.Struct platform_metadata = 3;
+  // Username of the user
+  string username = 4;
+  // Locale of the user
+  string locale = 5;
 }
 
 message RegisterResp {
-  // User ID of the registered user
-  int64 user_id = 1;
+  // User UUID of the registered user
+  string user_id = 1;
 }
 
 message GetCongratulableBirthdaysResp {
