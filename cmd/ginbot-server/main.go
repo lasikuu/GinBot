@@ -5,6 +5,7 @@ import (
 	"net"
 
 	"github.com/lasikuu/GinBot/internal/config"
+	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/server"
 	"github.com/lasikuu/GinBot/pkg/log"
@@ -16,7 +17,9 @@ func main() {
 	config.LoadEnv()
 	log.InitializeLogger(config.AppEnvironment, config.LogLevel)
 	config.SetEnv()
-	// db.EnsureLatestVersion()
+	db.InitDB()
+	defer db.CloseDB()
+	db.EnsureLatestVersion()
 
 	log.Z.Info("starting GinBot with gRPC.", zap.String("host", config.Options.GRPC.Host), zap.String("port", config.Options.GRPC.Port))
 
