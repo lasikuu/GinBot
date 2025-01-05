@@ -17,6 +17,20 @@ CREATE TABLE IF NOT EXISTS "user"
     PRIMARY KEY (id)
 );
 
+CREATE TABLE IF NOT EXISTS "platform_user"
+(
+    id               bigserial UNIQUE NOT NULL,
+    platform         int              NOT NULL,
+    platform_user_id text             NOT NULL,
+    metadata         jsonb,
+    user_id          uuid,
+    deleted          boolean          NOT NULL DEFAULT FALSE,
+    created_at       timestamp        NOT NULL DEFAULT NOW(),
+    updated_at       timestamp        NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id),
+    CONSTRAINT fk_platform_message_user FOREIGN KEY (user_id) REFERENCES "user" (id)
+);
+
 CREATE TABLE IF NOT EXISTS "platform_message"
 (
     id            bigserial UNIQUE NOT NULL,
@@ -144,7 +158,8 @@ DROP TABLE IF EXISTS "highlight";
 DROP TABLE IF EXISTS "trigger";
 DROP TABLE IF EXISTS "reminder_destination";
 DROP TABLE IF EXISTS "reminder";
-DROP TABLE IF EXISTS "file";
+DROP TABLE IF EXISTS "platform_attachment";
 DROP TABLE IF EXISTS "platform_message";
+DROP TABLE IF EXISTS "file";
 DROP TABLE IF EXISTS "user";
 -- +goose StatementEnd
