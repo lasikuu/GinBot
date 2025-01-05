@@ -59,7 +59,11 @@ func SetEnv() {
 			ServerOptions: serverOptions(),
 		},
 		DB: DBOptions{
+			Host:       dbHost(),
+			Port:       dbPort(),
 			Name:       dbName(),
+			Username:   dbUsername(),
+			Password:   dbPassword(),
 			Migrations: dbMigrationsEnabled(),
 		},
 	}
