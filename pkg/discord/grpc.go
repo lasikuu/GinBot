@@ -11,6 +11,7 @@ import (
 var UserServiceClient pb.UserServiceClient
 var UtilityServiceClient pb.UtilityServiceClient
 var ReminderServiceClient pb.ReminderServiceClient
+var EntertainmentServiceClient pb.EntertainmentServiceClient
 
 func NewDiscordClient() {
 	serverAddress := config.Options.GRPC.Host + ":" + config.Options.GRPC.Port
@@ -24,4 +25,5 @@ func NewDiscordClient() {
 	UserServiceClient = pb.NewUserServiceClient(conn)
 	UtilityServiceClient = pb.NewUtilityServiceClient(conn)
 	ReminderServiceClient = pb.NewReminderServiceClient(conn)
+	EntertainmentServiceClient = pb.NewEntertainmentServiceClient(conn)
 }
