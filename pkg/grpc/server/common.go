@@ -4,32 +4,44 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/lasikuu/GinBot/pkg/gen/proto"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
-type UserInfo struct {
-	ID int64
+type ContextMetadata struct {
+	PlatformEnum proto.PlatformEnum
+	PlatformUID  *string
 }
 
-func getMetadata(ctx context.Context) (*UserInfo, error) {
+// getMetadata extracts metadata from the context.
+// The same key can have multiple values. We only care about the first one.
+func getMetadata(ctx context.Context) (*ContextMetadata, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return nil, status.Errorf(codes.DataLoss, "failed to get metadata.")
+		return nil, status.Errorf(codes.DataLoss, "failed to get metadata")
 	}
-	userIDs := md.Get("user_id")
-
-	if len(userIDs) == 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "user_id is not provided.")
+	platformEnums := md.Get("platform_enum")
+	if len(platformEnums) == 0 || platformEnums[0] == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "platform_enum is not provided")
 	}
 
-	userID, err := strconv.ParseInt(userIDs[0], 10, 64)
+	platformEnum, err := strconv.ParseInt(platformEnums[0], 10, 64)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to parse user_id.")
+		return nil, status.Errorf(codes.InvalidArgument, "failed to parse platform_enum")
 	}
 
-	return &UserInfo{
-		ID: userID,
+	userIDs := md.Get("user_id")
+	var userID *string
+	if len(userIDs) == 0 || userIDs[0] == "" {
+		userID = nil
+	} else {
+		userID = &userIDs[0]
+	}
+
+	return &ContextMetadata{
+		PlatformEnum: proto.PlatformEnum(platformEnum),
+		PlatformUID:  userID,
 	}, nil
 }
