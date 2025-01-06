@@ -65,10 +65,12 @@ message RegisterReq {
   string platform_user_id = 2;
   // Metadata of the platform (such as other identifiers)
   google.protobuf.Struct platform_metadata = 3;
+  // Verification code for the registration. Not required for new registrations.
+  string verification_code = 4;
   // Username of the user
-  string username = 4;
+  string username = 5;
   // Locale of the user
-  string locale = 5;
+  string locale = 6;
 }
 
 message RegisterResp {
