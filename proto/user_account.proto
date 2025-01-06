@@ -60,7 +60,7 @@ message GetUserResp {
 
 message RegisterReq {
   // Platform where the user is registering
-  common.Platform platform = 1;
+  common.PlatformEnum platform = 1;
   // User ID of the user registering (platform agnostic)
   string platform_user_id = 2;
   // Metadata of the platform (such as other identifiers)
