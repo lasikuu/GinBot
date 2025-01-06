@@ -40,6 +40,7 @@ func main() {
 	pb.RegisterUtilityServiceServer(grpcServer, server.NewUtilityServer())
 	pb.RegisterReminderServiceServer(grpcServer, server.NewReminderServer())
 	pb.RegisterAnalyticsServiceServer(grpcServer, server.NewAnalyticsServer())
+	pb.RegisterEntertainmentServiceServer(grpcServer, server.NewEntertainmentServer())
 
 	if config.AppEnvironment == enum.DEVELOPMENT {
 		// Register reflection service on gRPC server.
