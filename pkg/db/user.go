@@ -30,7 +30,7 @@ func CreateUser(username string, platformEnum proto.PlatformEnum, platformUserId
 
 	_, err = db().Exec(
 		context.Background(),
-		"INSERT INTO platform_user (user_id, platform_enum, platform_uid, meta) values($1, $2, $3, $4)",
+		"INSERT INTO platform_user (user_id, platform_enum, platform_uid, user_meta) values($1, $2, $3, $4)",
 		userID, platformEnum, platformUserId, userMetadata,
 	)
 	if err != nil {
@@ -56,7 +56,7 @@ func GetUser(id string) *proto.UserAccount {
 	return &user
 }
 
-func GetUserByPlatformUID(platform proto.PlatformEnum, platformUID string) (string, string, error) {
+func GetUserByPlatformUID(platformEnum proto.PlatformEnum, platformUID string) (string, string, error) {
 	var userID string
 	var username string
 
@@ -64,9 +64,8 @@ func GetUserByPlatformUID(platform proto.PlatformEnum, platformUID string) (stri
 		context.Background(),
 		`SELECT user_account.id, user_account.username
 			FROM user_account JOIN platform_user ON user_account.id = platform_user.user_id
-			LEFT JOIN platform ON platform_user.platform_id = platform.id
-			WHERE platform.enum = $1 AND platform_user.platform_uid = $2`,
-		platform, platformUID,
+			WHERE platform_user.platform_enum = $1 AND platform_user.platform_uid = $2`,
+		platformEnum, platformUID,
 	).Scan(&userID, &username)
 	if err != nil {
 		log.Z.Debug("failed to scan user", zap.Error(err))

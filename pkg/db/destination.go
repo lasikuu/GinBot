@@ -17,9 +17,9 @@ func GetOrCreateDestinationByMeta(platformEnum *proto.PlatformEnum, platformMeta
 
 	err := db().QueryRow(
 		context.Background(),
-		`SELECT platform.id, destination.id  FROM destination
-         LEFT JOIN platform ON destination.platform_id = platform.id
-         WHERE platform.enum = $1 AND platform.meta = $2 AND destination.meta = $3`,
+		`SELECT instance.id, destination.id  FROM destination
+         LEFT JOIN instance ON destination.instance_id = instance.id
+         WHERE instance.platform_enum = $1 AND instance.instance_meta = $2 AND destination.meta = $3`,
 		platformEnum.Number(), platformMeta, destinationMeta,
 	).Scan(&platformID, &destinationID)
 
@@ -43,7 +43,7 @@ func CreateDestination(platformID int64, destinationMeta *structpb.Struct) (int6
 	var destinationID int64
 	err := db().QueryRow(
 		context.Background(),
-		"INSERT INTO destination (platform_id, meta) values($1, $2) RETURNING id",
+		"INSERT INTO destination (instance_id, meta) values($1, $2) RETURNING id",
 		platformID, destinationMeta,
 	).Scan(&destinationID)
 	if err != nil {
