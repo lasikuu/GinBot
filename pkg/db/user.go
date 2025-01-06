@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/lasikuu/GinBot/pkg/gen/proto"
@@ -11,7 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func CreateUser(username string, platform proto.PlatformEnum, platformUserId string, platformMetadata *structpb.Struct, locale *string) (*string, error) {
+func CreateUser(username string, platformEnum proto.PlatformEnum, platformUserId string, userMetadata *structpb.Struct, locale *string) (*string, error) {
 	userUUID, err := uuid.NewV7()
 	if err != nil {
 		log.Z.Error("failed to generate UUID.", zap.Error(err))
@@ -25,17 +24,17 @@ func CreateUser(username string, platform proto.PlatformEnum, platformUserId str
 		userID, username, locale,
 	)
 	if err != nil {
-		log.Z.Error("failed to insert user.", zap.Error(err))
+		log.Z.Error("failed to insert user", zap.Error(err))
 		return nil, err
 	}
 
 	_, err = db().Exec(
 		context.Background(),
-		"INSERT INTO platform_user (user_id, platform, platform_user_id, metadata) values($1, $2, $3, $4)",
-		userID, platform, platformUserId, platformMetadata,
+		"INSERT INTO platform_user (user_id, platform_enum, platform_uid, meta) values($1, $2, $3, $4)",
+		userID, platformEnum, platformUserId, userMetadata,
 	)
 	if err != nil {
-		log.Z.Error("failed to insert platform user.", zap.Error(err))
+		log.Z.Error("failed to insert platform user", zap.Error(err))
 		return nil, err
 	}
 
@@ -50,13 +49,29 @@ func GetUser(id string) *proto.UserAccount {
 	).Scan(&user)
 
 	if err != nil {
-		log.Z.Debug("failed to scan user.", zap.Error(err))
+		log.Z.Debug("failed to scan user", zap.Error(err))
 		return nil
 	}
 
 	return &user
 }
 
-func CongratulableBirthdays(now *time.Time) ([]*proto.Reminder, error) {
-	return nil, nil
+func GetUserByPlatformUID(platform proto.PlatformEnum, platformUID string) (string, string, error) {
+	var userID string
+	var username string
+
+	err := db().QueryRow(
+		context.Background(),
+		`SELECT user_account.id, user_account.username
+			FROM user_account JOIN platform_user ON user_account.id = platform_user.user_id
+			LEFT JOIN platform ON platform_user.platform_id = platform.id
+			WHERE platform.enum = $1 AND platform_user.platform_uid = $2`,
+		platform, platformUID,
+	).Scan(&userID, &username)
+	if err != nil {
+		log.Z.Debug("failed to scan user", zap.Error(err))
+		return "", "", err
+	}
+
+	return userID, username, nil
 }

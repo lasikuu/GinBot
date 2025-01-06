@@ -6,6 +6,10 @@ import (
 
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	"github.com/lasikuu/GinBot/pkg/log"
+	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -19,12 +23,16 @@ func NewReminderServer() *ReminderServer {
 }
 
 func (s *ReminderServer) GetReminder(ctx context.Context, req *pb.GetReminderReq) (*pb.GetReminderResp, error) {
-	userInfo, err := getMetadata(ctx)
+	_, err := getMetadata(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	reminder, err := db.GetReminder(req.Id, &userInfo.ID)
+	if req.Id == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+	}
+
+	reminder, err := db.GetReminder(*req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -44,12 +52,39 @@ func (s *ReminderServer) ListReminders(ctx context.Context, req *pb.ListReminder
 }
 
 func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateReminderReq) (*pb.CreateReminderResp, error) {
-	_, err := getMetadata(ctx)
+	// TODO: Refactor and generalize metadata and field checks, and error handling
+	meta, err := getMetadata(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if meta.PlatformUID == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "platform_uid is required")
+	}
 
-	return nil, nil
+	if req.Destination == nil ||
+		req.Destination.PlatformEnum == nil ||
+		req.Destination.PlatformMeta == nil ||
+		req.Destination.DestinationMeta == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
+	}
+
+	destinationID, err := db.GetOrCreateDestinationByMeta(req.Destination.PlatformEnum, req.Destination.PlatformMeta, req.Destination.DestinationMeta)
+	if err != nil {
+		log.Z.Error("failed to get destination by meta", zap.Error(err))
+		return nil, err
+	}
+
+	userID, _, err := db.GetUserByPlatformUID(meta.PlatformEnum, *meta.PlatformUID)
+	if err != nil {
+		log.Z.Error("failed to get user by platform uid", zap.Error(err))
+		return nil, err
+	}
+
+	reminderID, err := db.CreateReminder(req, userID, destinationID)
+
+	return &pb.CreateReminderResp{
+		Id: &reminderID,
+	}, nil
 }
 
 func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteReminderReq) (*emptypb.Empty, error) {
