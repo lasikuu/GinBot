@@ -3,13 +3,14 @@ package matrix
 import (
 	"context"
 	"errors"
+	"os"
+	"os/signal"
+	"sync"
+
 	"google.golang.org/protobuf/types/known/emptypb"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
-	"os"
-	"os/signal"
-	"sync"
 
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/log"
