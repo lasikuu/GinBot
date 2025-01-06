@@ -35,8 +35,8 @@ type ReminderServiceClient interface {
 	GetReminder(ctx context.Context, in *GetReminderReq, opts ...grpc.CallOption) (*GetReminderResp, error)
 	ListReminders(ctx context.Context, in *ListRemindersReq, opts ...grpc.CallOption) (*ListRemindersResp, error)
 	CreateReminder(ctx context.Context, in *CreateReminderReq, opts ...grpc.CallOption) (*CreateReminderResp, error)
-	UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*UpdateReminderResp, error)
-	DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*DeleteReminderResp, error)
+	UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	GetExpiredReminders(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetExpiredRemindersResp, error)
 }
 
@@ -78,9 +78,9 @@ func (c *reminderServiceClient) CreateReminder(ctx context.Context, in *CreateRe
 	return out, nil
 }
 
-func (c *reminderServiceClient) UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*UpdateReminderResp, error) {
+func (c *reminderServiceClient) UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(UpdateReminderResp)
+	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, ReminderService_UpdateReminder_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -88,9 +88,9 @@ func (c *reminderServiceClient) UpdateReminder(ctx context.Context, in *UpdateRe
 	return out, nil
 }
 
-func (c *reminderServiceClient) DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*DeleteReminderResp, error) {
+func (c *reminderServiceClient) DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DeleteReminderResp)
+	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, ReminderService_DeleteReminder_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -115,8 +115,8 @@ type ReminderServiceServer interface {
 	GetReminder(context.Context, *GetReminderReq) (*GetReminderResp, error)
 	ListReminders(context.Context, *ListRemindersReq) (*ListRemindersResp, error)
 	CreateReminder(context.Context, *CreateReminderReq) (*CreateReminderResp, error)
-	UpdateReminder(context.Context, *UpdateReminderReq) (*UpdateReminderResp, error)
-	DeleteReminder(context.Context, *DeleteReminderReq) (*DeleteReminderResp, error)
+	UpdateReminder(context.Context, *UpdateReminderReq) (*emptypb.Empty, error)
+	DeleteReminder(context.Context, *DeleteReminderReq) (*emptypb.Empty, error)
 	GetExpiredReminders(context.Context, *emptypb.Empty) (*GetExpiredRemindersResp, error)
 	mustEmbedUnimplementedReminderServiceServer()
 }
@@ -137,10 +137,10 @@ func (UnimplementedReminderServiceServer) ListReminders(context.Context, *ListRe
 func (UnimplementedReminderServiceServer) CreateReminder(context.Context, *CreateReminderReq) (*CreateReminderResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateReminder not implemented")
 }
-func (UnimplementedReminderServiceServer) UpdateReminder(context.Context, *UpdateReminderReq) (*UpdateReminderResp, error) {
+func (UnimplementedReminderServiceServer) UpdateReminder(context.Context, *UpdateReminderReq) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateReminder not implemented")
 }
-func (UnimplementedReminderServiceServer) DeleteReminder(context.Context, *DeleteReminderReq) (*DeleteReminderResp, error) {
+func (UnimplementedReminderServiceServer) DeleteReminder(context.Context, *DeleteReminderReq) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteReminder not implemented")
 }
 func (UnimplementedReminderServiceServer) GetExpiredReminders(context.Context, *emptypb.Empty) (*GetExpiredRemindersResp, error) {

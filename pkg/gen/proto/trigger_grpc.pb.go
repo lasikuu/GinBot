@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -23,7 +24,7 @@ const (
 	TriggerService_GetTrigger_FullMethodName    = "/ginbot.trigger.TriggerService/GetTrigger"
 	TriggerService_ListTriggers_FullMethodName  = "/ginbot.trigger.TriggerService/ListTriggers"
 	TriggerService_CreateTrigger_FullMethodName = "/ginbot.trigger.TriggerService/CreateTrigger"
-	TriggerService_ModifyTrigger_FullMethodName = "/ginbot.trigger.TriggerService/ModifyTrigger"
+	TriggerService_UpdateTrigger_FullMethodName = "/ginbot.trigger.TriggerService/UpdateTrigger"
 	TriggerService_DeleteTrigger_FullMethodName = "/ginbot.trigger.TriggerService/DeleteTrigger"
 )
 
@@ -35,8 +36,8 @@ type TriggerServiceClient interface {
 	GetTrigger(ctx context.Context, in *GetTriggerReq, opts ...grpc.CallOption) (*GetTriggerResp, error)
 	ListTriggers(ctx context.Context, in *ListTriggersReq, opts ...grpc.CallOption) (*ListTriggersResp, error)
 	CreateTrigger(ctx context.Context, in *CreateTriggerReq, opts ...grpc.CallOption) (*CreateTriggerResp, error)
-	ModifyTrigger(ctx context.Context, in *ModifyTriggerReq, opts ...grpc.CallOption) (*ModifyTriggerResp, error)
-	DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*DeleteTriggerResp, error)
+	UpdateTrigger(ctx context.Context, in *UpdateTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type triggerServiceClient struct {
@@ -87,19 +88,19 @@ func (c *triggerServiceClient) CreateTrigger(ctx context.Context, in *CreateTrig
 	return out, nil
 }
 
-func (c *triggerServiceClient) ModifyTrigger(ctx context.Context, in *ModifyTriggerReq, opts ...grpc.CallOption) (*ModifyTriggerResp, error) {
+func (c *triggerServiceClient) UpdateTrigger(ctx context.Context, in *UpdateTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ModifyTriggerResp)
-	err := c.cc.Invoke(ctx, TriggerService_ModifyTrigger_FullMethodName, in, out, cOpts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, TriggerService_UpdateTrigger_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *triggerServiceClient) DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*DeleteTriggerResp, error) {
+func (c *triggerServiceClient) DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DeleteTriggerResp)
+	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, TriggerService_DeleteTrigger_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -115,8 +116,8 @@ type TriggerServiceServer interface {
 	GetTrigger(context.Context, *GetTriggerReq) (*GetTriggerResp, error)
 	ListTriggers(context.Context, *ListTriggersReq) (*ListTriggersResp, error)
 	CreateTrigger(context.Context, *CreateTriggerReq) (*CreateTriggerResp, error)
-	ModifyTrigger(context.Context, *ModifyTriggerReq) (*ModifyTriggerResp, error)
-	DeleteTrigger(context.Context, *DeleteTriggerReq) (*DeleteTriggerResp, error)
+	UpdateTrigger(context.Context, *UpdateTriggerReq) (*emptypb.Empty, error)
+	DeleteTrigger(context.Context, *DeleteTriggerReq) (*emptypb.Empty, error)
 	mustEmbedUnimplementedTriggerServiceServer()
 }
 
@@ -139,10 +140,10 @@ func (UnimplementedTriggerServiceServer) ListTriggers(context.Context, *ListTrig
 func (UnimplementedTriggerServiceServer) CreateTrigger(context.Context, *CreateTriggerReq) (*CreateTriggerResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateTrigger not implemented")
 }
-func (UnimplementedTriggerServiceServer) ModifyTrigger(context.Context, *ModifyTriggerReq) (*ModifyTriggerResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ModifyTrigger not implemented")
+func (UnimplementedTriggerServiceServer) UpdateTrigger(context.Context, *UpdateTriggerReq) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateTrigger not implemented")
 }
-func (UnimplementedTriggerServiceServer) DeleteTrigger(context.Context, *DeleteTriggerReq) (*DeleteTriggerResp, error) {
+func (UnimplementedTriggerServiceServer) DeleteTrigger(context.Context, *DeleteTriggerReq) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteTrigger not implemented")
 }
 func (UnimplementedTriggerServiceServer) mustEmbedUnimplementedTriggerServiceServer() {}
@@ -238,20 +239,20 @@ func _TriggerService_CreateTrigger_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
-func _TriggerService_ModifyTrigger_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ModifyTriggerReq)
+func _TriggerService_UpdateTrigger_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateTriggerReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(TriggerServiceServer).ModifyTrigger(ctx, in)
+		return srv.(TriggerServiceServer).UpdateTrigger(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: TriggerService_ModifyTrigger_FullMethodName,
+		FullMethod: TriggerService_UpdateTrigger_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TriggerServiceServer).ModifyTrigger(ctx, req.(*ModifyTriggerReq))
+		return srv.(TriggerServiceServer).UpdateTrigger(ctx, req.(*UpdateTriggerReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -298,8 +299,8 @@ var TriggerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _TriggerService_CreateTrigger_Handler,
 		},
 		{
-			MethodName: "ModifyTrigger",
-			Handler:    _TriggerService_ModifyTrigger_Handler,
+			MethodName: "UpdateTrigger",
+			Handler:    _TriggerService_UpdateTrigger_Handler,
 		},
 		{
 			MethodName: "DeleteTrigger",
