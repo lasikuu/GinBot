@@ -3,7 +3,6 @@ package matrix
 import (
 	"context"
 	"errors"
-	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
@@ -34,7 +33,7 @@ func InitializeMatrix() {
 
 		lastRoomID = evt.RoomID
 		if evt.Content.AsMessage().Body == "!healthcheck" {
-			resp, err := client.UtilityServiceClient.HealthCheck(ctx, &emptypb.Empty{})
+			resp, err := UtilityServiceClient.HealthCheck(ctx, &emptypb.Empty{})
 			if err != nil {
 				log.Z.Error("failed to call HealthCheck", zap.Error(err))
 				return

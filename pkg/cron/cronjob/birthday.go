@@ -2,15 +2,14 @@ package cronjob
 
 import (
 	"context"
-
-	"github.com/lasikuu/GinBot/pkg/grpc/client"
+	"github.com/lasikuu/GinBot/pkg/discord"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 func CongratulateBirthday() {
-	resp, err := client.UserServiceClient.GetCongratulableBirthdays(context.Background(), &emptypb.Empty{})
+	resp, err := discord.UserServiceClient.GetCongratulableBirthdays(context.Background(), &emptypb.Empty{})
 	if err != nil {
 		log.Z.Error("failed to call GetExpiredReminders.", zap.Error(err))
 		return

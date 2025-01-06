@@ -1,4 +1,4 @@
-package client
+package matrix
 
 import (
 	"github.com/lasikuu/GinBot/internal/config"
@@ -7,6 +7,10 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
+
+var UserServiceClient pb.UserServiceClient
+var UtilityServiceClient pb.UtilityServiceClient
+var ReminderServiceClient pb.ReminderServiceClient
 
 func NewMatrixClient() {
 	serverAddress := config.Options.GRPC.Host + ":" + config.Options.GRPC.Port

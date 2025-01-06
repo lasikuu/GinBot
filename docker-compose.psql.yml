@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   psql:
     image: postgres:17-alpine
@@ -9,4 +7,5 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_PASSWORD: gin123
+      - POSTGRES_PASSWORD=gin123
+      - POSTGRES_USER=ginbot
