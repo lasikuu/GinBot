@@ -56,8 +56,10 @@ message Reminder {
 message ReminderDestination {
   // Platform to send the reminder to
   common.PlatformEnum platform_enum = 1;
-  // Platform meta information such as Server ID, Channel ID etc.
+  // Platform meta information such as Server ID etc.
   google.protobuf.Struct platform_meta = 2;
+  // Meta information such as Channel ID etc.
+  google.protobuf.Struct destination_meta = 3;
 }
 
 message GetReminderReq {
