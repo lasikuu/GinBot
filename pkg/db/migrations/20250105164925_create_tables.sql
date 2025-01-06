@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS "file"
     PRIMARY KEY (id)
 );
 COMMENT ON TABLE file IS 'represents a file in the system';
-COMMENT ON COLUMN "file".category IS '0=unknown, 1=metadata (no file data), 2=local file, 3=remote file';
+COMMENT ON COLUMN "file".category IS '0=unspecified, 1=metadata (no file data), 2=local file, 3=remote file';
 
 CREATE INDEX idx_file_category ON "file" (category);
 
@@ -112,12 +112,12 @@ COMMENT ON TABLE message_attachment IS 'attachments of a message';
 
 CREATE TABLE IF NOT EXISTS "destination"
 (
-    id          bigserial UNIQUE NOT NULL,
-    instance_id bigint           NOT NULL,
-    meta        jsonb            NOT NULL,
-    deleted     boolean          NOT NULL DEFAULT FALSE,
-    created_at  timestamp        NOT NULL DEFAULT NOW(),
-    updated_at  timestamp        NOT NULL DEFAULT NOW(),
+    id               bigserial UNIQUE NOT NULL,
+    instance_id      bigint           NOT NULL,
+    destination_meta jsonb            NOT NULL,
+    deleted          boolean          NOT NULL DEFAULT FALSE,
+    created_at       timestamp        NOT NULL DEFAULT NOW(),
+    updated_at       timestamp        NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id),
     CONSTRAINT fk_destination_instance FOREIGN KEY (instance_id) REFERENCES "instance" (id) ON DELETE CASCADE
 );
@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS "reminder"
     timezone       text        NOT NULL,
     repeat_cron    text,
     destination_id bigint      NOT NULL,
-    status         int         NOT NULL DEFAULT 0,
+    status         int         NOT NULL DEFAULT 1,
     user_id        uuid,
     message        text,
     parent_id      int,
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS "reminder"
     CONSTRAINT fk_reminder_user FOREIGN KEY (user_id) REFERENCES "user_account" (id) ON DELETE CASCADE
 );
 COMMENT ON TABLE reminder IS 'reminders set by users';
-COMMENT ON COLUMN "reminder".status IS '0=pending, 1=sent, 2=delivered, 3=failed';
+COMMENT ON COLUMN "reminder".status IS 'unspecified=0, 1=pending, 2=sent, 3=delivered, 4=failed';
 
 CREATE INDEX idx_reminder_datetime ON reminder (datetime);
 CREATE INDEX idx_reminder_status ON reminder (status);
@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS "linked"
 );
 COMMENT ON TABLE linked IS 'sent links and files to determine if they have already been sent';
 COMMENT ON COLUMN "linked".instance_meta IS 'instance specific metadata (user id, msg id, channel id etc.)';
-COMMENT ON COLUMN "linked".category IS '0=unknown, 1=url, 2=file';
+COMMENT ON COLUMN "linked".category IS '0=unspecified, 1=url, 2=file';
 
 CREATE INDEX idx_linked_category ON "linked" (category);
 
