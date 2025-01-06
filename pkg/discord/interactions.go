@@ -3,10 +3,12 @@ package discord
 import (
 	"context"
 	"errors"
+	"slices"
+
 	"github.com/bwmarrin/discordgo"
+	"github.com/lasikuu/GinBot/pkg/gen/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"google.golang.org/grpc/metadata"
-	"slices"
 )
 
 func interactionContext(i *discordgo.InteractionCreate) (context.Context, error) {
@@ -20,8 +22,8 @@ func interactionContext(i *discordgo.InteractionCreate) (context.Context, error)
 		return context.Background(), errors.New("cannot get discord user id")
 	}
 	md := metadata.Pairs(
+		"platform_enum", proto.PlatformEnum_DISCORD.String(),
 		"user_id", userID,
-		"user_clearance", "0", // TODO: Implement user clearance (e.g. 0: user, 10: member, 50: admin, 100: owner)
 	)
 	ctx := metadata.NewOutgoingContext(context.Background(), md)
 
