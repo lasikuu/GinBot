@@ -1,4 +1,4 @@
-package client
+package discord
 
 import (
 	"github.com/lasikuu/GinBot/internal/config"

@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -11,6 +13,7 @@ import (
 )
 
 type OptionsModel struct {
+	Matrix  MatrixOptions
 	Discord DiscordOptions
 	DB      DBOptions
 	GRPC    GRPCServerOptions
@@ -41,6 +44,14 @@ func LoadEnv() {
 // SetEnv sets the environment variables into Options and Credentials
 func SetEnv() {
 	Options = &OptionsModel{
+		Matrix: MatrixOptions{
+			GRPCClientOptions: GRPCClientOptions{
+				DialOptions: dialOptions(),
+			},
+			HomeServerURL: homeServerUrl(),
+			AccessToken:   accessToken(),
+			UserID:        userId(),
+		},
 		Discord: DiscordOptions{
 			GRPCClientOptions: GRPCClientOptions{
 				DialOptions: dialOptions(),
@@ -66,6 +77,12 @@ func SetEnv() {
 			Password:   dbPassword(),
 			Migrations: dbMigrationsEnabled(),
 		},
+	}
+}
+
+func dialOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: replace with secure credentials for production
 	}
 }
 
