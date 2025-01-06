@@ -52,7 +52,7 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 	return nil, nil
 }
 
-func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteReminderReq) (*pb.DeleteReminderResp, error) {
+func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteReminderReq) (*emptypb.Empty, error) {
 	_, err := getMetadata(ctx)
 	if err != nil {
 		return nil, err
@@ -61,7 +61,7 @@ func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteRemin
 	return nil, nil
 }
 
-func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateReminderReq) (*pb.UpdateReminderResp, error) {
+func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateReminderReq) (*emptypb.Empty, error) {
 	_, err := getMetadata(ctx)
 	if err != nil {
 		return nil, err

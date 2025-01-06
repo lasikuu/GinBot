@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func CreateUser(username string, platform proto.Platform, platformUserId string, platformMetadata *structpb.Struct, locale *string) (*string, error) {
+func CreateUser(username string, platform proto.PlatformEnum, platformUserId string, platformMetadata *structpb.Struct, locale *string) (*string, error) {
 	userUUID, err := uuid.NewV7()
 	if err != nil {
 		log.Z.Error("failed to generate UUID.", zap.Error(err))
