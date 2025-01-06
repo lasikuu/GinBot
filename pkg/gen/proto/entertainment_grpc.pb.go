@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -20,31 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EntertainmentService_GetDoubles_FullMethodName    = "/ginbot.entertainment.EntertainmentService/GetDoubles"
-	EntertainmentService_GetTriples_FullMethodName    = "/ginbot.entertainment.EntertainmentService/GetTriples"
-	EntertainmentService_GetQuadruples_FullMethodName = "/ginbot.entertainment.EntertainmentService/GetQuadruples"
-	EntertainmentService_GetQuintuples_FullMethodName = "/ginbot.entertainment.EntertainmentService/GetQuintuples"
-	EntertainmentService_GetSextuples_FullMethodName  = "/ginbot.entertainment.EntertainmentService/GetSextuples"
-	EntertainmentService_GetSeptuples_FullMethodName  = "/ginbot.entertainment.EntertainmentService/GetSeptuples"
-	EntertainmentService_GetOctuples_FullMethodName   = "/ginbot.entertainment.EntertainmentService/GetOctuples"
-	EntertainmentService_GetNonuples_FullMethodName   = "/ginbot.entertainment.EntertainmentService/GetNonuples"
-	EntertainmentService_GetDecuples_FullMethodName   = "/ginbot.entertainment.EntertainmentService/GetDecuples"
-	EntertainmentService_SetBirthday_FullMethodName   = "/ginbot.entertainment.EntertainmentService/SetBirthday"
+	EntertainmentService_GetRandomNumber_FullMethodName = "/ginbot.entertainment.EntertainmentService/GetRandomNumber"
+	EntertainmentService_SetBirthday_FullMethodName     = "/ginbot.entertainment.EntertainmentService/SetBirthday"
 )
 
 // EntertainmentServiceClient is the client API for EntertainmentService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type EntertainmentServiceClient interface {
-	GetDoubles(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
-	GetTriples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
-	GetQuadruples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
-	GetQuintuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
-	GetSextuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
-	GetSeptuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
-	GetOctuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
-	GetNonuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
-	GetDecuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error)
+	GetRandomNumber(ctx context.Context, in *GetRandomNumberReq, opts ...grpc.CallOption) (*GetRandomNumberResp, error)
 	SetBirthday(ctx context.Context, in *SetBirthdayReq, opts ...grpc.CallOption) (*SetBirthdayResp, error)
 }
 
@@ -56,90 +39,10 @@ func NewEntertainmentServiceClient(cc grpc.ClientConnInterface) EntertainmentSer
 	return &entertainmentServiceClient{cc}
 }
 
-func (c *entertainmentServiceClient) GetDoubles(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
+func (c *entertainmentServiceClient) GetRandomNumber(ctx context.Context, in *GetRandomNumberReq, opts ...grpc.CallOption) (*GetRandomNumberResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetDoubles_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *entertainmentServiceClient) GetTriples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetTriples_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *entertainmentServiceClient) GetQuadruples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetQuadruples_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *entertainmentServiceClient) GetQuintuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetQuintuples_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *entertainmentServiceClient) GetSextuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetSextuples_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *entertainmentServiceClient) GetSeptuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetSeptuples_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *entertainmentServiceClient) GetOctuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetOctuples_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *entertainmentServiceClient) GetNonuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetNonuples_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *entertainmentServiceClient) GetDecuples(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetDoublesPlusNResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetDoublesPlusNResp)
-	err := c.cc.Invoke(ctx, EntertainmentService_GetDecuples_FullMethodName, in, out, cOpts...)
+	out := new(GetRandomNumberResp)
+	err := c.cc.Invoke(ctx, EntertainmentService_GetRandomNumber_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -160,15 +63,7 @@ func (c *entertainmentServiceClient) SetBirthday(ctx context.Context, in *SetBir
 // All implementations must embed UnimplementedEntertainmentServiceServer
 // for forward compatibility.
 type EntertainmentServiceServer interface {
-	GetDoubles(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
-	GetTriples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
-	GetQuadruples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
-	GetQuintuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
-	GetSextuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
-	GetSeptuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
-	GetOctuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
-	GetNonuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
-	GetDecuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error)
+	GetRandomNumber(context.Context, *GetRandomNumberReq) (*GetRandomNumberResp, error)
 	SetBirthday(context.Context, *SetBirthdayReq) (*SetBirthdayResp, error)
 	mustEmbedUnimplementedEntertainmentServiceServer()
 }
@@ -180,32 +75,8 @@ type EntertainmentServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedEntertainmentServiceServer struct{}
 
-func (UnimplementedEntertainmentServiceServer) GetDoubles(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetDoubles not implemented")
-}
-func (UnimplementedEntertainmentServiceServer) GetTriples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetTriples not implemented")
-}
-func (UnimplementedEntertainmentServiceServer) GetQuadruples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetQuadruples not implemented")
-}
-func (UnimplementedEntertainmentServiceServer) GetQuintuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetQuintuples not implemented")
-}
-func (UnimplementedEntertainmentServiceServer) GetSextuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetSextuples not implemented")
-}
-func (UnimplementedEntertainmentServiceServer) GetSeptuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetSeptuples not implemented")
-}
-func (UnimplementedEntertainmentServiceServer) GetOctuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetOctuples not implemented")
-}
-func (UnimplementedEntertainmentServiceServer) GetNonuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetNonuples not implemented")
-}
-func (UnimplementedEntertainmentServiceServer) GetDecuples(context.Context, *emptypb.Empty) (*GetDoublesPlusNResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetDecuples not implemented")
+func (UnimplementedEntertainmentServiceServer) GetRandomNumber(context.Context, *GetRandomNumberReq) (*GetRandomNumberResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetRandomNumber not implemented")
 }
 func (UnimplementedEntertainmentServiceServer) SetBirthday(context.Context, *SetBirthdayReq) (*SetBirthdayResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetBirthday not implemented")
@@ -231,164 +102,20 @@ func RegisterEntertainmentServiceServer(s grpc.ServiceRegistrar, srv Entertainme
 	s.RegisterService(&EntertainmentService_ServiceDesc, srv)
 }
 
-func _EntertainmentService_GetDoubles_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+func _EntertainmentService_GetRandomNumber_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRandomNumberReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetDoubles(ctx, in)
+		return srv.(EntertainmentServiceServer).GetRandomNumber(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: EntertainmentService_GetDoubles_FullMethodName,
+		FullMethod: EntertainmentService_GetRandomNumber_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetDoubles(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _EntertainmentService_GetTriples_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetTriples(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EntertainmentService_GetTriples_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetTriples(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _EntertainmentService_GetQuadruples_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetQuadruples(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EntertainmentService_GetQuadruples_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetQuadruples(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _EntertainmentService_GetQuintuples_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetQuintuples(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EntertainmentService_GetQuintuples_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetQuintuples(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _EntertainmentService_GetSextuples_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetSextuples(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EntertainmentService_GetSextuples_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetSextuples(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _EntertainmentService_GetSeptuples_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetSeptuples(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EntertainmentService_GetSeptuples_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetSeptuples(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _EntertainmentService_GetOctuples_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetOctuples(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EntertainmentService_GetOctuples_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetOctuples(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _EntertainmentService_GetNonuples_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetNonuples(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EntertainmentService_GetNonuples_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetNonuples(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _EntertainmentService_GetDecuples_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EntertainmentServiceServer).GetDecuples(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EntertainmentService_GetDecuples_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EntertainmentServiceServer).GetDecuples(ctx, req.(*emptypb.Empty))
+		return srv.(EntertainmentServiceServer).GetRandomNumber(ctx, req.(*GetRandomNumberReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -419,40 +146,8 @@ var EntertainmentService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*EntertainmentServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "GetDoubles",
-			Handler:    _EntertainmentService_GetDoubles_Handler,
-		},
-		{
-			MethodName: "GetTriples",
-			Handler:    _EntertainmentService_GetTriples_Handler,
-		},
-		{
-			MethodName: "GetQuadruples",
-			Handler:    _EntertainmentService_GetQuadruples_Handler,
-		},
-		{
-			MethodName: "GetQuintuples",
-			Handler:    _EntertainmentService_GetQuintuples_Handler,
-		},
-		{
-			MethodName: "GetSextuples",
-			Handler:    _EntertainmentService_GetSextuples_Handler,
-		},
-		{
-			MethodName: "GetSeptuples",
-			Handler:    _EntertainmentService_GetSeptuples_Handler,
-		},
-		{
-			MethodName: "GetOctuples",
-			Handler:    _EntertainmentService_GetOctuples_Handler,
-		},
-		{
-			MethodName: "GetNonuples",
-			Handler:    _EntertainmentService_GetNonuples_Handler,
-		},
-		{
-			MethodName: "GetDecuples",
-			Handler:    _EntertainmentService_GetDecuples_Handler,
+			MethodName: "GetRandomNumber",
+			Handler:    _EntertainmentService_GetRandomNumber_Handler,
 		},
 		{
 			MethodName: "SetBirthday",

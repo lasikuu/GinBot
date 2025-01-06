@@ -7,23 +7,28 @@ option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 
-
 service EntertainmentService {
-  rpc GetDoubles(google.protobuf.Empty) returns (GetDoublesPlusNResp);
-  rpc GetTriples(google.protobuf.Empty) returns (GetDoublesPlusNResp);
-  rpc GetQuadruples(google.protobuf.Empty) returns (GetDoublesPlusNResp);
-  rpc GetQuintuples(google.protobuf.Empty) returns (GetDoublesPlusNResp);
-  rpc GetSextuples(google.protobuf.Empty) returns (GetDoublesPlusNResp);
-  rpc GetSeptuples(google.protobuf.Empty) returns (GetDoublesPlusNResp);
-  rpc GetOctuples(google.protobuf.Empty) returns (GetDoublesPlusNResp);
-  rpc GetNonuples(google.protobuf.Empty) returns (GetDoublesPlusNResp);
-  rpc GetDecuples(google.protobuf.Empty) returns (GetDoublesPlusNResp);
+  rpc GetRandomNumber(GetRandomNumberReq) returns (GetRandomNumberResp);
   rpc SetBirthday(SetBirthdayReq) returns (SetBirthdayResp);
 }
 
-message GetDoublesPlusNResp {
-  // Number padded with 0s
-  int32 number = 1;
+message GetRandomNumberReq {
+  enum REQUEST {
+    DOUBLES = 0;
+    INTERVAL = 1;
+    ANY = 2;
+  };
+
+  REQUEST type = 3;
+  string msg_id = 5;
+
+  int32 digits = 6;
+  int64 lower = 7;
+  int64 upper = 8;
+}
+
+message GetRandomNumberResp {
+  string number = 1;
 }
 
 message SetBirthdayReq {
