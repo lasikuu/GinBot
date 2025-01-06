@@ -16,6 +16,6 @@ func Remind() {
 	}
 
 	for _, reminder := range resp.GetReminders() {
-		log.Z.Debug("reminding.", zap.Int64("id", *reminder.Id))
+		log.Z.Debug("reminding.", zap.String("id", *reminder.Id))
 	}
 }
