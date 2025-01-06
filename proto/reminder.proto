@@ -28,8 +28,8 @@ service ReminderService {
 
 // Message representing a Reminder
 message Reminder {
-  // ID of the Reminder
-  int64 id = 1;
+  // Reminder UUIDv7
+  string id = 1;
   // Date and time of the Reminder (UTC+0)
   google.protobuf.Timestamp datetime = 2;
   // Timezone of the Reminder
@@ -61,8 +61,8 @@ message ReminderDestination {
 }
 
 message GetReminderReq {
-  // ID of the Reminder
-  int64 id = 1;
+  // Reminder UUIDv7
+  string id = 1;
 }
 
 message GetReminderResp {
@@ -108,13 +108,13 @@ message CreateReminderReq {
 }
 
 message CreateReminderResp {
-  // ID of the Reminder
-  int64 id = 1;
+  // Reminder UUIDv7
+  string id = 1;
 }
 
 message UpdateReminderReq {
-  // ID of the Reminder
-  int64 id = 1;
+  // Reminder UUIDv7
+  string id = 1;
   // Date and time of the Reminder (UTC+0)
   google.protobuf.Timestamp datetime = 2;
   // Timezone of the Reminder
@@ -132,7 +132,7 @@ message UpdateReminderReq {
 }
 
 message DeleteReminderReq {
-  int64 id = 1;
+  string id = 1;
 }
 
 message GetExpiredRemindersResp {
