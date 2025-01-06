@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.2
-// source: proto/entertainment.proto
+// source: ginbot/proto/entertainment.proto
 
 package proto
 
@@ -19,8 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EntertainmentService_GetRandomNumber_FullMethodName = "/ginbot.entertainment.EntertainmentService/GetRandomNumber"
-	EntertainmentService_SetBirthday_FullMethodName     = "/ginbot.entertainment.EntertainmentService/SetBirthday"
+	EntertainmentService_GetRandomNumber_FullMethodName = "/ginbot.proto.EntertainmentService/GetRandomNumber"
+	EntertainmentService_SetBirthday_FullMethodName     = "/ginbot.proto.EntertainmentService/SetBirthday"
 )
 
 // EntertainmentServiceClient is the client API for EntertainmentService service.
@@ -142,7 +142,7 @@ func _EntertainmentService_SetBirthday_Handler(srv interface{}, ctx context.Cont
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var EntertainmentService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.entertainment.EntertainmentService",
+	ServiceName: "ginbot.proto.EntertainmentService",
 	HandlerType: (*EntertainmentServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -155,5 +155,5 @@ var EntertainmentService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/entertainment.proto",
+	Metadata: "ginbot/proto/entertainment.proto",
 }

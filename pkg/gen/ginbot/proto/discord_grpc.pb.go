@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.2
-// source: proto/discord.proto
+// source: ginbot/proto/discord.proto
 
 package proto
 
@@ -118,5 +118,5 @@ var DiscordService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/discord.proto",
+	Metadata: "ginbot/proto/discord.proto",
 }

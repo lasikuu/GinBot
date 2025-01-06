@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.2
-// source: proto/instance.proto
+// source: ginbot/proto/instance.proto
 
 package proto
 
@@ -20,11 +20,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	InstanceService_GetInstance_FullMethodName    = "/ginbot.instance.InstanceService/GetInstance"
-	InstanceService_ListInstances_FullMethodName  = "/ginbot.instance.InstanceService/ListInstances"
-	InstanceService_CreateInstance_FullMethodName = "/ginbot.instance.InstanceService/CreateInstance"
-	InstanceService_UpdateInstance_FullMethodName = "/ginbot.instance.InstanceService/UpdateInstance"
-	InstanceService_DeleteInstance_FullMethodName = "/ginbot.instance.InstanceService/DeleteInstance"
+	InstanceService_GetInstance_FullMethodName    = "/ginbot.proto.InstanceService/GetInstance"
+	InstanceService_ListInstances_FullMethodName  = "/ginbot.proto.InstanceService/ListInstances"
+	InstanceService_CreateInstance_FullMethodName = "/ginbot.proto.InstanceService/CreateInstance"
+	InstanceService_UpdateInstance_FullMethodName = "/ginbot.proto.InstanceService/UpdateInstance"
+	InstanceService_DeleteInstance_FullMethodName = "/ginbot.proto.InstanceService/DeleteInstance"
 )
 
 // InstanceServiceClient is the client API for InstanceService service.
@@ -245,7 +245,7 @@ func _InstanceService_DeleteInstance_Handler(srv interface{}, ctx context.Contex
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var InstanceService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.instance.InstanceService",
+	ServiceName: "ginbot.proto.InstanceService",
 	HandlerType: (*InstanceServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -270,5 +270,5 @@ var InstanceService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/instance.proto",
+	Metadata: "ginbot/proto/instance.proto",
 }

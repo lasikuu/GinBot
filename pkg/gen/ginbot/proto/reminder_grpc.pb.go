@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.2
-// source: proto/reminder.proto
+// source: ginbot/proto/reminder.proto
 
 package proto
 
@@ -20,12 +20,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ReminderService_GetReminder_FullMethodName         = "/ginbot.reminder.ReminderService/GetReminder"
-	ReminderService_ListReminders_FullMethodName       = "/ginbot.reminder.ReminderService/ListReminders"
-	ReminderService_CreateReminder_FullMethodName      = "/ginbot.reminder.ReminderService/CreateReminder"
-	ReminderService_UpdateReminder_FullMethodName      = "/ginbot.reminder.ReminderService/UpdateReminder"
-	ReminderService_DeleteReminder_FullMethodName      = "/ginbot.reminder.ReminderService/DeleteReminder"
-	ReminderService_GetExpiredReminders_FullMethodName = "/ginbot.reminder.ReminderService/GetExpiredReminders"
+	ReminderService_GetReminder_FullMethodName         = "/ginbot.proto.ReminderService/GetReminder"
+	ReminderService_ListReminders_FullMethodName       = "/ginbot.proto.ReminderService/ListReminders"
+	ReminderService_CreateReminder_FullMethodName      = "/ginbot.proto.ReminderService/CreateReminder"
+	ReminderService_UpdateReminder_FullMethodName      = "/ginbot.proto.ReminderService/UpdateReminder"
+	ReminderService_DeleteReminder_FullMethodName      = "/ginbot.proto.ReminderService/DeleteReminder"
+	ReminderService_GetExpiredReminders_FullMethodName = "/ginbot.proto.ReminderService/GetExpiredReminders"
 )
 
 // ReminderServiceClient is the client API for ReminderService service.
@@ -279,7 +279,7 @@ func _ReminderService_GetExpiredReminders_Handler(srv interface{}, ctx context.C
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ReminderService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.reminder.ReminderService",
+	ServiceName: "ginbot.proto.ReminderService",
 	HandlerType: (*ReminderServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -308,5 +308,5 @@ var ReminderService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/reminder.proto",
+	Metadata: "ginbot/proto/reminder.proto",
 }

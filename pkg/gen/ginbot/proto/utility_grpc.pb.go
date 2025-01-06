@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.2
-// source: proto/utility.proto
+// source: ginbot/proto/utility.proto
 
 package proto
 
@@ -20,9 +20,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	UtilityService_HealthCheck_FullMethodName = "/ginbot.utility.UtilityService/HealthCheck"
-	UtilityService_Help_FullMethodName        = "/ginbot.utility.UtilityService/Help"
-	UtilityService_Ping_FullMethodName        = "/ginbot.utility.UtilityService/Ping"
+	UtilityService_HealthCheck_FullMethodName = "/ginbot.proto.UtilityService/HealthCheck"
+	UtilityService_Help_FullMethodName        = "/ginbot.proto.UtilityService/Help"
+	UtilityService_Ping_FullMethodName        = "/ginbot.proto.UtilityService/Ping"
 )
 
 // UtilityServiceClient is the client API for UtilityService service.
@@ -177,7 +177,7 @@ func _UtilityService_Ping_Handler(srv interface{}, ctx context.Context, dec func
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var UtilityService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.utility.UtilityService",
+	ServiceName: "ginbot.proto.UtilityService",
 	HandlerType: (*UtilityServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -194,5 +194,5 @@ var UtilityService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/utility.proto",
+	Metadata: "ginbot/proto/utility.proto",
 }

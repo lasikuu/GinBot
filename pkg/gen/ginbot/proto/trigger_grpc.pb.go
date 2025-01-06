@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.2
-// source: proto/trigger.proto
+// source: ginbot/proto/trigger.proto
 
 package proto
 
@@ -20,12 +20,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TriggerService_TryTrigger_FullMethodName    = "/ginbot.trigger.TriggerService/TryTrigger"
-	TriggerService_GetTrigger_FullMethodName    = "/ginbot.trigger.TriggerService/GetTrigger"
-	TriggerService_ListTriggers_FullMethodName  = "/ginbot.trigger.TriggerService/ListTriggers"
-	TriggerService_CreateTrigger_FullMethodName = "/ginbot.trigger.TriggerService/CreateTrigger"
-	TriggerService_UpdateTrigger_FullMethodName = "/ginbot.trigger.TriggerService/UpdateTrigger"
-	TriggerService_DeleteTrigger_FullMethodName = "/ginbot.trigger.TriggerService/DeleteTrigger"
+	TriggerService_TryTrigger_FullMethodName    = "/ginbot.proto.TriggerService/TryTrigger"
+	TriggerService_GetTrigger_FullMethodName    = "/ginbot.proto.TriggerService/GetTrigger"
+	TriggerService_ListTriggers_FullMethodName  = "/ginbot.proto.TriggerService/ListTriggers"
+	TriggerService_CreateTrigger_FullMethodName = "/ginbot.proto.TriggerService/CreateTrigger"
+	TriggerService_UpdateTrigger_FullMethodName = "/ginbot.proto.TriggerService/UpdateTrigger"
+	TriggerService_DeleteTrigger_FullMethodName = "/ginbot.proto.TriggerService/DeleteTrigger"
 )
 
 // TriggerServiceClient is the client API for TriggerService service.
@@ -279,7 +279,7 @@ func _TriggerService_DeleteTrigger_Handler(srv interface{}, ctx context.Context,
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var TriggerService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.trigger.TriggerService",
+	ServiceName: "ginbot.proto.TriggerService",
 	HandlerType: (*TriggerServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -308,5 +308,5 @@ var TriggerService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/trigger.proto",
+	Metadata: "ginbot/proto/trigger.proto",
 }

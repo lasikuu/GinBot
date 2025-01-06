@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.2
-// source: proto/analytics.proto
+// source: ginbot/proto/analytics.proto
 
 package proto
 
@@ -19,8 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AnalyticsService_CreateActionRecord_FullMethodName = "/ginbot.analytics.AnalyticsService/CreateActionRecord"
-	AnalyticsService_ListActionRecords_FullMethodName  = "/ginbot.analytics.AnalyticsService/ListActionRecords"
+	AnalyticsService_CreateActionRecord_FullMethodName = "/ginbot.proto.AnalyticsService/CreateActionRecord"
+	AnalyticsService_ListActionRecords_FullMethodName  = "/ginbot.proto.AnalyticsService/ListActionRecords"
 )
 
 // AnalyticsServiceClient is the client API for AnalyticsService service.
@@ -142,7 +142,7 @@ func _AnalyticsService_ListActionRecords_Handler(srv interface{}, ctx context.Co
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var AnalyticsService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.analytics.AnalyticsService",
+	ServiceName: "ginbot.proto.AnalyticsService",
 	HandlerType: (*AnalyticsServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -155,5 +155,5 @@ var AnalyticsService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/analytics.proto",
+	Metadata: "ginbot/proto/analytics.proto",
 }
