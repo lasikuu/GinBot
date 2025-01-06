@@ -7,6 +7,7 @@ option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
+import "buf/validate/validate.proto";
 
 import "ginbot/proto/platform.proto";
 
@@ -56,11 +57,17 @@ message Reminder {
 // Destination to send the reminder to
 message ReminderDestination {
   // Platform to send the reminder to
-  common.PlatformEnum platform_enum = 1;
+  Platform platform_enum = 1 [
+    (buf.validate.field).required = true
+  ];
   // Platform meta information such as Server ID etc.
-  google.protobuf.Struct platform_meta = 2;
+  google.protobuf.Struct instance_meta = 2 [
+    (buf.validate.field).required = true
+  ];
   // Meta information such as Channel ID etc.
-  google.protobuf.Struct destination_meta = 3;
+  google.protobuf.Struct destination_meta = 3 [
+    (buf.validate.field).required = true
+  ];
 }
 
 message GetReminderReq {
@@ -95,19 +102,24 @@ message ListRemindersResp {
 
 message CreateReminderReq {
   // Date and time of the Reminder (UTC+0)
-  google.protobuf.Timestamp datetime = 2;
+  google.protobuf.Timestamp datetime = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).timestamp.gt_now = true
+  ];
   // Timezone of the Reminder
-  string timezone = 3;
+  string timezone = 2;
   // Reminder message
-  string message = 4;
-  // User ID of the creator
-  int64 user_id = 5;
+  string message = 3;
   // Destinations to send the reminder to
-  ReminderDestination destination = 6;
+  ReminderDestination destination = 4;
   // Repeat in cron format
-  string repeat_cron = 7;
+  string repeat_cron = 5 [
+    (buf.validate.field).string.pattern = "/(@(annually|yearly|monthly|weekly|daily|hourly|reboot))|(@every (\\d+(ns|us|µs|ms|s|m|h))+)|((((\\d+,)+\\d+|(\\d+(\\/|-)\\d+)|\\d+|\\*) ?){5,7})/"
+  ];
   // Parent reminder ID
-  int64 parent_id = 8;
+  int64 parent_id = 6 [
+    (buf.validate.field).uint64.gt = 0
+  ];
 }
 
 message CreateReminderResp {
@@ -117,25 +129,36 @@ message CreateReminderResp {
 
 message UpdateReminderReq {
   // Reminder UUIDv7
-  string id = 1;
+  string id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
   // Date and time of the Reminder (UTC+0)
-  google.protobuf.Timestamp datetime = 2;
+  google.protobuf.Timestamp datetime = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).timestamp.gt_now = true
+  ];
   // Timezone of the Reminder
   string timezone = 3;
   // Reminder message
   string message = 4;
-  // User ID of the creator
-  int64 user_id = 5;
   // Destinations to send the reminder to
-  ReminderDestination destination = 6;
+  ReminderDestination destination = 5;
   // Repeat in cron format
-  string repeat_cron = 7;
+  string repeat_cron = 6 [
+    (buf.validate.field).string.pattern = "/(@(annually|yearly|monthly|weekly|daily|hourly|reboot))|(@every (\\d+(ns|us|µs|ms|s|m|h))+)|((((\\d+,)+\\d+|(\\d+(\\/|-)\\d+)|\\d+|\\*) ?){5,7})/"
+  ];
   // Parent reminder ID
-  int64 parent_id = 8;
+  int64 parent_id = 7 [
+    (buf.validate.field).uint64.gt = 0
+  ];
 }
 
 message DeleteReminderReq {
-  string id = 1;
+  string id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
 }
 
 message GetExpiredRemindersResp {
