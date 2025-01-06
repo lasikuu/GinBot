@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"github.com/lasikuu/GinBot/pkg/log"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type DiscordOptions struct {
@@ -22,12 +20,6 @@ type DiscordOptions struct {
 type CommandPrefixes struct {
 	Prefixes    []string
 	PrefixRegex *regexp.Regexp
-}
-
-func dialOptions() []grpc.DialOption {
-	return []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: replace with secure credentials for production
-	}
 }
 
 func ownerId() string {
