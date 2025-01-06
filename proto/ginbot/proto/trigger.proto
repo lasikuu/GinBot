@@ -1,14 +1,14 @@
 edition = "2023";
 
-package ginbot.trigger;
+package ginbot.proto;
 
-option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 
-import "proto/common.proto";
+import "ginbot/proto/platform.proto";
 
 service TriggerService {
   rpc TryTrigger(TryTriggerReq) returns (TryTriggerResp);
@@ -32,7 +32,7 @@ message Trigger {
   // User ID of the creator
   int64 user_id = 5;
   // Platform to trigger the response
-  repeated TriggerPlatform platforms = 6;
+  repeated TriggerInstance instances = 6;
   // Chance of the trigger to be triggered
   int32 chance = 7;
   // Created at
@@ -41,16 +41,16 @@ message Trigger {
   google.protobuf.Timestamp updated_at = 9;
 }
 
-message TriggerPlatform {
+message TriggerInstance {
   // Platform enum
-  common.PlatformEnum platform_enum = 1;
-  // Platform meta information such as Server ID
-  google.protobuf.Struct platform_meta = 2;
+  Platform platform_enum = 1;
+  // Instance meta information such as Server ID
+  google.protobuf.Struct instance_meta = 2;
 }
 
 message TryTriggerReq {
   // Platform to trigger the response
-  TriggerPlatform platform = 1;
+  TriggerInstance instance = 1;
   // Phrase to trigger the response
   string phrase = 2;
   // User ID of the triggerer
@@ -89,7 +89,7 @@ message ListTriggersReq {
   // User ID of the creator
   int64 user_id = 5;
   // Platforms to trigger the response on
-  repeated TriggerPlatform platforms = 6;
+  repeated TriggerInstance instances = 6;
   // Search for triggers starting from this date
   google.protobuf.Timestamp period_start = 7;
   // Search for triggers ending at this date
@@ -110,7 +110,7 @@ message CreateTriggerReq {
   // User ID of the creator
   int64 user_id = 4;
   // Platforms to trigger the response on
-  repeated TriggerPlatform platforms = 5;
+  repeated TriggerInstance instances = 5;
   // Chance of the trigger to be triggered
   int32 chance = 6;
 }
@@ -132,7 +132,7 @@ message UpdateTriggerReq {
   // User ID of the creator
   int64 user_id = 5;
   // Platforms to trigger the response on
-  repeated TriggerPlatform platforms = 6;
+  repeated TriggerInstance instances = 6;
   // Chance of the trigger to be triggered
   int32 chance = 7;
 }

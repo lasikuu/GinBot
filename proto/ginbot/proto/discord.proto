@@ -1,0 +1,27 @@
+edition = "2023";
+
+package ginbot.proto;
+
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
+
+import "google/protobuf/empty.proto";
+
+enum DiscordActivity {
+  DISCORD_ACTIVITY_PLAYING = 0;
+  DISCORD_ACTIVITY_STREAMING = 1;
+  DISCORD_ACTIVITY_LISTENING = 2;
+  DISCORD_ACTIVITY_WATCHING = 3;
+  DISCORD_ACTIVITY_CUSTOM = 4;
+  DISCORD_ACTIVITY_COMPETING = 5;
+}
+
+service DiscordService {
+  rpc SetDiscordActivityType(SetDiscordActivityTypeReq) returns (google.protobuf.Empty);
+}
+
+message SetDiscordActivityTypeReq {
+  // Status to set
+  DiscordActivity status = 1;
+  // Activity name
+  string name = 2;
+}

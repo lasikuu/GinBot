@@ -1,20 +1,21 @@
 edition = "2023";
 
-package ginbot.reminder;
+package ginbot.proto;
 
-option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 
-import "proto/common.proto";
+import "ginbot/proto/platform.proto";
 
 enum ReminderStatus {
-  PENDING = 0;
-  SENT = 1;
-  DELIVERED = 2;
-  FAILED = 3;
+  REMINDER_STATUS_UNSPECIFIED = 0;
+  REMINDER_STATUS_PENDING = 1;
+  REMINDER_STATUS_SENT = 2;
+  REMINDER_STATUS_DELIVERED = 3;
+  REMINDER_STATUS_FAILED = 4;
 }
 
 service ReminderService {

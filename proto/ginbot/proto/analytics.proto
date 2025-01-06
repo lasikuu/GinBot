@@ -1,19 +1,19 @@
 edition = "2023";
 
-package ginbot.analytics;
+package ginbot.proto;
 
-option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
 import "google/protobuf/timestamp.proto";
 
 enum ActionType {
-  UNKNOWN = 0;
-  TRIGGER_OCCURRED = 1;
-  TRIGGER_CALLED = 2;
-  REMINDER_CREATED = 3;
-  REMINDER_DELIVERED = 4;
-  SQUAD_RALLIED = 5;
-  SQUAD_FORMED = 6;
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_TRIGGER_OCCURRED = 1;
+  ACTION_TYPE_TRIGGER_CALLED = 2;
+  ACTION_TYPE_REMINDER_CREATED = 3;
+  ACTION_TYPE_REMINDER_DELIVERED = 4;
+  ACTION_TYPE_SQUAD_RALLIED = 5;
+  ACTION_TYPE_SQUAD_FORMED = 6;
 }
 
 service AnalyticsService {

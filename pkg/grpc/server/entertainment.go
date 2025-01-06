@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 )
 
 type EntertainmentServer struct {

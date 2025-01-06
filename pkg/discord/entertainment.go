@@ -1,11 +1,12 @@
 package discord
 
 import (
+	"strings"
+
 	"github.com/bwmarrin/discordgo"
-	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"strings"
 )
 
 var EntertainmentCommands = []*discordgo.ApplicationCommand{

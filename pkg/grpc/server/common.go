@@ -4,14 +4,14 @@ import (
 	"context"
 	"strconv"
 
-	"github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
 type ContextMetadata struct {
-	PlatformEnum proto.PlatformEnum
+	PlatformEnum pb.Platform
 	PlatformUID  *string
 }
 
@@ -41,7 +41,7 @@ func getMetadata(ctx context.Context) (*ContextMetadata, error) {
 	}
 
 	return &ContextMetadata{
-		PlatformEnum: proto.PlatformEnum(platformEnum),
+		PlatformEnum: pb.Platform(platformEnum),
 		PlatformUID:  userID,
 	}, nil
 }

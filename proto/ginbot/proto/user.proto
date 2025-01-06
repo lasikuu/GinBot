@@ -1,22 +1,22 @@
 edition = "2023";
 
-package ginbot.user_account;
+package ginbot.proto;
 
-option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 
-import "proto/common.proto";
+import "ginbot/proto/platform.proto";
 
-enum UserClearance {
-  UNKNOWN = 0;
-  REGISTERED = 1;
-  MEMBER = 10;
-  MODERATOR = 20;
-  ADMINISTRATOR = 50;
-  OWNER = 100;
+enum Clearance {
+  CLEARANCE_UNSPECIFIED = 0;
+  CLEARANCE_REGISTERED = 1;
+  CLEARANCE_MEMBER = 10;
+  CLEARANCE_MODERATOR = 20;
+  CLEARANCE_ADMINISTRATOR = 50;
+  CLEARANCE_OWNER = 100;
 }
 
 service UserService {
@@ -26,13 +26,13 @@ service UserService {
 }
 
 // Message representing a User
-message UserAccount {
+message User {
   // UUID of the User
   string id = 1;
   // Username of the User
   string username = 2;
   // Clearance level of the User
-  UserClearance clearance = 3;
+  Clearance clearance = 3;
   // Avatar URL of the User
   string avatar = 4;
   // Locale of the User
@@ -55,12 +55,12 @@ message GetUserReq {
 }
 
 message GetUserResp {
-  UserAccount user = 1;
+  User user = 1;
 }
 
 message RegisterReq {
   // Platform where the user is registering
-  common.PlatformEnum platform = 1;
+  Platform platform = 1;
   // User ID of the user registering (platform agnostic)
   string platform_user_id = 2;
   // Metadata of the platform (such as other identifiers)
@@ -79,5 +79,5 @@ message RegisterResp {
 }
 
 message GetCongratulableBirthdaysResp {
-  repeated UserAccount users = 1;
+  repeated User users = 1;
 }

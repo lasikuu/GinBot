@@ -3,6 +3,7 @@ module github.com/lasikuu/GinBot
 go 1.23
 
 require (
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.1-20241127180247-a33202765966.1
 	github.com/bwmarrin/discordgo v0.28.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.2

@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 )
 
 type AnalyticsServer struct {

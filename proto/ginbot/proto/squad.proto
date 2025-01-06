@@ -1,0 +1,13 @@
+edition = "2023";
+
+package ginbot.proto;
+
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
+
+service SquadService {
+}
+
+// Message representing a Squad
+message Squad {
+  // TODO
+}

@@ -1,0 +1,15 @@
+edition = "2023";
+
+package ginbot.proto;
+
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
+
+enum Platform {
+  PLATFORM_UNSPECIFIED = 0;
+  PLATFORM_DISCORD = 1;
+  PLATFORM_MATRIX_PROTOCOL = 2;
+  PLATFORM_TELEGRAM = 3;
+  PLATFORM_LINE = 4;
+  PLATFORM_EMAIL = 5;
+  PLATFORM_SNAIL_MAIL = 6;
+}

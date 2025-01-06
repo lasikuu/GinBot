@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/lasikuu/GinBot/pkg/db"
-	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"

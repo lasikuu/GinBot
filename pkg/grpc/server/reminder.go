@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/lasikuu/GinBot/pkg/db"
-	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -63,12 +63,12 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 
 	if req.Destination == nil ||
 		req.Destination.PlatformEnum == nil ||
-		req.Destination.PlatformMeta == nil ||
+		req.Destination.InstanceMeta == nil ||
 		req.Destination.DestinationMeta == nil {
 		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
 	}
 
-	destinationID, err := db.GetOrCreateDestinationByMeta(req.Destination.PlatformEnum, req.Destination.PlatformMeta, req.Destination.DestinationMeta)
+	destinationID, err := db.GetOrCreateDestinationByMeta(req.Destination.PlatformEnum, req.Destination.InstanceMeta, req.Destination.DestinationMeta)
 	if err != nil {
 		log.Z.Error("failed to get destination by meta", zap.Error(err))
 		return nil, err

@@ -5,13 +5,13 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func GetOrCreateDestinationByMeta(platformEnum *proto.PlatformEnum, platformMeta *structpb.Struct, destinationMeta *structpb.Struct) (int64, error) {
+func GetOrCreateDestinationByMeta(platformEnum *pb.Platform, instanceMeta *structpb.Struct, destinationMeta *structpb.Struct) (int64, error) {
 	var platformID int64
 	var destinationID int64
 
@@ -20,7 +20,7 @@ func GetOrCreateDestinationByMeta(platformEnum *proto.PlatformEnum, platformMeta
 		`SELECT instance.id, destination.id  FROM destination
          LEFT JOIN instance ON destination.instance_id = instance.id
          WHERE instance.platform_enum = $1 AND instance.instance_meta = $2 AND destination.meta = $3`,
-		platformEnum.Number(), platformMeta, destinationMeta,
+		platformEnum.Number(), instanceMeta, destinationMeta,
 	).Scan(&platformID, &destinationID)
 
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"google.golang.org/grpc/metadata"
 )
@@ -22,7 +22,7 @@ func interactionContext(i *discordgo.InteractionCreate) (context.Context, error)
 		return context.Background(), errors.New("cannot get discord user id")
 	}
 	md := metadata.Pairs(
-		"platform_enum", proto.PlatformEnum_DISCORD.String(),
+		"platform_enum", pb.Platform_PLATFORM_DISCORD.String(),
 		"user_id", userID,
 	)
 	ctx := metadata.NewOutgoingContext(context.Background(), md)

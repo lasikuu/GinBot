@@ -7,7 +7,7 @@ import (
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/db"
 	"github.com/lasikuu/GinBot/pkg/enum"
-	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/server"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"

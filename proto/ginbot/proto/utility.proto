@@ -1,15 +1,15 @@
 edition = "2023";
 
-package ginbot.utility;
+package ginbot.proto;
 
-option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
 import "google/protobuf/empty.proto";
 
 enum HealthStatus {
-  UNKNOWN = 0;
-  OK = 1;
-  ERROR = 2;
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_OK = 1;
+  HEALTH_STATUS_ERROR = 2;
 }
 
 service UtilityService {

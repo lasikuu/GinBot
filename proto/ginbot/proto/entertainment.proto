@@ -1,11 +1,10 @@
 edition = "2023";
 
-package ginbot.entertainment;
+package ginbot.proto;
 
-option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
 import "google/protobuf/timestamp.proto";
-import "google/protobuf/empty.proto";
 
 service EntertainmentService {
   rpc GetRandomNumber(GetRandomNumberReq) returns (GetRandomNumberResp);

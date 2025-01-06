@@ -1,14 +1,14 @@
 edition = "2023";
 
-package ginbot.instance;
+package ginbot.proto;
 
-option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 
-import "proto/common.proto";
+import "ginbot/proto/platform.proto";
 
 service InstanceService {
   rpc GetInstance(GetInstanceReq) returns (GetInstanceResp);
@@ -22,7 +22,7 @@ message Instance {
   // Internal Instance ID
   int64 id = 1;
   // Instance enum
-  common.PlatformEnum platform_enum = 2;
+  Platform platform_enum = 2;
   // Instance meta information such as Server ID etc.
   google.protobuf.Struct instance_meta = 3;
   // Default channel for the instance (if applicable) for announcements etc.
@@ -51,7 +51,7 @@ message ListInstancesResp {
 
 message CreateInstanceReq {
   // Instance enum
-  common.PlatformEnum platform_enum = 1;
+  Platform platform_enum = 1;
   // Instance meta information such as Server ID etc.
   google.protobuf.Struct instance_meta = 2;
   // Default channel for the instance (if applicable) for announcements etc.
@@ -67,7 +67,7 @@ message UpdateInstanceReq {
   // Internal Instance ID
   int64 id = 1;
   // Instance enum
-  common.PlatformEnum platform_enum = 2;
+  Platform platform_enum = 2;
   // Instance meta information such as Server ID etc.
   google.protobuf.Struct instance_meta = 3;
   // Default channel for the instance (if applicable) for announcements etc.

@@ -2,7 +2,7 @@ package discord
 
 import (
 	"github.com/lasikuu/GinBot/internal/config"
-	pb "github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"

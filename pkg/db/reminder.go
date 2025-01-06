@@ -5,12 +5,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lasikuu/GinBot/pkg/gen/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 )
 
-func CreateReminder(req *proto.CreateReminderReq, userID string, destinationID int64) (string, error) {
+func CreateReminder(req *pb.CreateReminderReq, userID string, destinationID int64) (string, error) {
 	reminderUUID, err := uuid.NewV7()
 	if err != nil {
 		log.Z.Error("failed to generate UUID.", zap.Error(err))
@@ -31,7 +31,7 @@ func CreateReminder(req *proto.CreateReminderReq, userID string, destinationID i
 	return reminderID, err
 }
 
-func GetReminder(id string) (*proto.Reminder, error) {
+func GetReminder(id string) (*pb.Reminder, error) {
 	return nil, nil
 }
 
@@ -42,10 +42,10 @@ func ListReminders(
 	userID *int64,
 	periodStart *time.Time,
 	periodEnd *time.Time,
-) ([]*proto.Reminder, error) {
+) ([]*pb.Reminder, error) {
 	return nil, nil
 }
 
-func ExpiredReminders(now *time.Time) ([]*proto.Reminder, error) {
+func ExpiredReminders(now *time.Time) ([]*pb.Reminder, error) {
 	return nil, nil
 }

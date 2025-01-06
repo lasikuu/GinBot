@@ -1,5 +1,0 @@
-edition = "2023";
-
-package ginbot.linked;
-
-option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
