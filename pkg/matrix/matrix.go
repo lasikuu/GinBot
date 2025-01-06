@@ -27,7 +27,8 @@ func InitializeMatrix() {
 
 	var lastRoomID id.RoomID
 
-	syncer := matrixClient.Syncer.(*mautrix.DefaultSyncer)
+	syncer := matrixClient.Syncer.(mautrix.ExtensibleSyncer)
+	syncer.OnSync(matrixClient.DontProcessOldEvents)
 	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
 		log.Z.Info("message received")
 
@@ -57,16 +58,16 @@ func InitializeMatrix() {
 		err = matrixClient.SyncWithContext(syncCtx)
 		defer syncStopWait.Done()
 		if err != nil && !errors.Is(err, context.Canceled) {
-			panic(err)
+			log.Z.Error("failed to sync", zap.Error(err))
 		}
 	}()
-
-	cancelSync()
-	syncStopWait.Wait()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
 	<-stop
+
+	cancelSync()
+	syncStopWait.Wait()
 
 	log.Z.Info("gracefully shutting down.")
 }
