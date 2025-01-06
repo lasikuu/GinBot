@@ -5,6 +5,8 @@ package ginbot.trigger;
 option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
 
 import "proto/common.proto";
 
@@ -13,8 +15,8 @@ service TriggerService {
   rpc GetTrigger(GetTriggerReq) returns (GetTriggerResp);
   rpc ListTriggers(ListTriggersReq) returns (ListTriggersResp);
   rpc CreateTrigger(CreateTriggerReq) returns (CreateTriggerResp);
-  rpc ModifyTrigger(ModifyTriggerReq) returns (ModifyTriggerResp);
-  rpc DeleteTrigger(DeleteTriggerReq) returns (DeleteTriggerResp);
+  rpc UpdateTrigger(UpdateTriggerReq) returns (google.protobuf.Empty);
+  rpc DeleteTrigger(DeleteTriggerReq) returns (google.protobuf.Empty);
 }
 
 // Message representing a Trigger
@@ -30,7 +32,7 @@ message Trigger {
   // User ID of the creator
   int64 user_id = 5;
   // Platform to trigger the response
-  TriggerPlatformConfig platform_config = 6;
+  repeated TriggerPlatform platforms = 6;
   // Chance of the trigger to be triggered
   int32 chance = 7;
   // Created at
@@ -39,19 +41,16 @@ message Trigger {
   google.protobuf.Timestamp updated_at = 9;
 }
 
-message TriggerPlatformConfig {
-  // Platform type
-  common.Platform platform = 1;
-  // Required information for the platform
-  oneof oneof_platform {
-    int64 discord_server_id = 2;
-    string matrix_room_id = 3;
-  }
+message TriggerPlatform {
+  // Platform enum
+  common.PlatformEnum platform_enum = 1;
+  // Platform meta information such as Server ID
+  google.protobuf.Struct platform_meta = 2;
 }
 
 message TryTriggerReq {
   // Platform to trigger the response
-  TriggerPlatformConfig platform_config = 1;
+  TriggerPlatform platform = 1;
   // Phrase to trigger the response
   string phrase = 2;
   // User ID of the triggerer
@@ -89,8 +88,8 @@ message ListTriggersReq {
   string reply = 4;
   // User ID of the creator
   int64 user_id = 5;
-  // Platform to trigger the response
-  TriggerPlatformConfig platform_config = 6;
+  // Platforms to trigger the response on
+  repeated TriggerPlatform platforms = 6;
   // Search for triggers starting from this date
   google.protobuf.Timestamp period_start = 7;
   // Search for triggers ending at this date
@@ -110,17 +109,18 @@ message CreateTriggerReq {
   string filename = 3;
   // User ID of the creator
   int64 user_id = 4;
-  // Platform to trigger the response
-  TriggerPlatformConfig platform_config = 5;
+  // Platforms to trigger the response on
+  repeated TriggerPlatform platforms = 5;
   // Chance of the trigger to be triggered
   int32 chance = 6;
 }
 
 message CreateTriggerResp {
-  Trigger trigger = 1;
+  // ID of the Trigger
+  int64 id = 1;
 }
 
-message ModifyTriggerReq {
+message UpdateTriggerReq {
   // ID of the Trigger
   int64 id = 1;
   // Phrase to trigger the response
@@ -131,19 +131,13 @@ message ModifyTriggerReq {
   string filename = 4;
   // User ID of the creator
   int64 user_id = 5;
+  // Platforms to trigger the response on
+  repeated TriggerPlatform platforms = 6;
   // Chance of the trigger to be triggered
   int32 chance = 7;
-}
-
-message ModifyTriggerResp {
-  Trigger trigger = 1;
 }
 
 message DeleteTriggerReq {
   // ID of the Trigger
   int64 id = 1;
-}
-
-message DeleteTriggerResp {
-  bool success = 1;
 }

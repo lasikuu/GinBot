@@ -6,21 +6,23 @@ option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
 
-enum ReminderDestination {
-  Discord = 0;
-  MatrixProtocol = 1;
-  Telegram = 2;
-  Email = 3;
-  SnailMail = 4;
+import "proto/common.proto";
+
+enum ReminderStatus {
+  PENDING = 0;
+  SENT = 1;
+  DELIVERED = 2;
+  FAILED = 3;
 }
 
 service ReminderService {
   rpc GetReminder(GetReminderReq) returns (GetReminderResp);
   rpc ListReminders(ListRemindersReq) returns (ListRemindersResp);
   rpc CreateReminder(CreateReminderReq) returns (CreateReminderResp);
-  rpc UpdateReminder(UpdateReminderReq) returns (UpdateReminderResp);
-  rpc DeleteReminder(DeleteReminderReq) returns (DeleteReminderResp);
+  rpc UpdateReminder(UpdateReminderReq) returns (google.protobuf.Empty);
+  rpc DeleteReminder(DeleteReminderReq) returns (google.protobuf.Empty);
   rpc GetExpiredReminders(google.protobuf.Empty) returns (GetExpiredRemindersResp);
 }
 
@@ -32,36 +34,30 @@ message Reminder {
   google.protobuf.Timestamp datetime = 2;
   // Timezone of the Reminder
   string timezone = 3;
-  // Reminder message
-  string message = 4;
-  // User ID of the creator
-  int64 user_id = 5;
+  // Repeat in cron format
+  string repeat_cron = 4;
   // Destinations to send the reminder to
-  repeated ReminderDestinationConfig destination_configs = 6;
-  // Repeat interval in seconds
-  int64 repeat_interval = 7;
+  ReminderDestination destination = 5;
+  // Status of the Reminder
+  ReminderStatus status = 6;
+  // User ID of the creator
+  int64 user_id = 7;
+  // Reminder message
+  string message = 8;
   // Parent reminder ID
-  int64 parent_id = 8;
+  int64 parent_id = 9;
   // Created at
-  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp created_at = 10;
   // Updated at
-  google.protobuf.Timestamp updated_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
 }
 
 // Destination to send the reminder to
-message ReminderDestinationConfig {
-  // Destination type
-  ReminderDestination reminderDestination = 1;
-  // Order of priority for the destinations
-  int32 priority_order = 2;
-  // Destination ID or other information required to send the reminder to its destination
-  oneof oneof_destination {
-    int64 discord_channel_id = 3;
-    string telegram_chat_id = 4;
-    string matrix_room_id = 5;
-    string email_address = 6;
-    string real_address = 7;
-  }
+message ReminderDestination {
+  // Platform to send the reminder to
+  common.PlatformEnum platform_enum = 1;
+  // Platform meta information such as Server ID, Channel ID etc.
+  google.protobuf.Struct platform_meta = 2;
 }
 
 message GetReminderReq {
@@ -86,6 +82,8 @@ message ListRemindersReq {
   google.protobuf.Timestamp period_start = 5;
   // Search for reminders ending at this date
   google.protobuf.Timestamp period_end = 6;
+  // Search for reminders with this status
+  ReminderStatus status = 7;
 }
 
 message ListRemindersResp {
@@ -102,15 +100,16 @@ message CreateReminderReq {
   // User ID of the creator
   int64 user_id = 5;
   // Destinations to send the reminder to
-  repeated ReminderDestinationConfig destination_configs = 6;
-  // Repeat interval in seconds
-  int64 repeat_interval = 7;
+  ReminderDestination destination = 6;
+  // Repeat in cron format
+  string repeat_cron = 7;
   // Parent reminder ID
   int64 parent_id = 8;
 }
 
 message CreateReminderResp {
-  Reminder reminder = 1;
+  // ID of the Reminder
+  int64 id = 1;
 }
 
 message UpdateReminderReq {
@@ -125,23 +124,15 @@ message UpdateReminderReq {
   // User ID of the creator
   int64 user_id = 5;
   // Destinations to send the reminder to
-  repeated ReminderDestinationConfig destination_configs = 6;
-  // Repeat interval in seconds
-  int64 repeat_interval = 7;
+  ReminderDestination destination = 6;
+  // Repeat in cron format
+  string repeat_cron = 7;
   // Parent reminder ID
   int64 parent_id = 8;
 }
 
-message UpdateReminderResp {
-  Reminder reminder = 1;
-}
-
 message DeleteReminderReq {
   int64 id = 1;
-}
-
-message DeleteReminderResp {
-  bool success = 1;
 }
 
 message GetExpiredRemindersResp {

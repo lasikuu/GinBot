@@ -4,7 +4,12 @@ package ginbot.common;
 
 option go_package = "github.com/CrescentKohana/GinBot/pkg/gen/proto";
 
-enum Platform {
-  Discord = 0;
-  MatrixProtocol = 1;
+enum PlatformEnum {
+  UNKNOWN = 0;
+  DISCORD = 1;
+  MATRIX_PROTOCOL = 2;
+  TELEGRAM = 3;
+  LINE = 4;
+  EMAIL = 5;
+  SNAIL_MAIL = 6;
 }
