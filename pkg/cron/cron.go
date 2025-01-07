@@ -48,7 +48,7 @@ func RunCronJobs() {
 
 		if now.Sub(started) >= time.Hour*24 {
 			// Resets the ticker after 24 hours
-			// ticker.Reset(1 * time.Second)
+			ticker.Reset(1 * time.Second)
 		}
 	}
 }
