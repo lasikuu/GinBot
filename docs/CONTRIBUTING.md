@@ -11,6 +11,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
 - Generate Protocol Buffers:
   **Bash**
   ```bash
+  cd proto
   protoc --go_out=../pkg/gen --go_opt=paths=source_relative --go-grpc_out=../pkg/gen --go-grpc_opt=paths=source_relative \
     ./ginbot/proto/platform.proto \
     ./ginbot/proto/utility.proto \
@@ -25,6 +26,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
   ```
     **Windows**
     ```powershell
+    cd proto
     protoc --go_out=../pkg/gen --go_opt=paths=source_relative --go-grpc_out=../pkg/gen --go-grpc_opt=paths=source_relative `
       ./ginbot/proto/platform.proto `
       ./ginbot/proto/utility.proto `
@@ -47,9 +49,9 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
 - Automatically run when the server is launched. Can be disabled by setting `GINBOT_DB_MIGRATIONS=false` in `.env`.
 - Run manually
   - Create a new migration: `goose create <migration_name> sql`
-  - Check status: `goose -dir pkg/db/migrations  postgres "user=postgres dbname=postgres password=gin123 sslmode=disable" status`
-  - Run all migrations: `goose -dir pkg/db/migrations  postgres "user=postgres dbname=postgres password=gin123 sslmode=disable" up`
-  - Rollback the last migration: `goose -dir pkg/db/migrations  postgres "user=postgres dbname=postgres password=gin123 sslmode=disable" down`
+  - Check status: `goose -dir pkg/db/migrations postgres "user=ginbot dbname=postgres password=gin123 sslmode=disable" status`
+  - Run all migrations: `goose -dir pkg/db/migrations postgres "user=ginbot dbname=postgres password=gin123 sslmode=disable" up`
+  - Rollback the last migration: `goose -dir pkg/db/migrations postgres "user=ginbot dbname=postgres password=gin123 sslmode=disable" down`
 
 ### 🔬 Testing
 
