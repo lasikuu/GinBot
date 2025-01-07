@@ -3,14 +3,11 @@ package matrix
 import (
 	"github.com/lasikuu/GinBot/internal/config"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
-
-var UserServiceClient pb.UserServiceClient
-var UtilityServiceClient pb.UtilityServiceClient
-var ReminderServiceClient pb.ReminderServiceClient
 
 func NewMatrixClient() {
 	serverAddress := config.Options.GRPC.Host + ":" + config.Options.GRPC.Port
@@ -21,7 +18,10 @@ func NewMatrixClient() {
 		return
 	}
 
-	UserServiceClient = pb.NewUserServiceClient(conn)
-	UtilityServiceClient = pb.NewUtilityServiceClient(conn)
-	ReminderServiceClient = pb.NewReminderServiceClient(conn)
+	client.InitUserService(conn)
+	client.InitUtilityService(conn)
+	client.InitReminderService(conn)
+	client.InitReverseService(conn)
+
+	go client.RunClientActionStream(pb.Platform_PLATFORM_MATRIX_PROTOCOL)
 }
