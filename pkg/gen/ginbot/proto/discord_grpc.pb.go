@@ -20,7 +20,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DiscordService_SetDiscordActivityType_FullMethodName = "/ginbot.discord.DiscordService/SetDiscordActivityType"
+	DiscordService_SetDiscordActivityType_FullMethodName = "/ginbot.proto.DiscordService/SetDiscordActivityType"
 )
 
 // DiscordServiceClient is the client API for DiscordService service.
@@ -109,7 +109,7 @@ func _DiscordService_SetDiscordActivityType_Handler(srv interface{}, ctx context
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var DiscordService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ginbot.discord.DiscordService",
+	ServiceName: "ginbot.proto.DiscordService",
 	HandlerType: (*DiscordServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
