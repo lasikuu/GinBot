@@ -3,10 +3,11 @@ package config
 import (
 	"os"
 
+	"github.com/lasikuu/GinBot/internal/auth"
 	"google.golang.org/grpc"
 )
 
-// GRPCOptions is the model for gRPC configuration.
+// GRPCServerOptions is the model for gRPC configuration.
 type GRPCServerOptions struct {
 	Host          string
 	Port          string
@@ -44,9 +45,14 @@ func certsPath() string {
 }
 
 func serverOptions() []grpc.ServerOption {
-	return []grpc.ServerOption{
-		grpc.MaxRecvMsgSize(1024 * 1024 * 1024),
-		grpc.MaxSendMsgSize(1024 * 1024 * 1024),
-		grpc.MaxConcurrentStreams(100),
+	var gRPCServerOptions []grpc.ServerOption
+
+	if !gRPCTLS() {
+		return gRPCServerOptions
 	}
+
+	tlsCredentials := auth.LoadServerCredentials()
+	gRPCServerOptions = append(gRPCServerOptions, grpc.Creds(tlsCredentials))
+
+	return gRPCServerOptions
 }

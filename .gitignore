@@ -2,4 +2,7 @@
 /.idea
 /GinBot.iml
 
+# Sensitive data
 .env
+/cert/*.pem
+/cert/*.srl

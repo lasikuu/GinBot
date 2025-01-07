@@ -2,14 +2,15 @@ package config
 
 import (
 	"fmt"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"os"
 
 	"github.com/joho/godotenv"
+	"github.com/lasikuu/GinBot/internal/auth"
 	"github.com/lasikuu/GinBot/pkg/enum"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type OptionsModel struct {
@@ -81,9 +82,16 @@ func SetEnv() {
 }
 
 func dialOptions() []grpc.DialOption {
-	return []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: replace with secure credentials for production
+	var gRPCDialOptions []grpc.DialOption
+	if !gRPCTLS() {
+		gRPCDialOptions = append(gRPCDialOptions, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		return gRPCDialOptions
 	}
+
+	tlsCredentials := auth.LoadClientCredentials()
+
+	gRPCDialOptions = append(gRPCDialOptions, grpc.WithTransportCredentials(tlsCredentials))
+	return gRPCDialOptions
 }
 
 func loadEnvironment() {
