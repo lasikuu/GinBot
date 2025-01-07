@@ -9,12 +9,12 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func CreateInstance(platformEnum pb.Platform, platformMeta *structpb.Struct, defaultChannel *string) (int64, error) {
+func CreateInstance(platformEnum pb.Platform, platformMeta *structpb.Struct, defaultChannel string) (int64, error) {
 	var platformID int64
 	err := db().QueryRow(
 		context.Background(),
 		"INSERT INTO instance (platform_enum, instance_meta, default_channel) values($1, $2, $3) RETURNING id",
-		platformEnum.Number(), platformMeta, defaultChannel,
+		platformEnum.Number(), platformMeta, nullStr(defaultChannel),
 	).Scan(&platformID)
 	if err != nil {
 		log.Z.Error("failed to insert platform", zap.Error(err))

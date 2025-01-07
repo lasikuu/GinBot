@@ -20,18 +20,18 @@ func NewInstanceServer() *InstanceServer {
 }
 
 func (s *InstanceServer) CreateInstance(_ context.Context, req *pb.CreateInstanceReq) (*pb.CreateInstanceResp, error) {
-	if req.PlatformEnum == nil || req.InstanceMeta == nil {
+	if !(req.HasPlatformEnum() && req.HasInstanceMeta()) {
 		return nil, status.Errorf(codes.InvalidArgument, "enum and meta are required.")
 	}
 
-	platformId, err := db.CreateInstance(*req.PlatformEnum, req.InstanceMeta, req.DefaultChannel)
+	platformId, err := db.CreateInstance(req.GetPlatformEnum(), req.GetInstanceMeta(), req.GetDefaultChannel())
 	if err != nil {
 		return nil, err
 	}
 
-	return &pb.CreateInstanceResp{
+	return pb.CreateInstanceResp_builder{
 		Id: &platformId,
-	}, nil
+	}.Build(), nil
 }
 
 func (s *InstanceServer) GetInstance(_ context.Context, req *pb.GetInstanceReq) (*pb.GetInstanceResp, error) {

@@ -28,18 +28,18 @@ func (s *ReminderServer) GetReminder(ctx context.Context, req *pb.GetReminderReq
 		return nil, err
 	}
 
-	if req.Id == nil {
+	if !req.HasId() {
 		return nil, status.Errorf(codes.InvalidArgument, "id is required")
 	}
 
-	reminder, err := db.GetReminder(*req.Id)
+	reminder, err := db.GetReminder(req.GetId())
 	if err != nil {
 		return nil, err
 	}
 
-	return &pb.GetReminderResp{
+	return pb.GetReminderResp_builder{
 		Reminder: reminder,
-	}, nil
+	}.Build(), nil
 }
 
 func (s *ReminderServer) ListReminders(ctx context.Context, req *pb.ListRemindersReq) (*pb.ListRemindersResp, error) {
@@ -61,14 +61,14 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 		return nil, status.Errorf(codes.InvalidArgument, "platform_uid is required")
 	}
 
-	if req.Destination == nil ||
-		req.Destination.PlatformEnum == nil ||
-		req.Destination.InstanceMeta == nil ||
-		req.Destination.DestinationMeta == nil {
+	if !(req.HasDestination() &&
+		req.GetDestination().HasPlatformEnum() &&
+		req.GetDestination().HasInstanceMeta() &&
+		req.GetDestination().HasDestinationMeta()) {
 		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
 	}
 
-	destinationID, err := db.GetOrCreateDestinationByMeta(req.Destination.PlatformEnum, req.Destination.InstanceMeta, req.Destination.DestinationMeta)
+	destinationID, err := db.GetOrCreateDestinationByMeta(req.GetDestination())
 	if err != nil {
 		log.Z.Error("failed to get destination by meta", zap.Error(err))
 		return nil, err
@@ -82,9 +82,9 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 
 	reminderID, err := db.CreateReminder(req, userID, destinationID)
 
-	return &pb.CreateReminderResp{
+	return pb.CreateReminderResp_builder{
 		Id: &reminderID,
-	}, nil
+	}.Build(), nil
 }
 
 func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteReminderReq) (*emptypb.Empty, error) {
@@ -118,7 +118,7 @@ func (s *ReminderServer) GetExpiredReminders(ctx context.Context, _ *emptypb.Emp
 		return nil, err
 	}
 
-	return &pb.GetExpiredRemindersResp{
+	return pb.GetExpiredRemindersResp_builder{
 		Reminders: expiredReminders,
-	}, nil
+	}.Build(), nil
 }

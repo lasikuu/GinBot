@@ -39,10 +39,10 @@ func (s *EntertainmentServer) GetRandomNumber(_ context.Context, req *pb.GetRand
 		value = strconv.Itoa(rand.IntN(upperBound-lowerBound) + lowerBound)
 
 	case pb.GetRandomNumberReq_ANY:
-		value = *req.MsgId
+		value = req.GetMsgId()
 	}
 
-	return &pb.GetRandomNumberResp{
+	return pb.GetRandomNumberResp_builder{
 		Number: &value,
-	}, nil
+	}.Build(), nil
 }

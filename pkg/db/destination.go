@@ -11,16 +11,20 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func GetOrCreateDestinationByMeta(platformEnum *pb.Platform, instanceMeta *structpb.Struct, destinationMeta *structpb.Struct) (int64, error) {
+func GetOrCreateDestinationByMeta(destination *pb.ReminderDestination) (int64, error) {
 	var platformID int64
 	var destinationID int64
+
+	platformEnum := destination.GetPlatformEnum()
+	instanceMeta := destination.GetInstanceMeta()
+	destinationMeta := destination.GetDestinationMeta()
 
 	err := db().QueryRow(
 		context.Background(),
 		`SELECT instance.id, destination.id  FROM destination
          LEFT JOIN instance ON destination.instance_id = instance.id
          WHERE instance.platform_enum = $1 AND instance.instance_meta = $2 AND destination.meta = $3`,
-		platformEnum.Number(), instanceMeta, destinationMeta,
+		platformEnum, instanceMeta, destinationMeta,
 	).Scan(&platformID, &destinationID)
 
 	if err != nil {

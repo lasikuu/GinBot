@@ -76,12 +76,12 @@ func doublesPlusN(i *discordgo.InteractionCreate, digits int32) (string, error) 
 
 	reqType := pb.GetRandomNumberReq_DOUBLES
 
-	req := pb.GetRandomNumberReq{
+	req := pb.GetRandomNumberReq_builder{
 		Type:   &reqType,
 		Digits: &digits,
-	}
+	}.Build()
 
-	resp, err := EntertainmentServiceClient.GetRandomNumber(ctx, &req)
+	resp, err := EntertainmentServiceClient.GetRandomNumber(ctx, req)
 	if err != nil {
 		log.Z.Error("failed to call GetRandomNumber", zap.Error(err))
 		return "", err
@@ -119,13 +119,13 @@ func boundedNumber(i *discordgo.InteractionCreate) (string, error) {
 		}
 	}
 
-	req := pb.GetRandomNumberReq{
+	req := pb.GetRandomNumberReq_builder{
 		Type:  &reqType,
 		Lower: &lower,
 		Upper: &upper,
-	}
+	}.Build()
 
-	resp, err := EntertainmentServiceClient.GetRandomNumber(ctx, &req)
+	resp, err := EntertainmentServiceClient.GetRandomNumber(ctx, req)
 	if err != nil {
 		log.Z.Error("failed to call GetRandomNumber", zap.Error(err))
 		return "", err

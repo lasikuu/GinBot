@@ -2,6 +2,7 @@ package cronjob
 
 import (
 	"context"
+
 	"github.com/lasikuu/GinBot/pkg/discord"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
@@ -16,6 +17,6 @@ func Remind() {
 	}
 
 	for _, reminder := range resp.GetReminders() {
-		log.Z.Debug("reminding.", zap.String("id", *reminder.Id))
+		log.Z.Debug("reminding.", zap.String("id", reminder.GetId()))
 	}
 }

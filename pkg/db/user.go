@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func CreateUser(username string, platformEnum pb.Platform, platformUserId string, userMetadata *structpb.Struct, locale *string) (*string, error) {
+func CreateUser(username string, platformEnum pb.Platform, platformUserId string, userMetadata *structpb.Struct, locale string) (*string, error) {
 	userUUID, err := uuid.NewV7()
 	if err != nil {
 		log.Z.Error("failed to generate UUID.", zap.Error(err))
@@ -21,7 +21,7 @@ func CreateUser(username string, platformEnum pb.Platform, platformUserId string
 	_, err = db().Exec(
 		context.Background(),
 		"INSERT INTO user_account (id, username, locale) values($1, $2, $3)",
-		userID, username, locale,
+		userID, username, nullStr(locale),
 	)
 	if err != nil {
 		log.Z.Error("failed to insert user", zap.Error(err))

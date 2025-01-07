@@ -19,7 +19,8 @@ func NewUtilityServer() *UtilityServer {
 func (s *UtilityServer) HealthCheck(context.Context, *emptypb.Empty) (*pb.HealthCheckResp, error) {
 	// TODO: Implement health check for Discord, DB, and other services and return accordingly.
 	status := pb.HealthStatus_HEALTH_STATUS_OK
-	return &pb.HealthCheckResp{
+
+	return pb.HealthCheckResp_builder{
 		Status: &status,
-	}, nil
+	}.Build(), nil
 }

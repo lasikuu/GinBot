@@ -2,6 +2,7 @@ package cronjob
 
 import (
 	"context"
+
 	"github.com/lasikuu/GinBot/pkg/discord"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
@@ -16,6 +17,6 @@ func CongratulateBirthday() {
 	}
 
 	for _, user := range resp.GetUsers() {
-		log.Z.Debug("congratulating.", zap.String("userID", *user.Id))
+		log.Z.Debug("congratulating.", zap.String("userID", user.GetId()))
 	}
 }

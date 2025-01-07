@@ -21,7 +21,7 @@ func CreateReminder(req *pb.CreateReminderReq, userID string, destinationID int6
 	_, err = db().Exec(
 		context.Background(),
 		"INSERT INTO reminder (id, datetime, timezone, repeat_cron, destination_id, message, user_id, parent_id) values($1, $2, $3, $4, $5, $6, $7)",
-		reminderID, req.Datetime, req.Timezone, req.RepeatCron, destinationID, req.Message, userID, req.ParentId,
+		reminderID, req.GetDatetime(), req.GetTimezone(), req.GetRepeatCron(), destinationID, req.GetMessage(), userID, req.GetParentId(),
 	)
 	if err != nil {
 		log.Z.Error("failed to insert reminder.", zap.Error(err))

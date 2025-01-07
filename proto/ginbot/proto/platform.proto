@@ -4,6 +4,10 @@ package ginbot.proto;
 
 option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
+import "google/protobuf/go_features.proto";
+
+option features.(pb.go).api_level = API_OPAQUE;
+
 enum Platform {
   PLATFORM_UNSPECIFIED = 0;
   PLATFORM_DISCORD = 1;
