@@ -21,7 +21,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when 
     ./ginbot/proto/analytics.proto \
     ./ginbot/proto/user.proto \
     ./ginbot/proto/highlight.proto \
-    ./ginbot/proto/instance.proto \
+    ./ginbot/proto/instance.proto
   ```
     **Windows**
     ```powershell
