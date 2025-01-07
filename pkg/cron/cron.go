@@ -3,7 +3,9 @@ package cron
 import (
 	"time"
 
+	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/cron/cronjob"
+	"github.com/lasikuu/GinBot/pkg/enum"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/service"
 	"github.com/lasikuu/GinBot/pkg/log"
@@ -23,21 +25,22 @@ func RunCronJobs() {
 		if now.Second() == 0 {
 			log.Z.Debug("cron running", zap.Time("time", now))
 
-			// Testing
-			platformEnum := pb.Platform_PLATFORM_DISCORD
-			clientAction := pb.ClientAction_CLIENT_ACTION_SEND_TEST
-			content := structpb.Struct{
-				Fields: map[string]*structpb.Value{
-					"test": structpb.NewStringValue("test"),
-				},
-			}
+			if config.AppEnvironment == enum.DEVELOPMENT {
+				platformEnum := pb.Platform_PLATFORM_DISCORD
+				clientAction := pb.ClientAction_CLIENT_ACTION_SEND_TEST
+				content := structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						"test": structpb.NewStringValue("test"),
+					},
+				}
 
-			resp := pb.OpenClientActionStreamResp_builder{
-				PlatformEnum: &platformEnum,
-				ClientAction: &clientAction,
-				Content:      &content,
-			}.Build()
-			service.ReverseServer.SendAction(resp)
+				resp := pb.OpenClientActionStreamResp_builder{
+					PlatformEnum: &platformEnum,
+					ClientAction: &clientAction,
+					Content:      &content,
+				}.Build()
+				service.ReverseServer.SendAction(resp)
+			}
 
 			cronjob.CongratulateBirthday()
 		}
