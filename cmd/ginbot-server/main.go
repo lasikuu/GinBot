@@ -5,10 +5,11 @@ import (
 	"net"
 
 	"github.com/lasikuu/GinBot/internal/config"
+	"github.com/lasikuu/GinBot/pkg/cron"
 	"github.com/lasikuu/GinBot/pkg/db"
 	"github.com/lasikuu/GinBot/pkg/enum"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
-	"github.com/lasikuu/GinBot/pkg/grpc/server"
+	"github.com/lasikuu/GinBot/pkg/grpc/service"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -35,12 +36,19 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(config.Options.GRPC.ServerOptions...)
-	pb.RegisterInstanceServiceServer(grpcServer, server.NewInstanceServer())
-	pb.RegisterUserServiceServer(grpcServer, server.NewUserServer())
-	pb.RegisterUtilityServiceServer(grpcServer, server.NewUtilityServer())
-	pb.RegisterReminderServiceServer(grpcServer, server.NewReminderServer())
-	pb.RegisterAnalyticsServiceServer(grpcServer, server.NewAnalyticsServer())
-	pb.RegisterEntertainmentServiceServer(grpcServer, server.NewEntertainmentServer())
+
+	service.InitServices()
+
+	pb.RegisterInstanceServiceServer(grpcServer, service.InstanceServer)
+	pb.RegisterUserServiceServer(grpcServer, service.UserServer)
+	pb.RegisterUtilityServiceServer(grpcServer, service.UtilityServer)
+	pb.RegisterReminderServiceServer(grpcServer, service.ReminderServer)
+	pb.RegisterAnalyticsServiceServer(grpcServer, service.AnalyticsServer)
+	pb.RegisterEntertainmentServiceServer(grpcServer, service.EntertainmentServer)
+	pb.RegisterReverseServiceServer(grpcServer, service.ReverseServer)
+
+	// Parallel cron jobs
+	go cron.RunCronJobs()
 
 	if config.AppEnvironment == enum.DEVELOPMENT {
 		// Register reflection service on gRPC server.

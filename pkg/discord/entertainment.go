@@ -5,6 +5,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 )
@@ -81,7 +82,7 @@ func doublesPlusN(i *discordgo.InteractionCreate, digits int32) (string, error) 
 		Digits: &digits,
 	}.Build()
 
-	resp, err := EntertainmentServiceClient.GetRandomNumber(ctx, req)
+	resp, err := client.EntertainmentServiceClient.GetRandomNumber(ctx, req)
 	if err != nil {
 		log.Z.Error("failed to call GetRandomNumber", zap.Error(err))
 		return "", err
@@ -125,7 +126,7 @@ func boundedNumber(i *discordgo.InteractionCreate) (string, error) {
 		Upper: &upper,
 	}.Build()
 
-	resp, err := EntertainmentServiceClient.GetRandomNumber(ctx, req)
+	resp, err := client.EntertainmentServiceClient.GetRandomNumber(ctx, req)
 	if err != nil {
 		log.Z.Error("failed to call GetRandomNumber", zap.Error(err))
 		return "", err

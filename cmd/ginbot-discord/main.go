@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/lasikuu/GinBot/internal/config"
-	"github.com/lasikuu/GinBot/pkg/cron"
 	"github.com/lasikuu/GinBot/pkg/discord"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
@@ -20,7 +19,4 @@ func main() {
 
 	// Discord client
 	discord.InitializeDiscord()
-
-	// Parallel cron jobs
-	go cron.RunCronJobs()
 }

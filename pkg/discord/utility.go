@@ -2,6 +2,7 @@ package discord
 
 import (
 	"github.com/bwmarrin/discordgo"
+	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -27,7 +28,7 @@ func HealthCheck(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	resp, err := UtilityServiceClient.HealthCheck(ctx, &emptypb.Empty{})
+	resp, err := client.UtilityServiceClient.HealthCheck(ctx, &emptypb.Empty{})
 	if err != nil {
 		log.Z.Error("failed to call HealthCheck.", zap.Error(err))
 		return

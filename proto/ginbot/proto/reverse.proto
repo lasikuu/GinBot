@@ -1,0 +1,36 @@
+edition = "2023";
+
+package ginbot.proto;
+
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
+
+import "ginbot/proto/platform.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/go_features.proto";
+
+option features.(pb.go).api_level = API_OPAQUE;
+
+enum ClientAction {
+  CLIENT_ACTION_UNSPECIFIED = 0;
+  CLIENT_ACTION_SEND_NOTIFICATION = 1;
+  CLIENT_ACTION_SEND_NOTIFICATION_URGENT = 2;
+  CLIENT_ACTION_SEND_TEST = 999;
+}
+
+service ReverseService {
+  rpc OpenClientActionStream(stream OpenClientActionStreamReq) returns (stream OpenClientActionStreamResp);
+}
+
+message OpenClientActionStreamReq {
+  // Platform of the Connection
+  Platform platform_enum = 1;
+}
+
+message OpenClientActionStreamResp {
+  // Platform of the Connection
+  Platform platform_enum = 1;
+  // Action to be taken by the client
+  ClientAction client_action = 2;
+  // Content to be sent processed by the client
+  google.protobuf.Struct content = 3;
+}
