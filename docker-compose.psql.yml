@@ -1,6 +1,6 @@
 services:
   psql:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     # shared memory limit
     shm_size: 128mb
