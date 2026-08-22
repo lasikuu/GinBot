@@ -2,10 +2,7 @@ package config
 
 import (
 	"os"
-	"regexp"
 	"strings"
-
-	"github.com/lasikuu/GinBot/pkg/log"
 )
 
 type DiscordOptions struct {
@@ -17,9 +14,16 @@ type DiscordOptions struct {
 	CommandPrefixes   CommandPrefixes
 }
 
+// CommandPrefixes holds the configured chat command prefixes. An empty
+// Prefixes slice means chat commands are disabled.
+//
+// There is deliberately no compiled regex here. One used to exist, and it
+// disagreed with the tokeniser that actually dispatches: `^(??).+$` rejects
+// "?\nping" (a dot excludes newline) and accepts "? " (a space satisfies .+),
+// whereas command.ParseChat does the opposite in both cases. Two subtly
+// different answers to "is this a command" is worse than one.
 type CommandPrefixes struct {
-	Prefixes    []string
-	PrefixRegex *regexp.Regexp
+	Prefixes []string
 }
 
 func ownerId() string {
@@ -38,16 +42,24 @@ func eraseCommands() bool {
 	return os.Getenv("DISCORD_REMOVE_COMMANDS") == "true"
 }
 
+// commandPrefixes parses the chat command prefixes.
+//
+// strings.Split of an unset variable yields one empty element, and an empty
+// prefix would match every message. Dropping empty elements is therefore
+// load-bearing: with nothing configured, chat commands are disabled rather
+// than triggered by everything.
 func commandPrefixes() CommandPrefixes {
-	prefixes := strings.Split(os.Getenv("DISCORD_COMMAND_PREFIXES"), ",")
-	prefixesFormatted := strings.Join(prefixes, "|")
-	commandPrefixRegex, err := regexp.Compile(`^(` + regexp.QuoteMeta(prefixesFormatted) + `).+$`)
-	if err != nil {
-		log.S.Fatal("error parsing command prefixes: ", err)
+	configured := strings.Split(os.Getenv("DISCORD_COMMAND_PREFIXES"), ",")
+
+	prefixes := make([]string, 0, len(configured))
+	for _, prefix := range configured {
+		// Trimmed so that "??, !" does not yield the prefix " !".
+		prefix = strings.TrimSpace(prefix)
+		if prefix == "" {
+			continue
+		}
+		prefixes = append(prefixes, prefix)
 	}
 
-	return CommandPrefixes{
-		Prefixes:    prefixes,
-		PrefixRegex: commandPrefixRegex,
-	}
+	return CommandPrefixes{Prefixes: prefixes}
 }
