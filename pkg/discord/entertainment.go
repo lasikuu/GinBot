@@ -35,13 +35,16 @@ var EntertainmentCommands = []*discordgo.ApplicationCommand{
 var NumberOptions = []*discordgo.ApplicationCommandOption{
 	{
 		Name:        "lower",
-		Description: "Lower bound, defaults to 0",
+		Description: "Lower bound, inclusive. Defaults to 0",
 		Type:        discordgo.ApplicationCommandOptionInteger,
 		Required:    false,
 	},
 	{
+		// The server range is [lower, upper), so the default of 10 yields 0-9.
+		// The old description said "defaults to 9", which contradicted the code
+		// and implied the bound was inclusive.
 		Name:        "upper",
-		Description: "Upper bound, defaults to 9",
+		Description: "Upper bound, exclusive. Defaults to 10",
 		Type:        discordgo.ApplicationCommandOptionInteger,
 		Required:    false,
 	},
@@ -141,6 +144,7 @@ func Doubles(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	msg, err := doublesPlusN(i, 2)
 	if err != nil {
 		log.Z.Error("failed to call doublesPlusN", zap.Error(err))
+		respondError(s, i, err)
 		return
 	}
 
@@ -167,6 +171,7 @@ func Triples(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	msg, err := doublesPlusN(i, 3)
 	if err != nil {
 		log.Z.Error("failed to call doublesPlusN", zap.Error(err))
+		respondError(s, i, err)
 		return
 	}
 
@@ -185,7 +190,7 @@ func Triples(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		},
 	})
 	if err != nil {
-		log.Z.Error("failed to respond to Doubles", zap.Error(err))
+		log.Z.Error("failed to respond to Triples", zap.Error(err))
 	}
 }
 
@@ -193,6 +198,7 @@ func Number(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	msg, err := boundedNumber(i)
 	if err != nil {
 		log.Z.Error("failed to call boundedNumber", zap.Error(err))
+		respondError(s, i, err)
 		return
 	}
 
