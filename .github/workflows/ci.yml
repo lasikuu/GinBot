@@ -1,0 +1,96 @@
+name: "CI"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and unit test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        # Tracks the `go` directive in go.mod instead of a second hardcoded version.
+        go-version-file: go.mod
+        cache: true
+        cache-dependency-path: go.sum
+
+    - name: Build
+      run: go build ./...
+
+    # `-structtag=false` is required: plain `go vet` rejects the generated
+    # opaque protobuf structs in pkg/gen.
+    - name: Vet
+      run: go vet -structtag=false ./...
+
+    # `gofmt -l` exits 0 even when it lists files, so fail on any output.
+    - name: Check formatting
+      run: |
+        unformatted="$(gofmt -l cmd internal pkg)"
+        if [ -n "$unformatted" ]; then
+          echo "::error::gofmt reported unformatted files"
+          echo "$unformatted"
+          exit 1
+        fi
+
+    - name: Unit tests
+      run: go test ./...
+
+  integration-test:
+    name: Integration test
+    runs-on: ubuntu-latest
+
+    services:
+      # Matches docker-compose.psql.yml; these are local development credentials,
+      # not secrets. POSTGRES_DB is explicit here, the compose file relies on it
+      # defaulting to POSTGRES_USER.
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: ginbot
+          POSTGRES_PASSWORD: gin123
+          POSTGRES_DB: ginbot
+        ports:
+        - 5432:5432
+        # TestMain connects as soon as the binary starts, so gate the job on
+        # readiness rather than racing the container boot.
+        options: >-
+          --health-cmd "pg_isready -U ginbot -d ginbot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+        cache: true
+        cache-dependency-path: go.sum
+
+    # The test binary runs the embedded goose migrations itself via
+    # EnsureLatestVersion, so nothing applies them here. `-count=1` stops the Go
+    # test cache from replaying a pass against a database it never touched.
+    - name: Integration tests
+      env:
+        GINBOT_DB_HOST: localhost
+        GINBOT_DB_PORT: "5432"
+        GINBOT_DB_NAME: ginbot
+        GINBOT_DB_USERNAME: ginbot
+        GINBOT_DB_PASSWORD: gin123
+        GINBOT_LOG_LEVEL: error
+      run: go test -tags=integration -count=1 ./...
