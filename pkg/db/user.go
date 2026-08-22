@@ -59,9 +59,13 @@ func CreateUser(
 		}
 	}()
 
+	// Clearance is set explicitly rather than left to the column default of 0
+	// (CLEARANCE_UNSPECIFIED). Registering is what grants CLEARANCE_REGISTERED,
+	// and without this every freshly registered user would sit below the minimum
+	// the clearance interceptor enforces and be refused by every guarded RPC.
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO user_account (id, username, locale) VALUES ($1, $2, $3)`,
-		userID, username, nullStr(locale),
+		`INSERT INTO user_account (id, username, locale, clearance) VALUES ($1, $2, $3, $4)`,
+		userID, username, nullStr(locale), pb.Clearance_CLEARANCE_REGISTERED.Number(),
 	); err != nil {
 		return "", fmt.Errorf("insert user_account: %w", err)
 	}
@@ -123,4 +127,37 @@ func GetUserByPlatformUID(ctx context.Context, platformEnum pb.Platform, platfor
 	}
 
 	return &user, nil
+}
+
+// SetUserLocale stores the display locale of a user_account row.
+func SetUserLocale(ctx context.Context, userID string, locale string) error {
+	return setUserPreference(ctx,
+		`UPDATE user_account SET locale = $2 WHERE id = $1 AND deleted = FALSE`,
+		userID, locale)
+}
+
+// SetUserTimezone stores the IANA timezone of a user_account row. The caller is
+// responsible for having checked that the name resolves.
+func SetUserTimezone(ctx context.Context, userID string, timezone string) error {
+	return setUserPreference(ctx,
+		`UPDATE user_account SET timezone = $2 WHERE id = $1 AND deleted = FALSE`,
+		userID, timezone)
+}
+
+// setUserPreference runs a single-column update, reporting ErrNotFound when it
+// matched nothing.
+//
+// updated_at is left alone on purpose: trg_user_account_updated_at advances it,
+// so setting it here would be a second, divergent source of the same value.
+func setUserPreference(ctx context.Context, query string, userID string, value string) error {
+	tag, err := db().Exec(ctx, query, userID, nullStr(value))
+	if err != nil {
+		return fmt.Errorf("update user preference: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+
+	return nil
 }

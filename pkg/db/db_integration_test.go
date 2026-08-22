@@ -383,6 +383,52 @@ func TestGetOrCreateDestinationIsRaceSafe(t *testing.T) {
 	}
 }
 
+// The uniqueness that makes the bootstrap idempotent is on
+// (platform_enum, instance_meta). A Discord guild id and a Matrix room id could
+// collide as strings, so the platform has to be part of the key or the two
+// would share one instance row.
+func TestGetOrCreateDestinationIsScopedToPlatform(t *testing.T) {
+	ctx := context.Background()
+	suffix := time.Now().Format("150405.000000")
+
+	instanceMeta := meta(t, map[string]string{"guild_id": "scoped-" + suffix})
+	destinationMeta := meta(t, map[string]string{"channel_id": "scoped-c-" + suffix})
+
+	cleanupInstanceByMeta(t, instanceMeta)
+
+	destinationFor := func(platform pb.Platform) *pb.ReminderDestination {
+		return pb.ReminderDestination_builder{
+			PlatformEnum:    platform.Enum(),
+			InstanceMeta:    instanceMeta,
+			DestinationMeta: destinationMeta,
+		}.Build()
+	}
+
+	discord, err := GetOrCreateDestinationByMeta(ctx, destinationFor(pb.Platform_PLATFORM_DISCORD))
+	if err != nil {
+		t.Fatalf("discord: %v", err)
+	}
+
+	matrix, err := GetOrCreateDestinationByMeta(ctx, destinationFor(pb.Platform_PLATFORM_MATRIX_PROTOCOL))
+	if err != nil {
+		t.Fatalf("matrix: %v", err)
+	}
+
+	if discord == matrix {
+		t.Errorf("both platforms resolved to destination %d; the platform is not part of the key", discord)
+	}
+
+	var instances int
+	if err := db().QueryRow(ctx,
+		`SELECT COUNT(*) FROM instance WHERE instance_meta = $1`, instanceMeta,
+	).Scan(&instances); err != nil {
+		t.Fatalf("count instances: %v", err)
+	}
+	if instances != 2 {
+		t.Errorf("instance rows = %d, want 2 (one per platform)", instances)
+	}
+}
+
 func TestGetInstanceByMetaMatchesOnPlatformAndMeta(t *testing.T) {
 	ctx := context.Background()
 	suffix := time.Now().Format("150405.000000")

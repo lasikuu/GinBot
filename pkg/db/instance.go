@@ -72,32 +72,3 @@ func GetInstanceByMeta(
 
 	return &instance, nil
 }
-
-// GetOrCreateInstanceByMeta returns the id of the matching instance, inserting
-// one if it does not exist yet.
-//
-// A plain read-then-insert would race: two concurrent callers for the same guild
-// both miss the SELECT and both insert. ON CONFLICT against
-// uq_instance_platform_meta makes the insert idempotent, and the DO UPDATE (a
-// no-op write of the same value) is what allows RETURNING to yield the existing
-// row's id on conflict — DO NOTHING returns no row at all.
-func GetOrCreateInstanceByMeta(
-	ctx context.Context,
-	platformEnum pb.Platform,
-	instanceMeta *structpb.Struct,
-) (int64, error) {
-	var instanceID int64
-	err := db().QueryRow(ctx,
-		`INSERT INTO instance (platform_enum, instance_meta)
-		 VALUES ($1, $2)
-		 ON CONFLICT (platform_enum, instance_meta)
-		     DO UPDATE SET platform_enum = instance.platform_enum
-		 RETURNING id`,
-		platformEnum.Number(), instanceMeta,
-	).Scan(&instanceID)
-	if err != nil {
-		return 0, fmt.Errorf("get or create instance: %w", err)
-	}
-
-	return instanceID, nil
-}
