@@ -9,7 +9,9 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
+	github.com/olebedev/when v1.1.0
 	github.com/pressly/goose/v3 v3.27.3
+	github.com/robfig/cron/v3 v3.0.1
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
@@ -19,6 +21,7 @@ require (
 require (
 	cel.dev/expr v0.25.2 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/AlekSi/pointer v1.0.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/google/cel-go v0.30.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
@@ -28,6 +31,7 @@ require (
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/sethvargo/go-retry v0.4.0 // indirect
