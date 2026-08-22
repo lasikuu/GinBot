@@ -125,38 +125,135 @@ func respondStale(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 }
 
-// respondCommand renders a command response to an interaction.
+// commandSource is how a command reached the bot.
+type commandSource int
+
+const (
+	sourceSlash commandSource = iota
+	sourceChat
+	sourceReRoll
+)
+
+// interactionNone marks a plan with no interaction to answer. Discord numbers
+// its callback types from 1, so zero is free to mean "not an interaction".
+const interactionNone discordgo.InteractionResponseType = 0
+
+// responsePlan is how one command result reaches the channel. Splitting the
+// decision out from the calls it drives is what makes it verifiable: those
+// calls need a discordgo.Session and there is no fake for one.
+type responsePlan struct {
+	// interactionResponse is the callback that answers the interaction, sent
+	// before anything else. interactionNone for a chat command, which is not an
+	// interaction.
+	interactionResponse discordgo.InteractionResponseType
+	// replyInChannel says the content goes out as its own channel message,
+	// replying to the message that invoked it, rather than riding along in the
+	// interaction callback.
+	replyInChannel bool
+	// components is what that outgoing message carries.
+	components []discordgo.MessageComponent
+}
+
+// planResponse decides how a command result is delivered.
 //
-// A re-roll edits the message it was clicked from rather than posting a new
-// one. The button survives the edit, so re-rolling repeatedly leaves one
-// message that keeps changing instead of a growing chain of them.
+// A re-roll is the odd one out. Discord's interaction callback payload has no
+// message_reference — discordgo.InteractionResponseData has no Reference field
+// to put one in — so a callback can never itself be a reply. The click is
+// therefore only acknowledged, which leaves the clicked message untouched and
+// its button live, and the new roll follows as a separate reply to it. That
+// reply carries no button of its own, so the chain stops after one hop and
+// clicking the original again simply adds another reply to the same original.
+func planResponse(source commandSource, resp *command.Response) responsePlan {
+	switch source {
+	case sourceReRoll:
+		return responsePlan{
+			interactionResponse: discordgo.InteractionResponseDeferredMessageUpdate,
+			replyInChannel:      true,
+		}
+	case sourceChat:
+		return responsePlan{
+			interactionResponse: interactionNone,
+			replyInChannel:      true,
+			components:          reRollComponents(resp),
+		}
+	}
+
+	// A slash command is the only path where the callback carries the content.
+	return responsePlan{
+		interactionResponse: discordgo.InteractionResponseChannelMessageWithSource,
+		components:          reRollComponents(resp),
+	}
+}
+
+// respondCommand renders a command response to an interaction.
 func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *command.Response) {
 	if resp == nil {
 		log.Z.Error("command returned no response.", zap.String("command", i.Type.String()))
 		return
 	}
 
-	data := &discordgo.InteractionResponseData{
-		Content:         truncateContent(resp.Content),
-		Components:      reRollComponents(resp),
-		AllowedMentions: noMentions(),
-	}
-	if resp.Ephemeral {
-		data.Flags = discordgo.MessageFlagsEphemeral
-	}
-
-	responseType := discordgo.InteractionResponseChannelMessageWithSource
+	source := sourceSlash
 	if i.Type == discordgo.InteractionMessageComponent {
-		responseType = discordgo.InteractionResponseUpdateMessage
+		source = sourceReRoll
+	}
+	plan := planResponse(source, resp)
+
+	response := &discordgo.InteractionResponse{Type: plan.interactionResponse}
+	if !plan.replyInChannel {
+		response.Data = &discordgo.InteractionResponseData{
+			Content:         truncateContent(resp.Content),
+			Components:      plan.components,
+			AllowedMentions: noMentions(),
+		}
+		if resp.Ephemeral {
+			response.Data.Flags = discordgo.MessageFlagsEphemeral
+		}
 	}
 
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: responseType,
-		Data: data,
-	})
-	if err != nil {
+	// Acknowledge before sending anything else. The callback has three seconds
+	// or the user sees "This interaction failed", and the send below is a second
+	// round trip that can outlast them.
+	if err := s.InteractionRespond(i.Interaction, response); err != nil {
 		log.Z.Error("failed to respond to command.", zap.Error(err))
 	}
+
+	if !plan.replyInChannel {
+		return
+	}
+
+	reference := clickedMessageReference(i)
+	if reference == nil {
+		log.Z.Warn("component interaction carried no message.", zap.String("interaction", i.ID))
+	}
+
+	// Ephemeral is dropped here for the same reason it is on the chat path: a
+	// plain channel message has no such flag.
+	_, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
+		Content:         truncateContent(resp.Content),
+		Components:      plan.components,
+		Reference:       reference,
+		AllowedMentions: noMentions(),
+	})
+	if err != nil {
+		// The interaction is already acknowledged, so the user sees no failure
+		// banner and this log is the only trace.
+		log.Z.Error("failed to send re-roll reply.", zap.Error(err))
+	}
+}
+
+// clickedMessageReference points a re-roll reply at the message whose button
+// was clicked.
+//
+// Interaction.Message is populated only for a component interaction, and
+// discordgo dispatches handlers as bare goroutines with no recover(), so a nil
+// deref here would take the whole process down. A nil reference still posts the
+// roll, just not as a reply.
+func clickedMessageReference(i *discordgo.InteractionCreate) *discordgo.MessageReference {
+	if i.Message == nil {
+		return nil
+	}
+
+	return i.Message.Reference()
 }
 
 // respondChat renders a command response to a chat message.
@@ -168,9 +265,11 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 		return
 	}
 
+	plan := planResponse(sourceChat, resp)
+
 	_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
 		Content:         truncateContent(resp.Content),
-		Components:      reRollComponents(resp),
+		Components:      plan.components,
 		Reference:       m.Reference(),
 		AllowedMentions: noMentions(),
 	})
@@ -180,15 +279,16 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 }
 
 // reRollComponents attaches the re-roll button whenever the response asks for
-// one. It is attached to re-rolled messages too: previously the button was
-// added only for the initial slash command, so a re-rolled message lost it.
+// one. Only a first roll reaches it: planResponse withholds the button from a
+// re-roll so that the chain stops after one hop.
 //
-// Returning an empty slice rather than nil matters on the update path: nil
-// leaves the existing components in place, so a response that no longer wants a
-// button could not remove one.
+// nil is returned for "no button". It used to be an empty slice, because on the
+// old in-place edit path nil left the existing components alone and so could
+// not clear a button; no message is edited any more, and on a message create
+// nil and an empty slice both mean no components.
 func reRollComponents(resp *command.Response) []discordgo.MessageComponent {
 	if resp.ReRollID == "" {
-		return []discordgo.MessageComponent{}
+		return nil
 	}
 
 	return []discordgo.MessageComponent{

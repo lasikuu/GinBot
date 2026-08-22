@@ -120,6 +120,62 @@ func TestReRollCommandName(t *testing.T) {
 			}
 		})
 	}
+
+	// The legacy path is the one nobody exercises by hand, so a legacy ID added
+	// without a case above must fail here rather than go unnoticed.
+	covered := make(map[string]struct{}, len(legacyReRollIDs))
+	for _, tt := range tests {
+		if _, legacy := legacyReRollIDs[tt.customID]; legacy {
+			covered[tt.customID] = struct{}{}
+		}
+	}
+	for customID := range legacyReRollIDs {
+		if _, ok := covered[customID]; !ok {
+			t.Errorf("legacy custom ID %q has no case", customID)
+		}
+	}
+}
+
+// TestReRollButtonStaysClickable pins that the button a first roll carries is
+// one the component dispatcher resolves back to the same command. Nothing else
+// connects the ID stamped onto the button to the ID the dispatcher reads, and
+// this is what lets the original message be clicked over and over now that a
+// click replies to it instead of replacing it.
+func TestReRollButtonStaysClickable(t *testing.T) {
+	for _, roll := range digitRolls {
+		t.Run(roll.name, func(t *testing.T) {
+			resp := &command.Response{Content: "444", ReRollID: reRollID(roll.name)}
+
+			if !hasReRollButton(planResponse(sourceSlash, resp).components, resp.ReRollID) {
+				t.Fatalf("a first %s roll carries no button bound to %q", roll.name, resp.ReRollID)
+			}
+
+			name, ok := reRollCommandName(resp.ReRollID)
+			if !ok || name != roll.name {
+				t.Errorf("reRollCommandName(%q) = %q, %v; want %q, true", resp.ReRollID, name, ok, roll.name)
+			}
+		})
+	}
+}
+
+// TestLegacyClickProducesNoNewButton covers the legacy path end to end: an old
+// hand-written custom ID still resolves, and the roll the click produces
+// carries no button. Buttons on already-posted messages never expire, so the
+// legacy path must not start a chain either.
+func TestLegacyClickProducesNoNewButton(t *testing.T) {
+	for customID, want := range legacyReRollIDs {
+		t.Run(customID, func(t *testing.T) {
+			name, ok := reRollCommandName(customID)
+			if !ok || name != want {
+				t.Fatalf("reRollCommandName(%q) = %q, %v; want %q, true", customID, name, ok, want)
+			}
+
+			resp := &command.Response{Content: "44", ReRollID: reRollID(name)}
+			if hasReRollButton(planResponse(sourceReRoll, resp).components, resp.ReRollID) {
+				t.Error("a legacy re-roll produced another button, which would chain")
+			}
+		})
+	}
 }
 
 // TestReRollIDRoundTrip pins that a generated ID is one the dispatcher can

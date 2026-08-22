@@ -5,6 +5,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/pkg/command"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -121,20 +122,165 @@ func TestNoMentionsParsesNothing(t *testing.T) {
 	}
 }
 
-// TestReRollComponents covers the update path: a response that wants no button
-// must produce an empty, non-nil slice, because nil leaves the existing
-// components in place when a message is edited rather than replaced.
+// TestReRollComponents covers the mapping from a response onto components: a
+// response asking for a re-roll gets exactly one control, one that does not
+// gets none.
 func TestReRollComponents(t *testing.T) {
 	withButton := reRollComponents(&command.Response{ReRollID: "reroll:doubles"})
 	if len(withButton) != 1 {
 		t.Errorf("a response asking for a re-roll produced %d components, want 1", len(withButton))
 	}
 
-	withoutButton := reRollComponents(&command.Response{})
-	if withoutButton == nil {
-		t.Error("a response with no re-roll produced nil, which would not clear an existing button")
-	}
-	if len(withoutButton) != 0 {
+	if withoutButton := reRollComponents(&command.Response{}); len(withoutButton) != 0 {
 		t.Errorf("a response with no re-roll produced %d components, want 0", len(withoutButton))
+	}
+}
+
+// TestPlanResponse pins the delivery decision for all three invocation paths.
+// It is the whole of the response path that can be checked directly: the two
+// API calls it drives need a discordgo.Session and there is no fake for one.
+//
+// The re-roll row is the correction. The old code answered a button click with
+// InteractionResponseUpdateMessage, which rewrote the clicked message in place
+// and re-attached the button. A click must instead be acknowledged without
+// touching that message, and the roll posted separately.
+func TestPlanResponse(t *testing.T) {
+	rolled := &command.Response{Content: "444", ReRollID: reRollID("triples")}
+
+	tests := []struct {
+		name           string
+		source         commandSource
+		resp           *command.Response
+		wantResponse   discordgo.InteractionResponseType
+		wantReply      bool
+		wantComponents int
+	}{
+		{
+			name:           "a slash command answers with the content",
+			source:         sourceSlash,
+			resp:           rolled,
+			wantResponse:   discordgo.InteractionResponseChannelMessageWithSource,
+			wantReply:      false,
+			wantComponents: 1,
+		},
+		{
+			name:           "a chat command has no interaction to answer",
+			source:         sourceChat,
+			resp:           rolled,
+			wantResponse:   interactionNone,
+			wantReply:      true,
+			wantComponents: 1,
+		},
+		{
+			name:           "a button click is acknowledged without editing the clicked message",
+			source:         sourceReRoll,
+			resp:           rolled,
+			wantResponse:   discordgo.InteractionResponseDeferredMessageUpdate,
+			wantReply:      true,
+			wantComponents: 0,
+		},
+		{
+			name:           "a response that asks for no re-roll gets no control",
+			source:         sourceSlash,
+			resp:           &command.Response{Content: "7"},
+			wantResponse:   discordgo.InteractionResponseChannelMessageWithSource,
+			wantReply:      false,
+			wantComponents: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := planResponse(tt.source, tt.resp)
+
+			if plan.interactionResponse == discordgo.InteractionResponseUpdateMessage {
+				t.Error("plan edits the clicked message in place")
+			}
+			if plan.interactionResponse != tt.wantResponse {
+				t.Errorf("interactionResponse = %d, want %d", plan.interactionResponse, tt.wantResponse)
+			}
+			if plan.replyInChannel != tt.wantReply {
+				t.Errorf("replyInChannel = %v, want %v", plan.replyInChannel, tt.wantReply)
+			}
+			if len(plan.components) != tt.wantComponents {
+				t.Errorf("components = %d, want %d", len(plan.components), tt.wantComponents)
+			}
+		})
+	}
+}
+
+// TestReRollButtonStopsAfterOneHop is the regression the correction is about.
+// A roll invoked as a slash or chat command carries the die button; the roll
+// produced by clicking that button must not, or every click grows a chain.
+//
+// The button is identified by its custom ID rather than by counting, so a
+// component that is merely present but not a re-roll control cannot pass.
+func TestReRollButtonStopsAfterOneHop(t *testing.T) {
+	resp := &command.Response{Content: "444", ReRollID: reRollID("triples")}
+
+	tests := []struct {
+		name       string
+		source     commandSource
+		wantButton bool
+	}{
+		{name: "slash invocation", source: sourceSlash, wantButton: true},
+		{name: "chat invocation", source: sourceChat, wantButton: true},
+		{name: "button click", source: sourceReRoll, wantButton: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasReRollButton(planResponse(tt.source, resp).components, resp.ReRollID)
+			if got != tt.wantButton {
+				t.Errorf("re-roll button present = %v, want %v", got, tt.wantButton)
+			}
+		})
+	}
+}
+
+// hasReRollButton reports whether the components carry a button bound to
+// customID, which is what makes a message clickable again.
+func hasReRollButton(components []discordgo.MessageComponent, customID string) bool {
+	for _, component := range components {
+		row, ok := component.(*discordgo.ActionsRow)
+		if !ok {
+			continue
+		}
+
+		for _, nested := range row.Components {
+			if button, ok := nested.(discordgo.Button); ok && button.CustomID == customID {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// TestClickedMessageReferencePointsAtTheClickedMessage covers the reply target.
+// Interaction.Message is only populated for a component interaction, and
+// discordgo dispatches handlers without recovering panics, so the absent case
+// must degrade to no reference rather than deref nil.
+func TestClickedMessageReferencePointsAtTheClickedMessage(t *testing.T) {
+	clicked := &discordgo.Message{ID: "msg", ChannelID: "chan", GuildID: "guild"}
+
+	reference := clickedMessageReference(&discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{ChannelID: "chan", Message: clicked},
+	})
+	if reference == nil {
+		t.Fatal("no reference for a clicked message; the roll would not be a reply")
+	}
+	if reference.MessageID != clicked.ID {
+		t.Errorf("MessageID = %q, want %q", reference.MessageID, clicked.ID)
+	}
+	if reference.ChannelID != clicked.ChannelID {
+		t.Errorf("ChannelID = %q, want %q", reference.ChannelID, clicked.ChannelID)
+	}
+
+	absent := clickedMessageReference(&discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{ChannelID: "chan"},
+	})
+	if absent != nil {
+		t.Errorf("reference = %+v for an interaction with no message, want nil", absent)
 	}
 }
