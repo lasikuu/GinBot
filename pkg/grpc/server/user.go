@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/log"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -19,36 +22,48 @@ func NewUserServer() *UserServer {
 	return s
 }
 
-func (s *UserServer) Register(_ context.Context, req *pb.RegisterReq) (*pb.RegisterResp, error) {
+func (s *UserServer) Register(ctx context.Context, req *pb.RegisterReq) (*pb.RegisterResp, error) {
 	if !(req.HasUsername() && req.HasPlatform() && req.HasPlatformUserId()) {
 		return nil, status.Errorf(codes.InvalidArgument, "username, platform, and platform_user_id are required")
 	}
 
-	userId, err := db.CreateUser(req.GetUsername(), req.GetPlatform(), req.GetPlatformUserId(), req.GetPlatformMetadata(), req.GetLocale())
+	userID, err := db.CreateUser(
+		ctx,
+		req.GetUsername(),
+		req.GetPlatform(),
+		req.GetPlatformUserId(),
+		req.GetPlatformMetadata(),
+		req.GetLocale(),
+	)
 	if err != nil {
-		return nil, err
+		log.Z.Error("failed to create user", zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to create user")
 	}
 
 	return pb.RegisterResp_builder{
-		UserId: userId,
+		UserId: &userID,
 	}.Build(), nil
 }
 
-func (s *UserServer) GetUser(_ context.Context, req *pb.GetUserReq) (*pb.GetUserResp, error) {
-	if req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "user_id is required")
+func (s *UserServer) GetUser(ctx context.Context, req *pb.GetUserReq) (*pb.GetUserResp, error) {
+	if !req.HasId() {
+		return nil, status.Errorf(codes.InvalidArgument, "id is required")
 	}
 
-	user := db.GetUser(req.GetId())
-	if user == nil {
+	user, err := db.GetUser(ctx, req.GetId())
+	if errors.Is(err, db.ErrNotFound) {
 		return nil, status.Errorf(codes.NotFound, "user not found")
+	}
+	if err != nil {
+		log.Z.Error("failed to get user", zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to get user")
 	}
 
 	return pb.GetUserResp_builder{
-		User: user,
+		User: user.ToProto(),
 	}.Build(), nil
 }
 
-func (s *UserServer) GetCongratulableBirthdays(ctx context.Context, _ *emptypb.Empty) (*pb.GetCongratulableBirthdaysResp, error) {
-	return nil, nil
+func (s *UserServer) GetCongratulableBirthdays(_ context.Context, _ *emptypb.Empty) (*pb.GetCongratulableBirthdaysResp, error) {
+	return nil, status.Error(codes.Unimplemented, "GetCongratulableBirthdays is not implemented yet")
 }

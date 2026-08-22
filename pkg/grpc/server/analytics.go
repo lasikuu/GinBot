@@ -4,6 +4,8 @@ import (
 	"context"
 
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type AnalyticsServer struct {
@@ -15,10 +17,12 @@ func NewAnalyticsServer() *AnalyticsServer {
 	return s
 }
 
-func (s *AnalyticsServer) CreateActionRecord(ctx context.Context, req *pb.CreateActionRecordReq) (*pb.CreateActionRecordResp, error) {
-	return nil, nil
+// CreateActionRecord is not implemented yet: there is no action_record table.
+// It arrives with the trigger stats work.
+func (s *AnalyticsServer) CreateActionRecord(_ context.Context, _ *pb.CreateActionRecordReq) (*pb.CreateActionRecordResp, error) {
+	return nil, status.Error(codes.Unimplemented, "CreateActionRecord is not implemented yet")
 }
 
-func (s *AnalyticsServer) ListActionRecords(ctx context.Context, req *pb.ListActionRecordsReq) (*pb.ListActionRecordsResp, error) {
-	return nil, nil
+func (s *AnalyticsServer) ListActionRecords(_ context.Context, _ *pb.ListActionRecordsReq) (*pb.ListActionRecordsResp, error) {
+	return nil, status.Error(codes.Unimplemented, "ListActionRecords is not implemented yet")
 }
