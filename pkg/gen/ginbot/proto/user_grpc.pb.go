@@ -23,6 +23,8 @@ const (
 	UserService_GetUser_FullMethodName                   = "/ginbot.proto.UserService/GetUser"
 	UserService_Register_FullMethodName                  = "/ginbot.proto.UserService/Register"
 	UserService_GetCongratulableBirthdays_FullMethodName = "/ginbot.proto.UserService/GetCongratulableBirthdays"
+	UserService_SetLocale_FullMethodName                 = "/ginbot.proto.UserService/SetLocale"
+	UserService_SetTimezone_FullMethodName               = "/ginbot.proto.UserService/SetTimezone"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -32,6 +34,8 @@ type UserServiceClient interface {
 	GetUser(ctx context.Context, in *GetUserReq, opts ...grpc.CallOption) (*GetUserResp, error)
 	Register(ctx context.Context, in *RegisterReq, opts ...grpc.CallOption) (*RegisterResp, error)
 	GetCongratulableBirthdays(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetCongratulableBirthdaysResp, error)
+	SetLocale(ctx context.Context, in *SetLocaleReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	SetTimezone(ctx context.Context, in *SetTimezoneReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type userServiceClient struct {
@@ -72,6 +76,26 @@ func (c *userServiceClient) GetCongratulableBirthdays(ctx context.Context, in *e
 	return out, nil
 }
 
+func (c *userServiceClient) SetLocale(ctx context.Context, in *SetLocaleReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, UserService_SetLocale_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) SetTimezone(ctx context.Context, in *SetTimezoneReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, UserService_SetTimezone_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -79,6 +103,8 @@ type UserServiceServer interface {
 	GetUser(context.Context, *GetUserReq) (*GetUserResp, error)
 	Register(context.Context, *RegisterReq) (*RegisterResp, error)
 	GetCongratulableBirthdays(context.Context, *emptypb.Empty) (*GetCongratulableBirthdaysResp, error)
+	SetLocale(context.Context, *SetLocaleReq) (*emptypb.Empty, error)
+	SetTimezone(context.Context, *SetTimezoneReq) (*emptypb.Empty, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -97,6 +123,12 @@ func (UnimplementedUserServiceServer) Register(context.Context, *RegisterReq) (*
 }
 func (UnimplementedUserServiceServer) GetCongratulableBirthdays(context.Context, *emptypb.Empty) (*GetCongratulableBirthdaysResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCongratulableBirthdays not implemented")
+}
+func (UnimplementedUserServiceServer) SetLocale(context.Context, *SetLocaleReq) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetLocale not implemented")
+}
+func (UnimplementedUserServiceServer) SetTimezone(context.Context, *SetTimezoneReq) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetTimezone not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -173,6 +205,42 @@ func _UserService_GetCongratulableBirthdays_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_SetLocale_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetLocaleReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).SetLocale(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_SetLocale_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).SetLocale(ctx, req.(*SetLocaleReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_SetTimezone_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetTimezoneReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).SetTimezone(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_SetTimezone_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).SetTimezone(ctx, req.(*SetTimezoneReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -191,6 +259,14 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCongratulableBirthdays",
 			Handler:    _UserService_GetCongratulableBirthdays_Handler,
+		},
+		{
+			MethodName: "SetLocale",
+			Handler:    _UserService_SetLocale_Handler,
+		},
+		{
+			MethodName: "SetTimezone",
+			Handler:    _UserService_SetTimezone_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

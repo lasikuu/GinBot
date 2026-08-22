@@ -21,16 +21,26 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	UtilityService_HealthCheck_FullMethodName = "/ginbot.proto.UtilityService/HealthCheck"
-	UtilityService_Help_FullMethodName        = "/ginbot.proto.UtilityService/Help"
 	UtilityService_Ping_FullMethodName        = "/ginbot.proto.UtilityService/Ping"
 )
 
 // UtilityServiceClient is the client API for UtilityService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// There is deliberately no Help RPC here. Help is rendered client-side from the
+// command registry in pkg/command, which is the single source of command names,
+// aliases, descriptions and argument specs and lives in the client process. The
+// server holds no registry and would have to be shipped one to answer a help
+// request, so a server-side Help could only ever be a worse copy of what the
+// client already has.
 type UtilityServiceClient interface {
 	HealthCheck(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthCheckResp, error)
-	Help(ctx context.Context, in *HelpReq, opts ...grpc.CallOption) (*HelpResp, error)
+	// Takes no request and returns no timestamp on purpose. Round-trip latency is
+	// measured entirely client-side (stamp before the call, diff after the
+	// response), which needs no clock synchronisation between the two processes.
+	// Diffing a client-supplied timestamp on the server would silently report
+	// clock skew as latency.
 	Ping(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PingResp, error)
 }
 
@@ -52,16 +62,6 @@ func (c *utilityServiceClient) HealthCheck(ctx context.Context, in *emptypb.Empt
 	return out, nil
 }
 
-func (c *utilityServiceClient) Help(ctx context.Context, in *HelpReq, opts ...grpc.CallOption) (*HelpResp, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(HelpResp)
-	err := c.cc.Invoke(ctx, UtilityService_Help_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *utilityServiceClient) Ping(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PingResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PingResp)
@@ -75,9 +75,20 @@ func (c *utilityServiceClient) Ping(ctx context.Context, in *emptypb.Empty, opts
 // UtilityServiceServer is the server API for UtilityService service.
 // All implementations must embed UnimplementedUtilityServiceServer
 // for forward compatibility.
+//
+// There is deliberately no Help RPC here. Help is rendered client-side from the
+// command registry in pkg/command, which is the single source of command names,
+// aliases, descriptions and argument specs and lives in the client process. The
+// server holds no registry and would have to be shipped one to answer a help
+// request, so a server-side Help could only ever be a worse copy of what the
+// client already has.
 type UtilityServiceServer interface {
 	HealthCheck(context.Context, *emptypb.Empty) (*HealthCheckResp, error)
-	Help(context.Context, *HelpReq) (*HelpResp, error)
+	// Takes no request and returns no timestamp on purpose. Round-trip latency is
+	// measured entirely client-side (stamp before the call, diff after the
+	// response), which needs no clock synchronisation between the two processes.
+	// Diffing a client-supplied timestamp on the server would silently report
+	// clock skew as latency.
 	Ping(context.Context, *emptypb.Empty) (*PingResp, error)
 	mustEmbedUnimplementedUtilityServiceServer()
 }
@@ -91,9 +102,6 @@ type UnimplementedUtilityServiceServer struct{}
 
 func (UnimplementedUtilityServiceServer) HealthCheck(context.Context, *emptypb.Empty) (*HealthCheckResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HealthCheck not implemented")
-}
-func (UnimplementedUtilityServiceServer) Help(context.Context, *HelpReq) (*HelpResp, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Help not implemented")
 }
 func (UnimplementedUtilityServiceServer) Ping(context.Context, *emptypb.Empty) (*PingResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Ping not implemented")
@@ -137,24 +145,6 @@ func _UtilityService_HealthCheck_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
-func _UtilityService_Help_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(HelpReq)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(UtilityServiceServer).Help(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: UtilityService_Help_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UtilityServiceServer).Help(ctx, req.(*HelpReq))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _UtilityService_Ping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -183,10 +173,6 @@ var UtilityService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "HealthCheck",
 			Handler:    _UtilityService_HealthCheck_Handler,
-		},
-		{
-			MethodName: "Help",
-			Handler:    _UtilityService_Help_Handler,
 		},
 		{
 			MethodName: "Ping",
