@@ -2,53 +2,91 @@ package db
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/lasikuu/GinBot/internal/model"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
-	"github.com/lasikuu/GinBot/pkg/log"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func CreateInstance(platformEnum pb.Platform, platformMeta *structpb.Struct, defaultChannel string) (int64, error) {
-	var platformID int64
-	err := db().QueryRow(
-		context.Background(),
-		"INSERT INTO instance (platform_enum, instance_meta, default_channel) values($1, $2, $3) RETURNING id",
-		platformEnum.Number(), platformMeta, nullStr(defaultChannel),
-	).Scan(&platformID)
+// CreateInstance inserts an instance and returns its id.
+func CreateInstance(
+	ctx context.Context,
+	platformEnum pb.Platform,
+	instanceMeta *structpb.Struct,
+	defaultChannel string,
+) (int64, error) {
+	var instanceID int64
+	err := db().QueryRow(ctx,
+		`INSERT INTO instance (platform_enum, instance_meta, default_channel)
+		 VALUES ($1, $2, $3) RETURNING id`,
+		platformEnum.Number(), instanceMeta, nullStr(defaultChannel),
+	).Scan(&instanceID)
 	if err != nil {
-		log.Z.Error("failed to insert platform", zap.Error(err))
+		return 0, fmt.Errorf("insert instance: %w", err)
+	}
+
+	return instanceID, nil
+}
+
+// GetInstanceByID returns the instance row for id, or ErrNotFound.
+func GetInstanceByID(ctx context.Context, id int64) (*model.Instance, error) {
+	var instance model.Instance
+	err := db().QueryRow(ctx,
+		`SELECT `+model.InstanceColumns+` FROM instance WHERE id = $1 AND deleted = FALSE`,
+		id,
+	).Scan(instance.ScanTargets()...)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan instance: %w", err)
+	}
+
+	return &instance, nil
+}
+
+// GetInstanceByMeta looks an instance up by its platform and metadata, or ErrNotFound.
+func GetInstanceByMeta(
+	ctx context.Context,
+	platformEnum pb.Platform,
+	instanceMeta *structpb.Struct,
+) (*model.Instance, error) {
+	var instance model.Instance
+	err := db().QueryRow(ctx,
+		`SELECT `+model.InstanceColumns+`
+		 FROM instance
+		 WHERE platform_enum = $1 AND instance_meta = $2 AND deleted = FALSE`,
+		platformEnum.Number(), instanceMeta,
+	).Scan(instance.ScanTargets()...)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan instance by meta: %w", err)
+	}
+
+	return &instance, nil
+}
+
+// GetOrCreateInstanceByMeta returns the id of the matching instance, inserting
+// one if it does not exist yet.
+func GetOrCreateInstanceByMeta(
+	ctx context.Context,
+	platformEnum pb.Platform,
+	instanceMeta *structpb.Struct,
+) (int64, error) {
+	instance, err := GetInstanceByMeta(ctx, platformEnum, instanceMeta)
+	switch {
+	case err == nil:
+		return instance.ID, nil
+	case errors.Is(err, ErrNotFound):
+		return CreateInstance(ctx, platformEnum, instanceMeta, "")
+	default:
 		return 0, err
 	}
-
-	return platformID, nil
-}
-
-func GetInstanceByID(id int64) (*pb.Instance, error) {
-	var instance pb.Instance
-	err := db().QueryRow(
-		context.Background(),
-		"SELECT * FROM instance WHERE id = $1", id,
-	).Scan(&instance)
-	if err != nil {
-		log.Z.Error("failed to scan platform", zap.Error(err))
-		return nil, err
-	}
-
-	return &instance, nil
-}
-
-func GetInstanceByMeta(platformEnum pb.Platform, platformMeta *structpb.Struct) (*pb.Instance, error) {
-	var instance pb.Instance
-	err := db().QueryRow(
-		context.Background(),
-		"SELECT * FROM instance WHERE instance_meta = $1 AND instance_meta = $2",
-		platformEnum.Number(), platformMeta,
-	).Scan(&instance)
-	if err != nil {
-		log.Z.Error("failed to scan platform", zap.Error(err))
-		return nil, err
-	}
-
-	return &instance, nil
 }
