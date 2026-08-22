@@ -3,6 +3,7 @@ package discord
 import (
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/internal/config"
@@ -57,7 +58,8 @@ func InitializeDiscord() {
 	}(discordSession)
 
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
+	// SIGTERM as well as SIGINT, so container shutdowns are graceful.
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
 	if config.Options.Discord.EraseCommands {

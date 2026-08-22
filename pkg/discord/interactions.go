@@ -7,8 +7,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
-	"google.golang.org/grpc/metadata"
 )
 
 func interactionContext(i *discordgo.InteractionCreate) (context.Context, error) {
@@ -21,13 +21,8 @@ func interactionContext(i *discordgo.InteractionCreate) (context.Context, error)
 		log.Z.Error("cannot get user id.")
 		return context.Background(), errors.New("cannot get discord user id")
 	}
-	md := metadata.Pairs(
-		"platform_enum", pb.Platform_PLATFORM_DISCORD.String(),
-		"user_id", userID,
-	)
-	ctx := metadata.NewOutgoingContext(context.Background(), md)
 
-	return ctx, nil
+	return callermeta.NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, userID), nil
 }
 
 var (
