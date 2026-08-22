@@ -34,25 +34,35 @@ func (s *EntertainmentServer) GetRandomNumber(_ context.Context, req *pb.GetRand
 		if digits < 1 || digits > maxDigits {
 			return nil, status.Errorf(codes.InvalidArgument, "digits must be between 1 and %d, got %d", maxDigits, digits)
 		}
-		upperBound := int(math.Pow10(digits))
+		upperBound := int64(math.Pow10(digits))
 
-		value = strconv.Itoa(rand.IntN(upperBound))
+		value = strconv.FormatInt(rand.Int64N(upperBound), 10)
 		if len(value) < digits {
 			value = strings.Repeat("0", digits-len(value)) + value
 		}
 
 	case pb.GetRandomNumberReq_INTERVAL:
-		lowerBound := int(req.GetLower())
-		upperBound := int(req.GetUpper())
+		lower := req.GetLower()
+		upper := req.GetUpper()
 
-		// rand.IntN panics on n <= 0, which would take down the whole server.
-		// The bound is inclusive of lower and exclusive of upper, so they must not be equal.
-		if upperBound <= lowerBound {
+		// rand.Int64N panics on n <= 0, which would take down the whole server.
+		// The range is inclusive of lower and exclusive of upper.
+		if upper <= lower {
 			return nil, status.Errorf(codes.InvalidArgument,
-				"upper (%d) must be greater than lower (%d)", upperBound, lowerBound)
+				"upper (%d) must be greater than lower (%d)", upper, lower)
 		}
 
-		value = strconv.Itoa(rand.IntN(upperBound-lowerBound) + lowerBound)
+		// upper-lower overflows int64 when the bounds straddle zero widely enough,
+		// e.g. lower=-2^62, upper=2^62 wraps to a negative span and panics. All
+		// arithmetic stays in int64 so the wrap is detectable rather than hidden
+		// by a conversion to int.
+		span := upper - lower
+		if span <= 0 {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"range between %d and %d is too large", lower, upper)
+		}
+
+		value = strconv.FormatInt(rand.Int64N(span)+lower, 10)
 
 	case pb.GetRandomNumberReq_ANY:
 		value = req.GetMsgId()
