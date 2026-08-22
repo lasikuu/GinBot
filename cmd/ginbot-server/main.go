@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/cron"
@@ -44,7 +47,7 @@ func main() {
 	}
 
 	serverOptions := append(
-		config.Options.GRPC.ServerOptions,
+		config.ServerOptions(),
 		grpc.ChainUnaryInterceptor(validationInterceptor),
 	)
 	grpcServer := grpc.NewServer(serverOptions...)
@@ -59,18 +62,35 @@ func main() {
 	pb.RegisterEntertainmentServiceServer(grpcServer, service.EntertainmentServer)
 	pb.RegisterReverseServiceServer(grpcServer, service.ReverseServer)
 
+	// Cancelled on SIGINT or SIGTERM. Serve() is run in a goroutine so the signal
+	// can be acted on: without this, main blocked in Serve() until log.Z.Fatal
+	// called os.Exit, which skips every deferred call — so log.Sync, db.CloseDB
+	// and the cron cancellation above could never actually run.
+	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
 	// Parallel cron jobs
-	cronCtx, stopCron := context.WithCancel(context.Background())
-	defer stopCron()
-	go cron.RunCronJobs(cronCtx)
+	go cron.RunCronJobs(shutdownCtx)
 
 	if config.AppEnvironment == enum.DEVELOPMENT {
 		// Register reflection service on gRPC server.
 		reflection.Register(grpcServer)
 	}
 
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Z.Fatal("failed to serve.", zap.Error(err))
-		return
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- grpcServer.Serve(lis)
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			log.Z.Error("gRPC server stopped.", zap.Error(err))
+		}
+	case <-shutdownCtx.Done():
+		log.Z.Info("shutdown signal received, draining connections.")
+		grpcServer.GracefulStop()
 	}
+
+	log.Z.Info("gracefully shutting down.")
 }
