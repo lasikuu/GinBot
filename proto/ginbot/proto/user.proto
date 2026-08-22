@@ -6,6 +6,7 @@ option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
 import "ginbot/proto/platform.proto";
 
+import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
@@ -53,8 +54,10 @@ message User {
 }
 
 message GetUserReq {
-  // UUID of the User
-  string id = 1;
+  // User UUIDv7
+  string id = 1 [
+    (buf.validate.field).string.uuid = true
+  ];
 }
 
 message GetUserResp {

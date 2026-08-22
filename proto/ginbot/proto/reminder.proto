@@ -75,7 +75,9 @@ message ReminderDestination {
 
 message GetReminderReq {
   // Reminder UUIDv7
-  string id = 1;
+  string id = 1 [
+    (buf.validate.field).string.uuid = true
+  ];
 }
 
 message GetReminderResp {
