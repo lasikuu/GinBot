@@ -10,8 +10,13 @@ ALTER TABLE "file"
     ALTER COLUMN path TYPE text USING path::text;
 COMMENT ON COLUMN "file".path IS 'storage path or key, relative to the configured storage root';
 
--- reminder.parent_id referenced reminder.id (a uuid) but was declared `int`,
--- so the self-reference could never work and no FK could be created.
+-- reminder.parent_id referenced reminder.id (a uuid) but was declared `int`, so
+-- the self-reference could never work and no FK could be created.
+--
+-- DESTRUCTIVE: USING NULL discards any existing parent_id values. That is
+-- acceptable because no int value could ever have been a valid reminder.id, and
+-- because the previous CreateReminder listed 8 columns against 7 placeholders
+-- and therefore failed on every call — so no reminder rows exist in practice.
 ALTER TABLE "reminder"
     ALTER COLUMN parent_id TYPE uuid USING NULL;
 ALTER TABLE "reminder"
@@ -66,14 +71,26 @@ DROP FUNCTION IF EXISTS set_updated_at();
 
 COMMENT ON COLUMN instance.platform_enum IS '0=unknown, 1=matrix protocol, 2=discord, 3=telegram, 4=line, 5=email, 6=snailmail';
 COMMENT ON COLUMN platform_user.platform_enum IS NULL;
+COMMENT ON COLUMN "reminder".parent_id IS NULL;
+COMMENT ON COLUMN "file".path IS NULL;
 
 DROP INDEX IF EXISTS idx_reminder_parent;
 ALTER TABLE "reminder"
     DROP CONSTRAINT IF EXISTS fk_reminder_parent;
+-- Also destructive, symmetrically with Up.
 ALTER TABLE "reminder"
     ALTER COLUMN parent_id TYPE int USING NULL;
 
+-- file.path is NOT NULL, so USING NULL alone fails once the table has rows
+-- ("column path contains null values"). Drop the constraint first, restore the
+-- original type, then reinstate it via a placeholder — the original path values
+-- cannot be represented as a timestamp and are lost either way.
+ALTER TABLE "file"
+    ALTER COLUMN path DROP NOT NULL;
 ALTER TABLE "file"
     ALTER COLUMN path TYPE timestamp USING NULL;
+UPDATE "file" SET path = NOW() WHERE path IS NULL;
+ALTER TABLE "file"
+    ALTER COLUMN path SET NOT NULL;
 
 -- +goose StatementEnd
