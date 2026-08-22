@@ -21,7 +21,10 @@ message GetRandomNumberReq {
     ANY = 2;
   };
 
-  // 1, 2 and 4 were used by removed fields and must never be reused.
+  // Reserved defensively: the numbering starts at 3 and skips 4, so these were
+  // most likely used before the file was first committed. Nothing in the history
+  // confirms that, but reserving costs nothing and reusing them would break any
+  // client built against an earlier private revision.
   reserved 1, 2, 4;
 
   REQUEST type = 3;

@@ -16,6 +16,8 @@ import (
 const DefaultCertsDir = "cert"
 
 func loadCredentials(certsDir string, caCertPEM string, keyPEM string, certPEM string) (tls.Certificate, *x509.CertPool) {
+	// config.certsPath() already substitutes DefaultCertsDir, but this package is
+	// callable directly, so guard here too rather than joining onto "".
 	if certsDir == "" {
 		certsDir = DefaultCertsDir
 	}

@@ -58,13 +58,6 @@ func (f *fakeStream) sentCount() int {
 	return len(f.sent)
 }
 
-// register sends a registration message and waits for the server to record it.
-func (f *fakeStream) register(t *testing.T, s *ReverseServer, platform pb.Platform) {
-	t.Helper()
-	f.recv <- pb.OpenClientActionStreamReq_builder{PlatformEnum: platform.Enum()}.Build()
-	waitFor(t, func() bool { return s.clientCount() > 0 || s.clientCountFor(platform) > 0 })
-}
-
 // clientCount reports how many clients are registered.
 func (s *ReverseServer) clientCount() int {
 	s.mu.RLock()
@@ -131,10 +124,16 @@ func TestSendActionFansOutToAllClientsOnPlatform(t *testing.T) {
 
 	s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
 
+	for _, st := range streams {
+		waitFor(t, func() bool { return st.sentCount() >= 1 })
+	}
+
+	// Settle, then assert exactly one — waitFor alone cannot distinguish
+	// "one" from "one so far", so duplicate delivery would slip past it.
+	time.Sleep(50 * time.Millisecond)
 	for i, st := range streams {
-		waitFor(t, func() bool { return st.sentCount() == 1 })
 		if got := st.sentCount(); got != 1 {
-			t.Errorf("stream %d received %d actions, want 1", i, got)
+			t.Errorf("stream %d received %d actions, want exactly 1", i, got)
 		}
 	}
 

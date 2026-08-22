@@ -26,6 +26,10 @@ func timestamp(t *time.Time) *timestamppb.Timestamp {
 	return timestamppb.New(*t)
 }
 
+// Note: ToProto assigns message-typed fields (InstanceMeta, Destination) by
+// pointer, so the returned protobuf shares that state with the row struct.
+// Callers must not mutate either afterwards; clone first if that is ever needed.
+
 // User mirrors a row of user_account.
 type User struct {
 	ID                  string
