@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
@@ -23,13 +24,38 @@ func NewReminderServer() *ReminderServer {
 	return s
 }
 
+// callerUser resolves the caller's platform identity to a user_account row.
+// Returns FailedPrecondition when the caller has not registered.
+func callerUser(ctx context.Context, meta *ContextMetadata) (*model.User, error) {
+	if meta.PlatformUID == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "user_id metadata is required")
+	}
+
+	user, err := db.GetUserByPlatformUID(ctx, meta.PlatformEnum, *meta.PlatformUID)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, status.Errorf(codes.FailedPrecondition, "caller is not registered")
+	}
+	if err != nil {
+		log.Z.Error("failed to resolve caller", zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to resolve caller")
+	}
+
+	return user, nil
+}
+
 func (s *ReminderServer) GetReminder(ctx context.Context, req *pb.GetReminderReq) (*pb.GetReminderResp, error) {
-	if _, err := getMetadata(ctx); err != nil {
+	meta, err := getMetadata(ctx)
+	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
 		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+	}
+
+	caller, err := callerUser(ctx, meta)
+	if err != nil {
+		return nil, err
 	}
 
 	reminder, err := db.GetReminder(ctx, req.GetId())
@@ -39,6 +65,12 @@ func (s *ReminderServer) GetReminder(ctx context.Context, req *pb.GetReminderReq
 	if err != nil {
 		log.Z.Error("failed to get reminder", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to get reminder")
+	}
+
+	// Reminders are private to their creator. NotFound rather than
+	// PermissionDenied so the response does not confirm that the id exists.
+	if reminder.UserID == nil || *reminder.UserID != caller.ID {
+		return nil, status.Errorf(codes.NotFound, "reminder not found")
 	}
 
 	destination, err := db.GetReminderDestination(ctx, reminder.DestinationID)
@@ -65,8 +97,12 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 	if err != nil {
 		return nil, err
 	}
-	if meta.PlatformUID == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "user_id metadata is required")
+
+	// The validation interceptor covers these too, but it is wired only in
+	// cmd/ginbot-server and only for unary RPCs, and AGENTS.md requires handlers
+	// to check required fields themselves.
+	if !(req.HasDatetime() && req.HasTimezone()) {
+		return nil, status.Errorf(codes.InvalidArgument, "datetime and timezone are required")
 	}
 
 	if !(req.HasDestination() &&
@@ -76,22 +112,18 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
 	}
 
+	caller, err := callerUser(ctx, meta)
+	if err != nil {
+		return nil, err
+	}
+
 	destinationID, err := db.GetOrCreateDestinationByMeta(ctx, req.GetDestination())
 	if err != nil {
 		log.Z.Error("failed to get or create destination", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to resolve destination")
 	}
 
-	user, err := db.GetUserByPlatformUID(ctx, meta.PlatformEnum, *meta.PlatformUID)
-	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.FailedPrecondition, "caller is not registered")
-	}
-	if err != nil {
-		log.Z.Error("failed to get user by platform uid", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to resolve caller")
-	}
-
-	reminderID, err := db.CreateReminder(ctx, req, user.ID, destinationID)
+	reminderID, err := db.CreateReminder(ctx, req, caller.ID, destinationID)
 	if err != nil {
 		log.Z.Error("failed to create reminder", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to create reminder")

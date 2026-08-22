@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lasikuu/GinBot/internal/model"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
@@ -16,6 +17,19 @@ import (
 
 // ErrNotFound is returned when a lookup matches no row.
 var ErrNotFound = errors.New("not found")
+
+// ErrAlreadyExists is returned when an insert violates a unique constraint.
+var ErrAlreadyExists = errors.New("already exists")
+
+// pgUniqueViolation is the SQLSTATE for a unique constraint violation.
+const pgUniqueViolation = "23505"
+
+// isUniqueViolation reports whether err is a unique constraint violation, so
+// callers can map it to AlreadyExists instead of an opaque Internal.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
+}
 
 // CreateUser inserts a user_account and its platform_user identity in one
 // transaction, so a failure on the second insert cannot leave an orphaned
@@ -57,6 +71,9 @@ func CreateUser(
 		 VALUES ($1, $2, $3, $4)`,
 		userID, platformEnum.Number(), platformUserID, userMetadata,
 	); err != nil {
+		if isUniqueViolation(err) {
+			return "", fmt.Errorf("platform identity already registered: %w", ErrAlreadyExists)
+		}
 		return "", fmt.Errorf("insert platform_user: %w", err)
 	}
 
