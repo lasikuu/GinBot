@@ -10,6 +10,7 @@ import (
 	"github.com/lasikuu/GinBot/pkg/db"
 	"github.com/lasikuu/GinBot/pkg/enum"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"github.com/lasikuu/GinBot/pkg/grpc/service"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
@@ -37,7 +38,16 @@ func main() {
 		log.Z.Fatal("failed to listen.", zap.Error(err))
 	}
 
-	grpcServer := grpc.NewServer(config.Options.GRPC.ServerOptions...)
+	validationInterceptor, err := interceptor.NewValidationUnaryInterceptor()
+	if err != nil {
+		log.Z.Fatal("failed to build validation interceptor.", zap.Error(err))
+	}
+
+	serverOptions := append(
+		config.Options.GRPC.ServerOptions,
+		grpc.ChainUnaryInterceptor(validationInterceptor),
+	)
+	grpcServer := grpc.NewServer(serverOptions...)
 
 	service.InitServices()
 
