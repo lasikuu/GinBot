@@ -2,11 +2,10 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"embed"
-	"fmt"
+	"net"
+	"net/url"
 	"strconv"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -31,20 +30,18 @@ func db() *pgxpool.Pool {
 
 // InitDB initializes the database connection pool
 func InitDB() {
-	dbUri := strings.Builder{}
-	dbUri.WriteString("postgres://")
-	dbUri.WriteString(config.Options.DB.Username)
-	dbUri.WriteString(":")
-	dbUri.WriteString(config.Options.DB.Password)
-	dbUri.WriteString("@")
-	dbUri.WriteString(config.Options.DB.Host)
-	dbUri.WriteString(":")
-	dbUri.WriteString(strconv.Itoa(int(config.Options.DB.Port)))
-	dbUri.WriteString("/")
-	dbUri.WriteString(config.Options.DB.Name)
+	// Built via net/url rather than string concatenation so that passwords
+	// containing reserved characters (@ : / ?) are escaped rather than
+	// corrupting the URI.
+	dbURI := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(config.Options.DB.Username, config.Options.DB.Password),
+		Host:   net.JoinHostPort(config.Options.DB.Host, strconv.Itoa(int(config.Options.DB.Port))),
+		Path:   config.Options.DB.Name,
+	}
 
 	var err error
-	dbpool, err = pgxpool.New(context.Background(), dbUri.String())
+	dbpool, err = pgxpool.New(context.Background(), dbURI.String())
 	if err != nil {
 		log.Z.Fatal("failed to connect to database.", zap.Error(err))
 	}
@@ -66,26 +63,18 @@ func EnsureLatestVersion() {
 
 	// It is necessary to use the stdlib.OpenDBFromPool function to convert the *pgxpool.Pool to *sql.DB for goose.
 	sqlDB := stdlib.OpenDBFromPool(db())
-	if err := goose.Up(sqlDB, "migrations"); err != nil {
-		panic(err)
-	}
+	defer func() {
+		if err := sqlDB.Close(); err != nil {
+			log.Z.Warn("failed to close migration database handle", zap.Error(err))
+		}
+	}()
 
-	err := goose.Up(sqlDB, "migrations")
-	fmt.Println("")
-	if err != nil {
-		log.Z.Fatal("failed to apply new migrations", zap.String("err", err.Error()))
+	if err := goose.Up(sqlDB, "migrations"); err != nil {
+		log.Z.Fatal("failed to apply new migrations", zap.Error(err))
 	}
 }
 
 // CloseDB closes the database connection
 func CloseDB() {
 	db().Close()
-}
-
-// rollbackTx rolls back a transaction
-func rollbackTx(tx *sql.Tx) {
-	err := tx.Rollback()
-	if err != nil {
-		log.Z.Debug("failed to rollback transaction", zap.String("err", err.Error()))
-	}
 }
