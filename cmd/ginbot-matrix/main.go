@@ -10,6 +10,7 @@ import (
 func main() {
 	config.LoadEnv()
 	log.InitializeLogger(config.AppEnvironment, config.LogLevel)
+	defer log.Sync()
 	config.SetEnv()
 
 	log.Z.Info("starting GinBot client for Matrix.", zap.String("host", config.Options.GRPC.Host), zap.String("port", config.Options.GRPC.Port))

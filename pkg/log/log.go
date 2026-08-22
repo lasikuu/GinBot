@@ -27,6 +27,18 @@ func InitializeLogger(env enum.Environment, logLevel zapcore.Level) {
 		log.Fatal("Failed to initialize zap logger: ", loggerErr)
 	}
 
-	defer Z.Sync()
 	S = Z.Sugar()
+}
+
+// Sync flushes any buffered log entries. Callers should defer this from main,
+// not from InitializeLogger — deferring it there would flush immediately and
+// leave the rest of the process lifetime unflushed.
+func Sync() {
+	if Z == nil {
+		return
+	}
+
+	// Sync on stderr/stdout returns EINVAL or ENOTTY on Linux and macOS.
+	// There is nothing useful to do about it, and it is not an error worth surfacing.
+	_ = Z.Sync()
 }

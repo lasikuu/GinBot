@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"context"
 	"time"
 
 	"github.com/lasikuu/GinBot/internal/config"
@@ -13,11 +14,19 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func RunCronJobs() {
+// RunCronJobs runs the periodic job loop until ctx is cancelled.
+func RunCronJobs(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
-	started := time.Now()
+	defer ticker.Stop()
 
-	for now := range ticker.C {
+	for {
+		var now time.Time
+		select {
+		case <-ctx.Done():
+			log.Z.Info("cron loop stopping")
+			return
+		case now = <-ticker.C:
+		}
 
 		cronjob.Remind()
 
@@ -47,11 +56,7 @@ func RunCronJobs() {
 
 		// Every hour
 		if now.Minute() == 0 && now.Second() == 0 {
-		}
-
-		if now.Sub(started) >= time.Hour*24 {
-			// Resets the ticker after 24 hours
-			ticker.Reset(1 * time.Second)
+			log.Z.Debug("hourly cron tick", zap.Time("time", now))
 		}
 	}
 }

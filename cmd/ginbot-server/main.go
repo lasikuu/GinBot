@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 
@@ -20,6 +21,7 @@ func main() {
 	// Environment variables and logger
 	config.LoadEnv()
 	log.InitializeLogger(config.AppEnvironment, config.LogLevel)
+	defer log.Sync()
 	config.SetEnv()
 
 	// Database
@@ -48,7 +50,9 @@ func main() {
 	pb.RegisterReverseServiceServer(grpcServer, service.ReverseServer)
 
 	// Parallel cron jobs
-	go cron.RunCronJobs()
+	cronCtx, stopCron := context.WithCancel(context.Background())
+	defer stopCron()
+	go cron.RunCronJobs(cronCtx)
 
 	if config.AppEnvironment == enum.DEVELOPMENT {
 		// Register reflection service on gRPC server.
