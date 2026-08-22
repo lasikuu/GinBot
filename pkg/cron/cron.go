@@ -28,7 +28,7 @@ func RunCronJobs(ctx context.Context) {
 		case now = <-ticker.C:
 		}
 
-		cronjob.Remind()
+		cronjob.Remind(ctx)
 
 		// Every minute
 		if now.Second() == 0 {

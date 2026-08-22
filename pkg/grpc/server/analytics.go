@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 
+	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/log"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -17,10 +20,40 @@ func NewAnalyticsServer() *AnalyticsServer {
 	return s
 }
 
-// CreateActionRecord is not implemented yet: there is no action_record table.
-// It arrives with the trigger stats work.
-func (s *AnalyticsServer) CreateActionRecord(_ context.Context, _ *pb.CreateActionRecordReq) (*pb.CreateActionRecordResp, error) {
-	return nil, status.Error(codes.Unimplemented, "CreateActionRecord is not implemented yet")
+// CreateActionRecord persists one analytics action attributed to the CALLER.
+//
+// The request's actor_id is deliberately ignored. Identity comes from metadata
+// and never from a request field, which is the project-wide rule: trusting
+// actor_id let any CLEARANCE_REGISTERED caller attribute any action type to any
+// user_account UUID, and — since actor_id carries no uuid constraint — turn
+// arbitrary text into a codes.Internal from a failed Postgres cast.
+//
+// The server's own reminder paths (REMINDER_CREATED, REMINDER_DELIVERED) go
+// straight to db.CreateActionRecord in-process rather than through this RPC, so
+// they can still attribute a system-initiated action to the right user without
+// this restriction getting in the way.
+func (s *AnalyticsServer) CreateActionRecord(ctx context.Context, req *pb.CreateActionRecordReq) (*pb.CreateActionRecordResp, error) {
+	caller, err := callerUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if !req.HasActionType() {
+		return nil, status.Errorf(codes.InvalidArgument, "action_type is required")
+	}
+
+	var actionTime *int64
+	if req.HasActionTime() {
+		value := req.GetActionTime()
+		actionTime = &value
+	}
+
+	if err := db.CreateActionRecord(ctx, req.GetActionType(), caller.ID, actionTime); err != nil {
+		log.Z.Error("failed to create action record", zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to create action record")
+	}
+
+	return pb.CreateActionRecordResp_builder{}.Build(), nil
 }
 
 func (s *AnalyticsServer) ListActionRecords(_ context.Context, _ *pb.ListActionRecordsReq) (*pb.ListActionRecordsResp, error) {

@@ -56,12 +56,16 @@ func DefaultRequirements() Requirements {
 		pb.InstanceService_UpdateInstance_FullMethodName: administrator,
 		pb.InstanceService_DeleteInstance_FullMethodName: administrator,
 
-		pb.ReminderService_GetReminder_FullMethodName:         registered,
-		pb.ReminderService_ListReminders_FullMethodName:       registered,
-		pb.ReminderService_CreateReminder_FullMethodName:      registered,
-		pb.ReminderService_UpdateReminder_FullMethodName:      registered,
-		pb.ReminderService_DeleteReminder_FullMethodName:      registered,
-		pb.ReminderService_GetExpiredReminders_FullMethodName: registered,
+		pb.ReminderService_GetReminder_FullMethodName:    registered,
+		pb.ReminderService_ListReminders_FullMethodName:  registered,
+		pb.ReminderService_CreateReminder_FullMethodName: registered,
+		pb.ReminderService_UpdateReminder_FullMethodName: registered,
+		pb.ReminderService_DeleteReminder_FullMethodName: registered,
+		// ConfirmDelivery is a client->server callback carrying the reminder
+		// owner's identity. It is default-open unless listed here, which would be
+		// a silent security hole, so it is held to the same floor as the rest of
+		// the reminder surface.
+		pb.ReminderService_ConfirmDelivery_FullMethodName: registered,
 
 		pb.TriggerService_TryTrigger_FullMethodName:    registered,
 		pb.TriggerService_GetTrigger_FullMethodName:    registered,
