@@ -93,10 +93,23 @@ func TestRepeatCronAcceptsValidExpressions(t *testing.T) {
 		"0 0 1 * *",
 		"30 8 * * 1-5",
 		"0 0 1 1 *",
+		"0 0 1 1 * 2026",  // optional sixth field
+		"1,15,30 * * * *", // lists
+		"0 */2 * * *",     // step on a wildcard
+		"0 0 1-5/2 * *",   // step on a range
+		"0 9 * * MON",     // day-of-week name
+		"0 9 * * MON-FRI", // day-of-week range by name
+		"5 4 * * sun",     // lowercase name
+		"0 0 * JAN *",     // month name
+		"0\t9\t*\t*\t*",   // tab separated
 		"@daily",
 		"@weekly",
+		"@annually",
+		"@midnight",
+		"@reboot",
 		"@every 1h",
 		"@every 30m",
+		"@every 1h30m",
 	}
 
 	for _, cron := range valid {
@@ -116,13 +129,34 @@ func TestRepeatCronRejectsGarbage(t *testing.T) {
 	invalid := []string{
 		"not a cron",
 		"@hourlyish",
-		"* * *",
+		"* * *",            // too few fields
+		"0 9 * *",          // one field short
+		"0 9 * * * * *",    // too many fields
+		"@every",           // no duration
+		"@every abc",       // unparseable duration
+		"/0 9 * * */",      // the old /.../ delimiter form
+		"*-5 * * * *",      // a range cannot start at a wildcard
+		"0 9 * * ; rm -rf", // shell metacharacters
 	}
 
 	for _, cron := range invalid {
 		t.Run(cron, func(t *testing.T) {
 			if _, err := invoke(t, futureReminder(t, cron)); err == nil {
 				t.Errorf("invalid cron %q was accepted", cron)
+			}
+		})
+	}
+}
+
+// The pattern is a shape check and deliberately does not range-check values.
+// Documenting that here so the looseness is a recorded decision rather than an
+// unnoticed gap: out-of-range fields are rejected by the real cron parser at
+// scheduling time, and erring toward acceptance avoids blocking valid input.
+func TestRepeatCronDoesNotRangeCheckValues(t *testing.T) {
+	for _, cron := range []string{"99 99 99 99 99", "0 0 0 0 0"} {
+		t.Run(cron, func(t *testing.T) {
+			if _, err := invoke(t, futureReminder(t, cron)); err != nil {
+				t.Errorf("expected %q to pass the shape check, got: %v", cron, err)
 			}
 		})
 	}

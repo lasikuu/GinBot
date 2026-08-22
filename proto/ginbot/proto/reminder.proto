@@ -117,9 +117,17 @@ message CreateReminderReq {
   string message = 3;
   // Destinations to send the reminder to
   ReminderDestination destination = 4;
-  // Repeat in cron format
+  // Repeat in cron format.
+  //
+  // The pattern is a shape check, not a semantic one: it accepts @descriptors,
+  // @every durations, and 5-6 whitespace-separated fields using *, numbers,
+  // three-letter month/day names, ranges, lists and steps. It deliberately does
+  // NOT range-check field values, so "99 99 99 99 99" passes here and is
+  // rejected later by the real cron parser. Erring toward acceptance is
+  // intentional: a false rejection blocks a legitimate reminder, a false
+  // acceptance is caught at scheduling time.
   string repeat_cron = 5 [
-    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|hourly|reboot)|@every +(\\d+(ns|us|µs|ms|s|m|h))+|(\\*|\\d+)(-\\d+)?(/\\d+)?(,(\\*|\\d+)(-\\d+)?(/\\d+)?)*( +(\\*|\\d+)(-\\d+)?(/\\d+)?(,(\\*|\\d+)(-\\d+)?(/\\d+)?)*){4,6})$"
+    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|midnight|hourly|reboot)|@every[ \\t]+(\\d+(ns|us|µs|ms|s|m|h))+|(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*([ \\t]+(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*){4,5})$"
   ];
   // Parent reminder UUIDv7
   string parent_id = 6 [
@@ -151,7 +159,7 @@ message UpdateReminderReq {
   ReminderDestination destination = 5;
   // Repeat in cron format
   string repeat_cron = 6 [
-    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|hourly|reboot)|@every +(\\d+(ns|us|µs|ms|s|m|h))+|(\\*|\\d+)(-\\d+)?(/\\d+)?(,(\\*|\\d+)(-\\d+)?(/\\d+)?)*( +(\\*|\\d+)(-\\d+)?(/\\d+)?(,(\\*|\\d+)(-\\d+)?(/\\d+)?)*){4,6})$"
+    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|midnight|hourly|reboot)|@every[ \\t]+(\\d+(ns|us|µs|ms|s|m|h))+|(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*([ \\t]+(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*){4,5})$"
   ];
   // Parent reminder UUIDv7
   string parent_id = 7 [
