@@ -1,6 +1,8 @@
 package matrix
 
 import (
+	"context"
+
 	"github.com/lasikuu/GinBot/internal/config"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
@@ -9,7 +11,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-func NewMatrixClient() {
+func NewMatrixClient(ctx context.Context) {
 	serverAddress := config.Options.GRPC.Host + ":" + config.Options.GRPC.Port
 
 	conn, err := grpc.NewClient(serverAddress, config.Options.Matrix.GRPCClientOptions.DialOptions...)
@@ -21,7 +23,8 @@ func NewMatrixClient() {
 	client.InitUserService(conn)
 	client.InitUtilityService(conn)
 	client.InitReminderService(conn)
+	client.InitEntertainmentService(conn)
 	client.InitReverseService(conn)
 
-	go client.RunClientActionStream(pb.Platform_PLATFORM_MATRIX_PROTOCOL)
+	go client.RunClientActionStream(ctx, pb.Platform_PLATFORM_MATRIX_PROTOCOL, actionHandlers())
 }
