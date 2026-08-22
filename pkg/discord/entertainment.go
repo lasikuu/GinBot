@@ -1,53 +1,93 @@
 package discord
 
 import (
+	"context"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 )
 
-var EntertainmentCommands = []*discordgo.ApplicationCommand{
-	{
-		Name:        "doubles",
-		Description: "Roll for doubles",
-		NameLocalizations: &map[discordgo.Locale]string{
-			discordgo.Finnish: "tuplat",
-		},
-	},
-	{
-		Name:        "triples",
-		Description: "Roll for triples",
-		NameLocalizations: &map[discordgo.Locale]string{
-			discordgo.Finnish: "triplat",
-		},
-	},
-	{
-		Name:        "number",
-		Description: "Roll a random number between an interval",
-		Options:     NumberOptions,
-	},
+// digitRoll declares one member of the doubles family. Keeping the digit count
+// beside the name means adding a roll is one table entry rather than a new
+// handler plus a new command definition that can disagree with it.
+type digitRoll struct {
+	name        string
+	description string
+	digits      int32
 }
 
-var NumberOptions = []*discordgo.ApplicationCommandOption{
-	{
-		Name:        "lower",
-		Description: "Lower bound, inclusive. Defaults to 0",
-		Type:        discordgo.ApplicationCommandOptionInteger,
-		Required:    false,
-	},
-	{
-		// The server range is [lower, upper), so the default of 10 yields 0-9.
-		// The old description said "defaults to 9", which contradicted the code
-		// and implied the bound was inclusive.
-		Name:        "upper",
-		Description: "Upper bound, exclusive. Defaults to 10",
-		Type:        discordgo.ApplicationCommandOptionInteger,
-		Required:    false,
-	},
+var digitRolls = []digitRoll{
+	{name: "doubles", description: "Roll for doubles", digits: 2},
+	{name: "triples", description: "Roll for triples", digits: 3},
+	{name: "quads", description: "Roll for quads", digits: 4},
+	{name: "quints", description: "Roll for quints", digits: 5},
+	{name: "sexts", description: "Roll for sexts", digits: 6},
+}
+
+// Number bounds. The server range is [lower, upper), so an upper of 10 yields
+// 0-9.
+const (
+	numberDefaultLower int64 = 0
+	numberDefaultUpper int64 = 10
+)
+
+func digitRollCommands() []command.Command {
+	commands := make([]command.Command, 0, len(digitRolls))
+
+	for _, roll := range digitRolls {
+		commands = append(commands, command.Command{
+			Name:        roll.name,
+			Aliases:     localizedAliases(roll.name),
+			Description: roll.description,
+			Handler:     digitRollHandler(roll),
+		})
+	}
+
+	return commands
+}
+
+func digitRollHandler(roll digitRoll) command.Handler {
+	return func(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
+		content, err := doublesPlusN(ctx, roll.digits)
+		if err != nil {
+			return nil, err
+		}
+
+		return &command.Response{
+			Content:  content,
+			ReRollID: reRollID(roll.name),
+		}, nil
+	}
+}
+
+func numberCommand() command.Command {
+	return command.Command{
+		Name:        "number",
+		Description: "Roll a random number between an interval",
+		Args: []command.Arg{
+			{
+				Name:        "lower",
+				Description: "Lower bound, inclusive. Defaults to 0",
+				Type:        command.ArgInt,
+				Default:     numberDefaultLower,
+			},
+			{
+				// The server range is [lower, upper), so the default of 10 yields
+				// 0-9. The old description said "defaults to 9", which contradicted
+				// the code and implied the bound was inclusive.
+				Name:        "upper",
+				Description: "Upper bound, exclusive. Defaults to 10",
+				Type:        command.ArgInt,
+				Default:     numberDefaultUpper,
+			},
+		},
+		Handler: number,
+	}
 }
 
 // Returns a button component with a die emoji.
@@ -71,13 +111,7 @@ func createReRollButton(customID string) *discordgo.ActionsRow {
 	return &comp
 }
 
-func doublesPlusN(i *discordgo.InteractionCreate, digits int32) (string, error) {
-	ctx, err := interactionContext(i)
-	if err != nil {
-		log.Z.Error("failed to get context", zap.Error(err))
-		return "", err
-	}
-
+func doublesPlusN(ctx context.Context, digits int32) (string, error) {
 	reqType := pb.GetRandomNumberReq_DOUBLES
 
 	req := pb.GetRandomNumberReq_builder{
@@ -93,35 +127,21 @@ func doublesPlusN(i *discordgo.InteractionCreate, digits int32) (string, error) 
 
 	msg := resp.GetNumber()
 
-	// Hits are bolded
-	if strings.Count(msg, string(msg[0])) == len(msg) {
+	// Hits are bolded. The roll is ASCII digits, so counting the first byte is
+	// equivalent to counting the first character; an empty response would panic
+	// on msg[0].
+	if msg != "" && strings.Count(msg, msg[:1]) == len(msg) {
 		msg = "**" + msg + "**"
 	}
 
 	return msg, nil
 }
 
-func boundedNumber(i *discordgo.InteractionCreate) (string, error) {
-	ctx, err := interactionContext(i)
-	if err != nil {
-		log.Z.Error("failed to get context", zap.Error(err))
-		return "", err
-	}
-
+func number(ctx context.Context, inv *command.Invocation) (*command.Response, error) {
 	reqType := pb.GetRandomNumberReq_INTERVAL
 
-	var lower int64 = 0
-	var upper int64 = 10
-	options := i.ApplicationCommandData().Options
-
-	for i := range options {
-		if options[i].Name == "lower" {
-			lower = options[i].IntValue()
-		}
-		if options[i].Name == "upper" {
-			upper = options[i].IntValue()
-		}
-	}
+	lower := inv.Int("lower")
+	upper := inv.Int("upper")
 
 	req := pb.GetRandomNumberReq_builder{
 		Type:  &reqType,
@@ -132,83 +152,10 @@ func boundedNumber(i *discordgo.InteractionCreate) (string, error) {
 	resp, err := client.EntertainmentServiceClient.GetRandomNumber(ctx, req)
 	if err != nil {
 		log.Z.Error("failed to call GetRandomNumber", zap.Error(err))
-		return "", err
+		return nil, err
 	}
 
-	msg := "**" + resp.GetNumber() + "** \U0001F3B2"
-
-	return msg, nil
-}
-
-func Doubles(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	msg, err := doublesPlusN(i, 2)
-	if err != nil {
-		log.Z.Error("failed to call doublesPlusN", zap.Error(err))
-		respondError(s, i, err)
-		return
-	}
-
-	var component []discordgo.MessageComponent
-	if i.Type == discordgo.InteractionApplicationCommand {
-		component = []discordgo.MessageComponent{
-			createReRollButton("reRollDoubles"),
-		}
-	}
-
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content:    msg,
-			Components: component,
-		},
-	})
-	if err != nil {
-		log.Z.Error("failed to respond to Doubles", zap.Error(err))
-	}
-}
-
-func Triples(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	msg, err := doublesPlusN(i, 3)
-	if err != nil {
-		log.Z.Error("failed to call doublesPlusN", zap.Error(err))
-		respondError(s, i, err)
-		return
-	}
-
-	var component []discordgo.MessageComponent
-	if i.Type == discordgo.InteractionApplicationCommand {
-		component = []discordgo.MessageComponent{
-			createReRollButton("reRollTriples"),
-		}
-	}
-
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content:    msg,
-			Components: component,
-		},
-	})
-	if err != nil {
-		log.Z.Error("failed to respond to Triples", zap.Error(err))
-	}
-}
-
-func Number(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	msg, err := boundedNumber(i)
-	if err != nil {
-		log.Z.Error("failed to call boundedNumber", zap.Error(err))
-		respondError(s, i, err)
-		return
-	}
-
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: msg,
-		},
-	})
-	if err != nil {
-		log.Z.Error("failed to respond to Number", zap.Error(err))
-	}
+	return &command.Response{
+		Content: "**" + resp.GetNumber() + "** \U0001F3B2",
+	}, nil
 }

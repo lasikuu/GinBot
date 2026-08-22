@@ -1,46 +1,32 @@
 package discord
 
 import (
-	"github.com/bwmarrin/discordgo"
+	"context"
+
+	"github.com/lasikuu/GinBot/pkg/command"
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-var UtilityCommands = []*discordgo.ApplicationCommand{
-	{
+func healthCheckCommand() command.Command {
+	return command.Command{
 		Name:        "healthcheck",
+		Aliases:     localizedAliases("healthcheck"),
 		Description: "Health check of services such as DB.",
-		NameLocalizations: &map[discordgo.Locale]string{
-			discordgo.Japanese: "ヘルスチェック",
-		},
-		DescriptionLocalizations: &map[discordgo.Locale]string{
-			discordgo.Japanese: "DBなどのサービスのヘルスチェック。",
-		},
-	},
+		Handler:     healthCheck,
+	}
 }
 
-func HealthCheck(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	ctx, err := interactionContext(i)
-	if err != nil {
-		log.Z.Error("failed to get context.", zap.Error(err))
-		return
-	}
-
+func healthCheck(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
 	resp, err := client.UtilityServiceClient.HealthCheck(ctx, &emptypb.Empty{})
 	if err != nil {
 		log.Z.Error("failed to call HealthCheck.", zap.Error(err))
-		return
+		return nil, err
 	}
 
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: resp.GetStatus().String(),
-		},
-	})
-	if err != nil {
-		log.Z.Error("failed to respond to HealthCheck.", zap.Error(err))
-	}
+	return &command.Response{
+		Content: resp.GetStatus().String(),
+	}, nil
 }
