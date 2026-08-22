@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,9 +12,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// discordSession is written once by InitializeDiscord and then read from
+// several goroutines (discordgo's dispatch goroutines, and the reverse action
+// stream). Nothing synchronises it, so it must be assigned BEFORE any of those
+// readers is started — see startActionStream.
 var discordSession *discordgo.Session
 
-func InitializeDiscord() {
+// InitializeDiscord brings up the Discord session and blocks until the process
+// is signalled to stop.
+//
+// ctx bounds the reverse action stream, which is started from here rather than
+// alongside the gRPC clients precisely because its handlers read
+// discordSession.
+func InitializeDiscord(ctx context.Context) {
 	var err error
 	if discordSession, err = discordgo.New(config.Options.Discord.BotToken); err != nil {
 		log.Z.Fatal("cannot create a new session.", zap.Error(err))
@@ -45,6 +56,10 @@ func InitializeDiscord() {
 	if err = discordSession.Open(); err != nil {
 		log.Z.Fatal("cannot open the session.", zap.Error(err))
 	}
+
+	// Only now: discordSession is assigned and connected, so a notification
+	// arriving on the first tick has a session to post through.
+	startActionStream(ctx)
 
 	commands := applicationCommands(commandRegistry)
 	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))

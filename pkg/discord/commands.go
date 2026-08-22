@@ -64,6 +64,11 @@ func commandDefinitions() []command.Command {
 		numberCommand(),
 		pingCommand(),
 		registerCommand(),
+		remindCommand(),
+		remindersCommand(),
+		reminderDelCommand(),
+		reminderInfoCommand(),
+		reminderModCommand(),
 		timezoneCommand(),
 		userInfoCommand(),
 	}

@@ -11,7 +11,11 @@ import (
 	"google.golang.org/grpc"
 )
 
-func NewDiscordClient(ctx context.Context) {
+// NewDiscordClient dials the gRPC server and initialises every service client.
+//
+// It deliberately does NOT start the reverse action stream. That happens in
+// InitializeDiscord, once the Discord session exists — see startActionStream.
+func NewDiscordClient(_ context.Context) {
 	serverAddress := config.Options.GRPC.Host + ":" + config.Options.GRPC.Port
 
 	conn, err := grpc.NewClient(serverAddress, config.Options.Discord.GRPCClientOptions.DialOptions...)
@@ -25,6 +29,19 @@ func NewDiscordClient(ctx context.Context) {
 	client.InitReminderService(conn)
 	client.InitEntertainmentService(conn)
 	client.InitReverseService(conn)
+}
 
+// startActionStream begins consuming server-pushed actions.
+//
+// ORDER MATTERS, and this function exists to make that order impossible to get
+// wrong. Action handlers run on the stream's own goroutine and a notification
+// handler uses discordSession, so the stream must not start until that variable
+// has been assigned: starting it first is both a data race on the package
+// variable and a nil dereference inside a handler that runs inline with no
+// recover(), which kills the process. Launching the goroutine after the
+// assignment gives the read a happens-before edge on the write.
+//
+// It requires NewDiscordClient to have run, for ReverseServiceClient.
+func startActionStream(ctx context.Context) {
 	go client.RunClientActionStream(ctx, pb.Platform_PLATFORM_DISCORD, actionHandlers())
 }

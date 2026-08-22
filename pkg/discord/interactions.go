@@ -71,6 +71,27 @@ func invokerFromContext(ctx context.Context) (invoker, bool) {
 	return user, ok
 }
 
+// originKey types the context value carrying where a command was typed, so the
+// reminder commands can build the ReminderDestination for the current channel.
+type originKey struct{}
+
+// commandOrigin is the guild and channel a command was invoked in. A direct
+// message has an empty GuildID.
+type commandOrigin struct {
+	GuildID   string
+	ChannelID string
+}
+
+func withOrigin(ctx context.Context, guildID string, channelID string) context.Context {
+	return context.WithValue(ctx, originKey{}, commandOrigin{GuildID: guildID, ChannelID: channelID})
+}
+
+// originFromContext returns where the current command was typed.
+func originFromContext(ctx context.Context) (commandOrigin, bool) {
+	origin, ok := ctx.Value(originKey{}).(commandOrigin)
+	return origin, ok
+}
+
 // discordOrigin describes where a command was typed, so the server can create
 // the instance and destination rows on first contact.
 //
@@ -86,6 +107,7 @@ func discordOrigin(guildID string, channelID string) callermeta.Origin {
 func commandContext(user *discordgo.User, guildID string, channelID string) context.Context {
 	ctx := callermeta.NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, user.ID)
 	ctx = callermeta.NewOutgoingOrigin(ctx, discordOrigin(guildID, channelID))
+	ctx = withOrigin(ctx, guildID, channelID)
 
 	return withInvoker(ctx, user)
 }
