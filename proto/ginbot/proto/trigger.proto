@@ -22,18 +22,30 @@ service TriggerService {
   rpc DeleteTrigger(DeleteTriggerReq) returns (google.protobuf.Empty);
 }
 
+// How a trigger's phrase is matched against a message.
+enum TriggerMode {
+  // Defaults to TRIGGER_MODE_ANY when unset.
+  TRIGGER_MODE_UNSPECIFIED = 0;
+  // Whole message equals the phrase, case-insensitive. Must be unique.
+  TRIGGER_MODE_EXACT = 1;
+  // Phrase appears anywhere in the message on a word boundary.
+  TRIGGER_MODE_ANY = 2;
+  // Phrase is a regular expression. Requires elevated clearance.
+  TRIGGER_MODE_REGEX = 3;
+}
+
 // Message representing a Trigger
 message Trigger {
-  // ID of the Trigger
-  int64 id = 1;
+  // Trigger UUIDv7
+  string id = 1;
   // Phrase to trigger the response
   string phrase = 2;
   // Reply to send in response to the trigger
   string reply = 3;
   // File to send in response to the trigger
   string filename = 4;
-  // User ID of the creator
-  int64 user_id = 5;
+  // User UUIDv7 of the creator
+  string user_id = 5;
   // Platform to trigger the response
   repeated TriggerInstance instances = 6;
   // Chance of the trigger to be triggered
@@ -42,6 +54,8 @@ message Trigger {
   google.protobuf.Timestamp created_at = 8;
   // Updated at
   google.protobuf.Timestamp updated_at = 9;
+  // How the phrase is matched
+  TriggerMode mode = 10;
 }
 
 message TriggerInstance {
@@ -56,13 +70,13 @@ message TryTriggerReq {
   TriggerInstance instance = 1;
   // Phrase to trigger the response
   string phrase = 2;
-  // User ID of the triggerer
-  int64 user_id = 3;
+  // User UUIDv7 of the triggerer
+  string user_id = 3;
 }
 
 message TryTriggerResp {
-  // ID of the Trigger
-  int64 id = 1;
+  // Trigger UUIDv7
+  string id = 1;
   oneof oneof_reply {
     // Reply to send in response to the trigger
     string reply = 2;
@@ -72,8 +86,8 @@ message TryTriggerResp {
 }
 
 message GetTriggerReq {
-  // ID of the Trigger
-  int64 id = 1;
+  // Trigger UUIDv7
+  string id = 1;
 }
 
 message GetTriggerResp {
@@ -89,14 +103,16 @@ message ListTriggersReq {
   string phrase = 3;
   // Search field for trigger replies
   string reply = 4;
-  // User ID of the creator
-  int64 user_id = 5;
+  // User UUIDv7 of the creator
+  string user_id = 5;
   // Platforms to trigger the response on
   repeated TriggerInstance instances = 6;
   // Search for triggers starting from this date
   google.protobuf.Timestamp period_start = 7;
   // Search for triggers ending at this date
   google.protobuf.Timestamp period_end = 8;
+  // Search for triggers with this matching mode
+  TriggerMode mode = 9;
 }
 
 message ListTriggersResp {
@@ -110,37 +126,41 @@ message CreateTriggerReq {
   string reply = 2;
   // File to send in response to the trigger
   string filename = 3;
-  // User ID of the creator
-  int64 user_id = 4;
+  // User UUIDv7 of the creator
+  string user_id = 4;
   // Platforms to trigger the response on
   repeated TriggerInstance instances = 5;
   // Chance of the trigger to be triggered
   int32 chance = 6;
+  // How the phrase is matched
+  TriggerMode mode = 7;
 }
 
 message CreateTriggerResp {
-  // ID of the Trigger
-  int64 id = 1;
+  // Trigger UUIDv7
+  string id = 1;
 }
 
 message UpdateTriggerReq {
-  // ID of the Trigger
-  int64 id = 1;
+  // Trigger UUIDv7
+  string id = 1;
   // Phrase to trigger the response
   string phrase = 2;
   // Reply to send in response to the trigger
   string reply = 3;
   // File to send in response to the trigger
   string filename = 4;
-  // User ID of the creator
-  int64 user_id = 5;
+  // User UUIDv7 of the creator
+  string user_id = 5;
   // Platforms to trigger the response on
   repeated TriggerInstance instances = 6;
   // Chance of the trigger to be triggered
   int32 chance = 7;
+  // How the phrase is matched
+  TriggerMode mode = 8;
 }
 
 message DeleteTriggerReq {
-  // ID of the Trigger
-  int64 id = 1;
+  // Trigger UUIDv7
+  string id = 1;
 }

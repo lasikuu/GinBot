@@ -21,6 +21,9 @@ message GetRandomNumberReq {
     ANY = 2;
   };
 
+  // 1, 2 and 4 were used by removed fields and must never be reused.
+  reserved 1, 2, 4;
+
   REQUEST type = 3;
   string msg_id = 5;
 
@@ -34,15 +37,15 @@ message GetRandomNumberResp {
 }
 
 message SetBirthdayReq {
-  // User ID to set the birthday for
-  int64 user_id = 1;
+  // User UUIDv7 to set the birthday for
+  string user_id = 1;
   // Birthday to set
   google.protobuf.Timestamp birthday = 2;
 }
 
 message SetBirthdayResp {
-  // User ID of the user with the set birthday
-  int64 user_id = 1;
+  // User UUIDv7 of the user with the set birthday
+  string user_id = 1;
   // Birthday of the user
   google.protobuf.Timestamp birthday = 2;
 }

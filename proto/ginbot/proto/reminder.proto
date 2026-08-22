@@ -45,12 +45,12 @@ message Reminder {
   ReminderDestination destination = 5;
   // Status of the Reminder
   ReminderStatus status = 6;
-  // User ID of the creator
-  int64 user_id = 7;
+  // User UUIDv7 of the creator
+  string user_id = 7;
   // Reminder message
   string message = 8;
-  // Parent reminder ID
-  int64 parent_id = 9;
+  // Parent reminder UUIDv7
+  string parent_id = 9;
   // Created at
   google.protobuf.Timestamp created_at = 10;
   // Updated at
@@ -89,8 +89,8 @@ message ListRemindersReq {
   int64 offset = 2;
   // Search field for reminders
   string message = 3;
-  // User ID of the creator
-  int64 user_id = 4;
+  // User UUIDv7 of the creator
+  string user_id = 4;
   // Search for reminders starting from this date
   google.protobuf.Timestamp period_start = 5;
   // Search for reminders ending at this date
@@ -119,9 +119,9 @@ message CreateReminderReq {
   string repeat_cron = 5 [
     (buf.validate.field).string.pattern = "/(@(annually|yearly|monthly|weekly|daily|hourly|reboot))|(@every (\\d+(ns|us|µs|ms|s|m|h))+)|((((\\d+,)+\\d+|(\\d+(\\/|-)\\d+)|\\d+|\\*) ?){5,7})/"
   ];
-  // Parent reminder ID
-  int64 parent_id = 6 [
-    (buf.validate.field).uint64.gt = 0
+  // Parent reminder UUIDv7
+  string parent_id = 6 [
+    (buf.validate.field).string.uuid = true
   ];
 }
 
@@ -151,9 +151,9 @@ message UpdateReminderReq {
   string repeat_cron = 6 [
     (buf.validate.field).string.pattern = "/(@(annually|yearly|monthly|weekly|daily|hourly|reboot))|(@every (\\d+(ns|us|µs|ms|s|m|h))+)|((((\\d+,)+\\d+|(\\d+(\\/|-)\\d+)|\\d+|\\*) ?){5,7})/"
   ];
-  // Parent reminder ID
-  int64 parent_id = 7 [
-    (buf.validate.field).uint64.gt = 0
+  // Parent reminder UUIDv7
+  string parent_id = 7 [
+    (buf.validate.field).string.uuid = true
   ];
 }
 
