@@ -117,7 +117,7 @@ message CreateReminderReq {
   ReminderDestination destination = 4;
   // Repeat in cron format
   string repeat_cron = 5 [
-    (buf.validate.field).string.pattern = "/(@(annually|yearly|monthly|weekly|daily|hourly|reboot))|(@every (\\d+(ns|us|µs|ms|s|m|h))+)|((((\\d+,)+\\d+|(\\d+(\\/|-)\\d+)|\\d+|\\*) ?){5,7})/"
+    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|hourly|reboot)|@every +(\\d+(ns|us|µs|ms|s|m|h))+|(\\*|\\d+)(-\\d+)?(/\\d+)?(,(\\*|\\d+)(-\\d+)?(/\\d+)?)*( +(\\*|\\d+)(-\\d+)?(/\\d+)?(,(\\*|\\d+)(-\\d+)?(/\\d+)?)*){4,6})$"
   ];
   // Parent reminder UUIDv7
   string parent_id = 6 [
@@ -149,7 +149,7 @@ message UpdateReminderReq {
   ReminderDestination destination = 5;
   // Repeat in cron format
   string repeat_cron = 6 [
-    (buf.validate.field).string.pattern = "/(@(annually|yearly|monthly|weekly|daily|hourly|reboot))|(@every (\\d+(ns|us|µs|ms|s|m|h))+)|((((\\d+,)+\\d+|(\\d+(\\/|-)\\d+)|\\d+|\\*) ?){5,7})/"
+    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|hourly|reboot)|@every +(\\d+(ns|us|µs|ms|s|m|h))+|(\\*|\\d+)(-\\d+)?(/\\d+)?(,(\\*|\\d+)(-\\d+)?(/\\d+)?)*( +(\\*|\\d+)(-\\d+)?(/\\d+)?(,(\\*|\\d+)(-\\d+)?(/\\d+)?)*){4,6})$"
   ];
   // Parent reminder UUIDv7
   string parent_id = 7 [
