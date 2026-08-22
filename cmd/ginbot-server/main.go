@@ -8,6 +8,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	// Embeds the IANA zone database in the binary so that SetTimezone can
+	// resolve a zone on a host that ships none, such as a scratch container.
+	// Without it time.LoadLocation fails for every name and no timezone is
+	// settable at all.
+	_ "time/tzdata"
+
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/cron"
 	"github.com/lasikuu/GinBot/pkg/db"
@@ -41,14 +47,39 @@ func main() {
 		log.Z.Fatal("failed to listen.", zap.Error(err))
 	}
 
-	validationInterceptor, err := interceptor.NewValidationUnaryInterceptor()
+	validationUnary, err := interceptor.NewValidationUnaryInterceptor()
 	if err != nil {
 		log.Z.Fatal("failed to build validation interceptor.", zap.Error(err))
 	}
 
+	validationStream, err := interceptor.NewValidationStreamInterceptor()
+	if err != nil {
+		log.Z.Fatal("failed to build stream validation interceptor.", zap.Error(err))
+	}
+
+	// Order matters, outermost first:
+	//
+	//   - recovery, so a panic anywhere below it fails one call instead of the
+	//     process;
+	//   - validation, so a malformed request is rejected before it costs the
+	//     database round trip that resolving a caller needs;
+	//   - clearance, which resolves the caller and enforces the per-RPC minimum;
+	//   - origin, innermost, because it deliberately does nothing unless
+	//     clearance put a caller in the context. Public methods resolve nobody,
+	//     and their position in the chain is not what stops them writing rows —
+	//     the caller check inside the origin interceptor is.
 	serverOptions := append(
 		config.ServerOptions(),
-		grpc.ChainUnaryInterceptor(validationInterceptor),
+		grpc.ChainUnaryInterceptor(
+			interceptor.RecoverUnaryInterceptor,
+			validationUnary,
+			interceptor.NewClearanceUnaryInterceptor(interceptor.DefaultRequirements(), db.GetUserByPlatformUID),
+			interceptor.NewOriginUnaryInterceptor(db.GetOrCreateDestinationByMeta),
+		),
+		grpc.ChainStreamInterceptor(
+			interceptor.RecoverStreamInterceptor,
+			validationStream,
+		),
 	)
 	grpcServer := grpc.NewServer(serverOptions...)
 

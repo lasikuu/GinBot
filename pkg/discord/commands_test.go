@@ -31,7 +31,13 @@ func newTestRegistry(t *testing.T) *command.Registry {
 func TestCommandDefinitionsRegister(t *testing.T) {
 	registry := newTestRegistry(t)
 
-	want := []string{"doubles", "healthcheck", "number", "quads", "quints", "sexts", "triples"}
+	// Exact, not a subset: a command silently disappearing is exactly the kind
+	// of regression this catches, so extending the bot means extending this list
+	// deliberately.
+	want := []string{
+		"doubles", "healthcheck", "help", "info", "locale", "number", "ping",
+		"quads", "quints", "register", "sexts", "timezone", "triples", "userinfo",
+	}
 
 	got := make([]string, 0, len(want))
 	for _, cmd := range registry.All() {

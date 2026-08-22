@@ -58,7 +58,14 @@ func initCommands() {
 func commandDefinitions() []command.Command {
 	definitions := []command.Command{
 		healthCheckCommand(),
+		helpCommand(),
+		infoCommand(),
+		localeCommand(),
 		numberCommand(),
+		pingCommand(),
+		registerCommand(),
+		timezoneCommand(),
+		userInfoCommand(),
 	}
 
 	return append(definitions, digitRollCommands()...)

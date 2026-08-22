@@ -45,27 +45,72 @@ func reRollCommandName(customID string) (string, bool) {
 	return name, found
 }
 
+// invokerKey types the context value carrying the Discord user who ran a
+// command, so it cannot collide with another package's key.
+type invokerKey struct{}
+
+// invoker is the Discord user behind a command.
+//
+// It is deliberately not part of command.Invocation: identity belongs in gRPC
+// metadata, and duplicating it into the neutral invocation would give handlers
+// two sources of truth for who is calling. What metadata cannot carry is the
+// display name, which registration needs and which only the platform knows —
+// so it rides in the context, private to this package.
+type invoker struct {
+	ID       string
+	Username string
+}
+
+func withInvoker(ctx context.Context, user *discordgo.User) context.Context {
+	return context.WithValue(ctx, invokerKey{}, invoker{ID: user.ID, Username: user.Username})
+}
+
+// invokerFromContext returns the Discord user behind the current command.
+func invokerFromContext(ctx context.Context) (invoker, bool) {
+	user, ok := ctx.Value(invokerKey{}).(invoker)
+	return user, ok
+}
+
+// discordOrigin describes where a command was typed, so the server can create
+// the instance and destination rows on first contact.
+//
+// A direct message has no GuildID; callermeta drops such an origin, because
+// there is no guild to record.
+func discordOrigin(guildID string, channelID string) callermeta.Origin {
+	return callermeta.Origin{InstanceUID: guildID, DestinationUID: channelID}
+}
+
+// commandContext assembles the context every handler receives: caller identity
+// and origin as gRPC metadata, plus the invoking user for the handlers that
+// need a display name.
+func commandContext(user *discordgo.User, guildID string, channelID string) context.Context {
+	ctx := callermeta.NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, user.ID)
+	ctx = callermeta.NewOutgoingOrigin(ctx, discordOrigin(guildID, channelID))
+
+	return withInvoker(ctx, user)
+}
+
 func interactionContext(i *discordgo.InteractionCreate) (context.Context, error) {
-	var userID string
+	var user *discordgo.User
 	// Member.User is populated for guild interactions and User for DMs, but the
 	// nested pointer is checked too: a nil deref here would kill the process,
 	// because discordgo does not recover panics raised in a handler.
 	if i.Member != nil && i.Member.User != nil {
-		userID = i.Member.User.ID
+		user = i.Member.User
 	} else if i.User != nil {
-		userID = i.User.ID
+		user = i.User
 	} else {
 		log.Z.Error("cannot get user id.")
 		return context.Background(), errors.New("cannot get discord user id")
 	}
 
-	return callermeta.NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, userID), nil
+	return commandContext(user, i.GuildID, i.ChannelID), nil
 }
 
 // messageContext builds the caller context for a chat command. Identity travels
 // as gRPC metadata, never as a request field.
 func messageContext(m *discordgo.MessageCreate) context.Context {
-	return callermeta.NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, m.Author.ID)
+	return commandContext(m.Author, m.GuildID, m.ChannelID)
 }
 
 // handleInteraction routes slash commands and re-roll buttons through the
