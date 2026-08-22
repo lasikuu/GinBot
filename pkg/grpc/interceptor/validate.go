@@ -42,3 +42,53 @@ func NewValidationUnaryInterceptor() (grpc.UnaryServerInterceptor, error) {
 		return handler(ctx, req)
 	}, nil
 }
+
+// NewValidationStreamInterceptor enforces the same constraints on streaming
+// RPCs.
+//
+// The unary interceptor alone leaves every streamed message unchecked, which
+// covers the reverse action stream: OpenClientActionStreamReq arrives over a
+// bidirectional stream and so never passed through validation at all.
+func NewValidationStreamInterceptor() (grpc.StreamServerInterceptor, error) {
+	validator, err := protovalidate.New()
+	if err != nil {
+		return nil, err
+	}
+
+	return func(
+		srv any,
+		stream grpc.ServerStream,
+		_ *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		return handler(srv, &validatingServerStream{ServerStream: stream, validator: validator})
+	}, nil
+}
+
+// validatingServerStream validates every message a handler receives.
+//
+// Only the receive side is wrapped. Outgoing messages are built by this server
+// from its own data, so validating them would report a server bug to the client
+// as InvalidArgument.
+type validatingServerStream struct {
+	grpc.ServerStream
+	validator protovalidate.Validator
+}
+
+func (s *validatingServerStream) RecvMsg(m any) error {
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return err
+	}
+
+	msg, ok := m.(proto.Message)
+	if !ok {
+		// Not a protobuf message; nothing to validate.
+		return nil
+	}
+
+	if err := s.validator.Validate(msg); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	return nil
+}
