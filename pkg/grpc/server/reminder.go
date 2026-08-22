@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/log"
@@ -24,38 +23,14 @@ func NewReminderServer() *ReminderServer {
 	return s
 }
 
-// callerUser resolves the caller's platform identity to a user_account row.
-// Returns FailedPrecondition when the caller has not registered.
-func callerUser(ctx context.Context, meta *ContextMetadata) (*model.User, error) {
-	if meta.PlatformUID == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "user_id metadata is required")
-	}
-
-	user, err := db.GetUserByPlatformUID(ctx, meta.PlatformEnum, *meta.PlatformUID)
-	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.FailedPrecondition, "caller is not registered")
-	}
-	if err != nil {
-		log.Z.Error("failed to resolve caller", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to resolve caller")
-	}
-
-	return user, nil
-}
-
 func (s *ReminderServer) GetReminder(ctx context.Context, req *pb.GetReminderReq) (*pb.GetReminderResp, error) {
-	meta, err := getMetadata(ctx)
+	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
 		return nil, status.Errorf(codes.InvalidArgument, "id is required")
-	}
-
-	caller, err := callerUser(ctx, meta)
-	if err != nil {
-		return nil, err
 	}
 
 	reminder, err := db.GetReminder(ctx, req.GetId())
@@ -84,23 +59,22 @@ func (s *ReminderServer) GetReminder(ctx context.Context, req *pb.GetReminderReq
 	}.Build(), nil
 }
 
-func (s *ReminderServer) ListReminders(ctx context.Context, _ *pb.ListRemindersReq) (*pb.ListRemindersResp, error) {
-	if _, err := getMetadata(ctx); err != nil {
-		return nil, err
-	}
-
+// Guarded at CLEARANCE_REGISTERED, so the interceptor has already parsed and
+// validated the caller's metadata. The same goes for DeleteReminder,
+// UpdateReminder and GetExpiredReminders below.
+func (s *ReminderServer) ListReminders(_ context.Context, _ *pb.ListRemindersReq) (*pb.ListRemindersResp, error) {
 	return nil, status.Error(codes.Unimplemented, "ListReminders is not implemented yet")
 }
 
 func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateReminderReq) (*pb.CreateReminderResp, error) {
-	meta, err := getMetadata(ctx)
+	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// The validation interceptor covers these too, but it is wired only in
-	// cmd/ginbot-server and only for unary RPCs, and AGENTS.md requires handlers
-	// to check required fields themselves.
+	// cmd/ginbot-server, and AGENTS.md requires handlers to check required
+	// fields themselves.
 	if !(req.HasDatetime() && req.HasTimezone()) {
 		return nil, status.Errorf(codes.InvalidArgument, "datetime and timezone are required")
 	}
@@ -110,11 +84,6 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 		req.GetDestination().HasInstanceMeta() &&
 		req.GetDestination().HasDestinationMeta()) {
 		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
-	}
-
-	caller, err := callerUser(ctx, meta)
-	if err != nil {
-		return nil, err
 	}
 
 	destinationID, err := db.GetOrCreateDestinationByMeta(ctx, req.GetDestination())
@@ -134,27 +103,15 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 	}.Build(), nil
 }
 
-func (s *ReminderServer) DeleteReminder(ctx context.Context, _ *pb.DeleteReminderReq) (*emptypb.Empty, error) {
-	if _, err := getMetadata(ctx); err != nil {
-		return nil, err
-	}
-
+func (s *ReminderServer) DeleteReminder(_ context.Context, _ *pb.DeleteReminderReq) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "DeleteReminder is not implemented yet")
 }
 
-func (s *ReminderServer) UpdateReminder(ctx context.Context, _ *pb.UpdateReminderReq) (*emptypb.Empty, error) {
-	if _, err := getMetadata(ctx); err != nil {
-		return nil, err
-	}
-
+func (s *ReminderServer) UpdateReminder(_ context.Context, _ *pb.UpdateReminderReq) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "UpdateReminder is not implemented yet")
 }
 
 func (s *ReminderServer) GetExpiredReminders(ctx context.Context, _ *emptypb.Empty) (*pb.GetExpiredRemindersResp, error) {
-	if _, err := getMetadata(ctx); err != nil {
-		return nil, err
-	}
-
 	reminders, err := db.ExpiredReminders(ctx, time.Now())
 	if err != nil {
 		log.Z.Error("failed to list expired reminders", zap.Error(err))

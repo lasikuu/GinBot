@@ -23,13 +23,9 @@ func NewInstanceServer() *InstanceServer {
 }
 
 func (s *InstanceServer) CreateInstance(ctx context.Context, req *pb.CreateInstanceReq) (*pb.CreateInstanceResp, error) {
-	// Caller identity is required on every identity-bearing RPC per AGENTS.md.
-	// Restricting instance administration to elevated clearance needs the
-	// clearance interceptor, which does not exist yet.
-	if _, err := getMetadata(ctx); err != nil {
-		return nil, err
-	}
-
+	// Clearance is enforced ahead of this handler: the requirements map holds
+	// CreateInstance at CLEARANCE_ADMINISTRATOR, so reaching here means the
+	// caller has it.
 	if !(req.HasPlatformEnum() && req.HasInstanceMeta()) {
 		return nil, status.Errorf(codes.InvalidArgument, "platform_enum and instance_meta are required")
 	}
@@ -46,10 +42,8 @@ func (s *InstanceServer) CreateInstance(ctx context.Context, req *pb.CreateInsta
 }
 
 func (s *InstanceServer) GetInstance(ctx context.Context, req *pb.GetInstanceReq) (*pb.GetInstanceResp, error) {
-	if _, err := getMetadata(ctx); err != nil {
-		return nil, err
-	}
-
+	// Guarded at CLEARANCE_REGISTERED, so the interceptor has already parsed and
+	// validated the caller's metadata; re-parsing it here would only repeat that.
 	if !req.HasId() {
 		return nil, status.Errorf(codes.InvalidArgument, "id is required")
 	}
