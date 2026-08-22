@@ -8,12 +8,17 @@ import (
 )
 
 // GRPCServerOptions is the model for gRPC configuration.
+//
+// It deliberately holds no []grpc.ServerOption: building those loads the
+// *server* key pair, and SetEnv runs in all three binaries. With
+// GINBOT_GRPC_TLS=true that made the Discord and Matrix clients fatal unless
+// server-cert.pem and server-key.pem were also present on their host. The
+// server binary calls ServerOptions() for itself instead.
 type GRPCServerOptions struct {
-	Host          string
-	Port          string
-	TLS           bool
-	CertsPath     string
-	ServerOptions []grpc.ServerOption
+	Host      string
+	Port      string
+	TLS       bool
+	CertsPath string
 }
 
 type GRPCClientOptions struct {
@@ -50,7 +55,10 @@ func certsPath() string {
 	return value
 }
 
-func serverOptions() []grpc.ServerOption {
+// ServerOptions builds the gRPC server options, loading the server key pair when
+// TLS is enabled. Only the server binary should call this — see the note on
+// GRPCServerOptions.
+func ServerOptions() []grpc.ServerOption {
 	var gRPCServerOptions []grpc.ServerOption
 
 	if !gRPCTLS() {

@@ -39,31 +39,31 @@ func LoadEnv() {
 
 // SetEnv sets the environment variables into Options and Credentials
 func SetEnv() {
+	// Loaded once and shared: building it per client parsed the same key pair twice.
+	clientOptions := GRPCClientOptions{
+		DialOptions: dialOptions(),
+	}
+
 	Options = &OptionsModel{
 		Matrix: MatrixOptions{
-			GRPCClientOptions: GRPCClientOptions{
-				DialOptions: dialOptions(),
-			},
-			HomeServerURL: homeServerUrl(),
-			AccessToken:   accessToken(),
-			UserID:        userId(),
+			GRPCClientOptions: clientOptions,
+			HomeServerURL:     homeServerUrl(),
+			AccessToken:       accessToken(),
+			UserID:            userId(),
 		},
 		Discord: DiscordOptions{
-			GRPCClientOptions: GRPCClientOptions{
-				DialOptions: dialOptions(),
-			},
-			OwnerId:         ownerId(),
-			BotToken:        botToken(),
-			ClientId:        clientId(),
-			EraseCommands:   eraseCommands(),
-			CommandPrefixes: commandPrefixes(),
+			GRPCClientOptions: clientOptions,
+			OwnerId:           ownerId(),
+			BotToken:          botToken(),
+			ClientId:          clientId(),
+			EraseCommands:     eraseCommands(),
+			CommandPrefixes:   commandPrefixes(),
 		},
 		GRPC: GRPCServerOptions{
-			Host:          gRPCHost(),
-			Port:          gRPCPort(),
-			TLS:           gRPCTLS(),
-			CertsPath:     certsPath(),
-			ServerOptions: serverOptions(),
+			Host:      gRPCHost(),
+			Port:      gRPCPort(),
+			TLS:       gRPCTLS(),
+			CertsPath: certsPath(),
 		},
 		DB: DBOptions{
 			Host:       dbHost(),
