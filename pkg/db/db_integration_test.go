@@ -18,6 +18,7 @@ import (
 
 	"github.com/lasikuu/GinBot/internal/config"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -222,11 +223,14 @@ func TestCreateAndReadReminder(t *testing.T) {
 	}
 	cleanupUser(t, userID)
 
-	platform := pb.Platform_PLATFORM_DISCORD
+	// The instance and destination metadata use the canonical shapes from
+	// callermeta, which is what production writes, so the jsonb this row is
+	// resolved through is the same jsonb the delivery path reads.
+	origin := callermeta.Origin{InstanceUID: "rg-" + suffix, DestinationUID: "rc-" + suffix}
 	destination := pb.ReminderDestination_builder{
-		PlatformEnum:    &platform,
-		InstanceMeta:    meta(t, map[string]string{"guild_id": "rg-" + suffix}),
-		DestinationMeta: meta(t, map[string]string{"channel_id": "rc-" + suffix}),
+		PlatformEnum:    pb.Platform_PLATFORM_DISCORD.Enum(),
+		InstanceMeta:    origin.InstanceMeta(),
+		DestinationMeta: origin.DestinationMeta(),
 	}.Build()
 
 	cleanupInstanceByMeta(t, destination.GetInstanceMeta())
@@ -236,7 +240,7 @@ func TestCreateAndReadReminder(t *testing.T) {
 		t.Fatalf("destination: %v", err)
 	}
 
-	// Already in the past, so ExpiredReminders should pick it up.
+	// Already in the past, so the delivery loop's claim would pick it up.
 	fireAt := time.Now().Add(-time.Minute).UTC()
 	message := "integration reminder"
 	timezone := "Europe/Helsinki"
@@ -248,10 +252,16 @@ func TestCreateAndReadReminder(t *testing.T) {
 		Destination: destination,
 	}.Build()
 
-	reminderID, err := CreateReminder(ctx, req, userID, destinationID)
+	reminderID, err := CreateReminder(ctx, req, userID, destinationID, fixtureReminderCap)
 	if err != nil {
 		t.Fatalf("CreateReminder: %v", err)
 	}
+	t.Cleanup(func() {
+		if _, err := db().Exec(context.Background(),
+			`DELETE FROM reminder WHERE id = $1`, reminderID); err != nil {
+			t.Errorf("cleanup reminder %s: %v", reminderID, err)
+		}
+	})
 
 	reminder, err := GetReminder(ctx, reminderID)
 	if err != nil {
@@ -282,19 +292,25 @@ func TestCreateAndReadReminder(t *testing.T) {
 		t.Errorf("ToProto id = %q, want %q", proto.GetId(), reminderID)
 	}
 
-	expired, err := ExpiredReminders(ctx, time.Now())
+	// The past-due reminder is picked up by the delivery loop's claim. It used to
+	// be checked through db.ExpiredReminders, which has been deleted: it returned
+	// every user's due reminders — message text and resolved destination — with no
+	// user_id predicate, and the cron loop uses ClaimDueReminders instead.
+	// ClaimDueReminders has its own dedicated tests in reminder_integration_test.go;
+	// this only confirms the freshly written row is visible to it.
+	claimed, err := ClaimDueReminders(ctx, time.Now())
 	if err != nil {
-		t.Fatalf("ExpiredReminders: %v", err)
+		t.Fatalf("ClaimDueReminders: %v", err)
 	}
 	found := false
-	for _, r := range expired {
+	for _, r := range claimed {
 		if r.ID == reminderID {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("newly created past-due reminder not returned by ExpiredReminders")
+		t.Error("newly created past-due reminder was not claimed")
 	}
 
 	if err := SetReminderStatus(ctx, reminderID, pb.ReminderStatus_REMINDER_STATUS_DELIVERED); err != nil {

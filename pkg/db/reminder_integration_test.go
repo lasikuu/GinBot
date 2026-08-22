@@ -1,0 +1,1233 @@
+//go:build integration
+
+// Integration tests for the reminder database layer (Phase 3). These require a
+// live Postgres, same as db_integration_test.go:
+//
+//	docker compose -f docker-compose.psql.yml up -d
+//	go test -tags=integration -race -count=1 ./pkg/db/...
+//
+// TestMain, meta, cleanupUser and cleanupInstanceByMeta are declared in
+// db_integration_test.go in this same package and are reused here, not
+// redeclared.
+//
+// SCOPE: this file tests the db helpers as helpers — their SQL, their guards and
+// their return values. It deliberately does NOT reimplement the server's
+// decisions (one-shot vs repeat, delivered vs failed). An earlier version did,
+// via a local confirmDelivery closure, which meant the "confirm" tests verified
+// the harness rather than ReminderServer.ConfirmDelivery and could not fail
+// against a broken server. Those acceptance criteria are now asserted against
+// the real RPC in pkg/grpc/server/reminder_integration_test.go.
+package db
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// fixtureReminderCap is a cap high enough never to be reached by a fixture, so a
+// test that is not about the cap cannot trip over it.
+const fixtureReminderCap = 1000
+
+// reminderFixture creates a user, a destination, and reminders, registering
+// cleanup for all of them. Cleanup errors are asserted, never discarded:
+// platform_user.user_id has no ON DELETE CASCADE and silently dropped cleanup
+// errors leaked rows on every run.
+type reminderFixture struct {
+	userID        string
+	destinationID int64
+	destination   *pb.ReminderDestination
+	// origin is the canonical instance/destination identity behind destination.
+	// Tests assert against origin.DestinationUID rather than re-spelling it.
+	origin callermeta.Origin
+	suffix string
+	// platformUID is the owner's identity on the fixture's platform.
+	platformUID string
+}
+
+func newReminderFixture(t *testing.T, label string) *reminderFixture {
+	t.Helper()
+	return newReminderFixtureOn(t, label, pb.Platform_PLATFORM_DISCORD, pb.Platform_PLATFORM_DISCORD)
+}
+
+// newReminderFixtureOn builds a fixture whose owner is registered on
+// ownerPlatform and whose destination lives on destinationPlatform.
+//
+// The two are separable because ClaimDueReminders resolves the owner's platform
+// id by joining platform_user on the DESTINATION's platform: a reminder whose
+// owner never linked that platform must still claim, with a NULL
+// OwnerPlatformUID that disables only the DM fallback.
+//
+// The instance and destination metadata are built from callermeta.Origin, the
+// SAME shapes production writes ({"instance_uid": …} / {"destination_uid": …}).
+// Hand-spelled fixtures like {"guild_id": …} made destination_meta->>'…' yield
+// NULL in every claim test, so the payload extraction was never exercised at all.
+func newReminderFixtureOn(
+	t *testing.T,
+	label string,
+	ownerPlatform pb.Platform,
+	destinationPlatform pb.Platform,
+) *reminderFixture {
+	t.Helper()
+	ctx := context.Background()
+	suffix := label + "-" + time.Now().Format("150405.000000000")
+	platformUID := "uid-" + suffix
+
+	userID, err := CreateUser(ctx, "rem-"+label, ownerPlatform, platformUID, nil, "en")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	cleanupUser(t, userID)
+
+	origin := callermeta.Origin{
+		InstanceUID:    "instance-" + suffix,
+		DestinationUID: "destination-" + suffix,
+	}
+	destination := pb.ReminderDestination_builder{
+		PlatformEnum:    destinationPlatform.Enum(),
+		InstanceMeta:    origin.InstanceMeta(),
+		DestinationMeta: origin.DestinationMeta(),
+	}.Build()
+	cleanupInstanceByMeta(t, destination.GetInstanceMeta())
+
+	destinationID, err := GetOrCreateDestinationByMeta(ctx, destination)
+	if err != nil {
+		t.Fatalf("GetOrCreateDestinationByMeta: %v", err)
+	}
+
+	return &reminderFixture{
+		userID:        userID,
+		destinationID: destinationID,
+		destination:   destination,
+		origin:        origin,
+		suffix:        suffix,
+		platformUID:   platformUID,
+	}
+}
+
+// create inserts one reminder for the fixture's user at fireAt with an optional
+// repeat cron, and registers its row for cleanup.
+func (f *reminderFixture) create(t *testing.T, fireAt time.Time, repeatCron string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	message := "msg-" + f.suffix
+	b := pb.CreateReminderReq_builder{
+		Datetime:    timestamppb.New(fireAt.UTC()),
+		Timezone:    strPtr("Europe/Helsinki"),
+		Message:     &message,
+		Destination: f.destination,
+	}
+	if repeatCron != "" {
+		b.RepeatCron = &repeatCron
+	}
+	id, err := CreateReminder(ctx, b.Build(), f.userID, f.destinationID, fixtureReminderCap)
+	if err != nil {
+		t.Fatalf("CreateReminder: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db().Exec(ctx, `DELETE FROM reminder WHERE id = $1`, id); err != nil {
+			t.Errorf("cleanup reminder %s: %v", id, err)
+		}
+	})
+	return id
+}
+
+func strPtr(s string) *string { return &s }
+
+// listOwn is the common listing: every reminder the user owns, default filters.
+func listOwn(ctx context.Context, userID string) ([]ListedReminder, error) {
+	return ListRemindersByUser(ctx, ListRemindersFilter{UserID: userID})
+}
+
+// claimedByID finds one reminder in a claim result.
+func claimedByID(rs []ClaimedReminder, id string) (ClaimedReminder, bool) {
+	for _, r := range rs {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return ClaimedReminder{}, false
+}
+
+func containsID(rs []ClaimedReminder, id string) bool {
+	_, ok := claimedByID(rs, id)
+	return ok
+}
+
+// readReminderClaim reads the two delivery-bookkeeping columns directly.
+func readReminderClaim(t *testing.T, id string) (claimedAt *time.Time, attempts int32) {
+	t.Helper()
+	if err := db().QueryRow(context.Background(),
+		`SELECT claimed_at, delivery_attempts FROM reminder WHERE id = $1`, id,
+	).Scan(&claimedAt, &attempts); err != nil {
+		t.Fatalf("read claim columns for %s: %v", id, err)
+	}
+	return claimedAt, attempts
+}
+
+// readReminderStatus reads a reminder's status.
+func readReminderStatus(t *testing.T, id string) int32 {
+	t.Helper()
+	var status int32
+	if err := db().QueryRow(context.Background(),
+		`SELECT status FROM reminder WHERE id = $1`, id,
+	).Scan(&status); err != nil {
+		t.Fatalf("read status for %s: %v", id, err)
+	}
+	return status
+}
+
+// statusOf is the int32 a pb.ReminderStatus is stored as.
+func statusOf(s pb.ReminderStatus) int32 { return int32(s.Number()) }
+
+// TestListRemindersScopesToOwner: a user sees only their own reminders.
+func TestListRemindersScopesToOwner(t *testing.T) {
+	ctx := context.Background()
+	owner := newReminderFixture(t, "owner")
+	other := newReminderFixture(t, "other")
+
+	future := time.Now().Add(time.Hour)
+	mine := owner.create(t, future, "")
+	theirs := other.create(t, future, "")
+
+	list, err := listOwn(ctx, owner.userID)
+	if err != nil {
+		t.Fatalf("ListReminders: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, r := range list {
+		seen[r.Reminder.ID] = true
+		if r.Reminder.UserID == nil || *r.Reminder.UserID != owner.userID {
+			t.Errorf("ListReminders returned reminder %s owned by %v, not %s",
+				r.Reminder.ID, r.Reminder.UserID, owner.userID)
+		}
+	}
+	if !seen[mine] {
+		t.Errorf("owner's own reminder %s missing from their list", mine)
+	}
+	if seen[theirs] {
+		t.Errorf("owner's list leaked another user's reminder %s", theirs)
+	}
+}
+
+// TestListRemindersJoinsTheDestination: the listing resolves each reminder's
+// destination in the SAME query, so rendering a list does not cost one
+// destination round trip per row (up to 50 of them).
+func TestListRemindersJoinsTheDestination(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "list-join")
+
+	id := f.create(t, time.Now().Add(time.Hour), "")
+
+	list, err := listOwn(ctx, f.userID)
+	if err != nil {
+		t.Fatalf("ListReminders: %v", err)
+	}
+
+	var found *ListedReminder
+	for i := range list {
+		if list[i].Reminder.ID == id {
+			found = &list[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("reminder %s missing from the listing", id)
+	}
+	if found.Destination == nil {
+		t.Fatal("listed reminder carries no destination; the join did not resolve it")
+	}
+	if got := found.Destination.GetPlatformEnum(); got != pb.Platform_PLATFORM_DISCORD {
+		t.Errorf("destination platform = %v, want PLATFORM_DISCORD", got)
+	}
+	gotUID := found.Destination.GetDestinationMeta().GetFields()[callermeta.FieldDestinationUID].GetStringValue()
+	if gotUID != f.origin.DestinationUID {
+		t.Errorf("destination uid = %q, want %q", gotUID, f.origin.DestinationUID)
+	}
+}
+
+// TestListRemindersOrdersSoonestFirst: with a limit, descending order hid the
+// reminders that matter — a user with more reminders than the client renders
+// could not see the ones about to fire.
+func TestListRemindersOrdersSoonestFirst(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "order")
+
+	base := time.Now().Add(time.Hour)
+	far := f.create(t, base.Add(72*time.Hour), "")
+	near := f.create(t, base.Add(time.Minute), "")
+	middle := f.create(t, base.Add(24*time.Hour), "")
+
+	list, err := listOwn(ctx, f.userID)
+	if err != nil {
+		t.Fatalf("ListReminders: %v", err)
+	}
+
+	var order []string
+	for _, r := range list {
+		order = append(order, r.Reminder.ID)
+	}
+	want := []string{near, middle, far}
+	if len(order) != len(want) {
+		t.Fatalf("listing returned %d reminders, want %d (%v)", len(order), len(want), order)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("listing order = %v, want soonest first %v", order, want)
+		}
+	}
+
+	// And the fire times must be non-decreasing, which is the actual contract.
+	for i := 1; i < len(list); i++ {
+		if list[i].Reminder.Datetime.Before(list[i-1].Reminder.Datetime) {
+			t.Errorf("listing is not ascending: %v precedes %v",
+				list[i-1].Reminder.Datetime, list[i].Reminder.Datetime)
+		}
+	}
+}
+
+// TestUpdateReminderRefusesOtherUsersRow: updating a row you do not own reports
+// ErrNotFound, matching the GetReminder privacy pattern (never confirm the id
+// exists), and must not mutate the row.
+func TestUpdateReminderRefusesOtherUsersRow(t *testing.T) {
+	ctx := context.Background()
+	owner := newReminderFixture(t, "upd-owner")
+	attacker := newReminderFixture(t, "upd-attacker")
+
+	id := owner.create(t, time.Now().Add(time.Hour), "")
+
+	const newMsg = "hijacked"
+	err := UpdateReminderByUser(ctx, ReminderUpdate{
+		ID:            id,
+		UserID:        attacker.userID,
+		Datetime:      time.Now().Add(time.Hour),
+		Timezone:      "Europe/Helsinki",
+		Message:       newMsg,
+		DestinationID: owner.destinationID,
+	})
+	if err != ErrNotFound {
+		t.Errorf("UpdateReminder by non-owner err = %v, want ErrNotFound", err)
+	}
+
+	got, err := GetReminder(ctx, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if got.Message != nil && *got.Message == newMsg {
+		t.Error("non-owner update mutated the row")
+	}
+}
+
+// TestUpdateReminderLeavesAnUnsuppliedRepeatAlone is the patch-shaped-repeat
+// contract (AC6).
+//
+// The update used to be an unconditional full replace, so /remindermod — which
+// never sets a repeat — rewrote repeat_cron to NULL and silently converted a
+// repeating reminder into a one-shot. UpdateRepeat=false must leave the stored
+// schedule exactly as it was.
+func TestUpdateReminderLeavesAnUnsuppliedRepeatAlone(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "keep-repeat")
+
+	const schedule = "0 9 * * *"
+	id := f.create(t, time.Now().Add(time.Hour), schedule)
+
+	if err := UpdateReminderByUser(ctx, ReminderUpdate{
+		ID:            id,
+		UserID:        f.userID,
+		Datetime:      time.Now().Add(2 * time.Hour),
+		Timezone:      "Europe/Helsinki",
+		Message:       "only the message changed",
+		DestinationID: f.destinationID,
+		UpdateRepeat:  false,
+	}); err != nil {
+		t.Fatalf("UpdateReminderByUser: %v", err)
+	}
+
+	got, err := GetReminder(ctx, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if got.RepeatCron == nil {
+		t.Fatal("a message-only edit destroyed the repeat schedule")
+	}
+	if *got.RepeatCron != schedule {
+		t.Errorf("repeat_cron = %q, want %q untouched", *got.RepeatCron, schedule)
+	}
+	if got.Message == nil || *got.Message != "only the message changed" {
+		t.Errorf("message = %v, want the new message", got.Message)
+	}
+}
+
+// TestUpdateReminderWritesAndClearsTheRepeat: an explicit repeat replaces the
+// stored one, and an explicit EMPTY repeat is the clear sentinel. Both need
+// UpdateRepeat, which is what distinguishes "clear it" from "not supplied".
+func TestUpdateReminderWritesAndClearsTheRepeat(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "set-repeat")
+
+	id := f.create(t, time.Now().Add(time.Hour), "0 9 * * *")
+
+	// Replace.
+	if err := UpdateReminderByUser(ctx, ReminderUpdate{
+		ID:            id,
+		UserID:        f.userID,
+		Datetime:      time.Now().Add(2 * time.Hour),
+		Timezone:      "Europe/Helsinki",
+		Message:       "m",
+		DestinationID: f.destinationID,
+		UpdateRepeat:  true,
+		RepeatCron:    "@daily",
+	}); err != nil {
+		t.Fatalf("UpdateReminderByUser (replace): %v", err)
+	}
+	got, err := GetReminder(ctx, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if got.RepeatCron == nil || *got.RepeatCron != "@daily" {
+		t.Fatalf("repeat_cron = %v, want @daily", got.RepeatCron)
+	}
+
+	// Clear.
+	if err := UpdateReminderByUser(ctx, ReminderUpdate{
+		ID:            id,
+		UserID:        f.userID,
+		Datetime:      time.Now().Add(3 * time.Hour),
+		Timezone:      "Europe/Helsinki",
+		Message:       "m",
+		DestinationID: f.destinationID,
+		UpdateRepeat:  true,
+		RepeatCron:    "",
+	}); err != nil {
+		t.Fatalf("UpdateReminderByUser (clear): %v", err)
+	}
+	got, err = GetReminder(ctx, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	// Cleared means NULL, not the empty string: the claim and the confirm both
+	// test `repeat_cron IS NOT NULL`-shaped conditions.
+	if got.RepeatCron != nil {
+		t.Errorf("repeat_cron = %q, want NULL after the clear sentinel", *got.RepeatCron)
+	}
+}
+
+// TestUpdateReminderReArmsATerminalReminder: an edit has to put the reminder
+// back into PENDING.
+//
+// The claim only ever picks up PENDING rows, so a reminder already DELIVERED or
+// FAILED (a DM that failed because the user blocked the bot, say) could be moved
+// to a future time, be told "Reminder updated for …", and then never fire.
+func TestUpdateReminderReArmsATerminalReminder(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "rearm")
+
+	for _, terminal := range []pb.ReminderStatus{
+		pb.ReminderStatus_REMINDER_STATUS_DELIVERED,
+		pb.ReminderStatus_REMINDER_STATUS_FAILED,
+	} {
+		t.Run(terminal.String(), func(t *testing.T) {
+			id := f.create(t, time.Now().Add(time.Hour), "")
+
+			if err := SetReminderStatus(ctx, id, terminal); err != nil {
+				t.Fatalf("SetReminderStatus: %v", err)
+			}
+			// Dirty the delivery bookkeeping too, so the reset is observable.
+			if _, err := db().Exec(ctx,
+				`UPDATE reminder SET claimed_at = NOW(), delivery_attempts = 4 WHERE id = $1`, id,
+			); err != nil {
+				t.Fatalf("seed claim bookkeeping: %v", err)
+			}
+
+			if err := UpdateReminderByUser(ctx, ReminderUpdate{
+				ID:            id,
+				UserID:        f.userID,
+				Datetime:      time.Now().Add(2 * time.Hour),
+				Timezone:      "Europe/Helsinki",
+				Message:       "moved",
+				DestinationID: f.destinationID,
+			}); err != nil {
+				t.Fatalf("UpdateReminderByUser: %v", err)
+			}
+
+			if got := readReminderStatus(t, id); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
+				t.Errorf("status after edit = %d, want PENDING; the reminder would never fire", got)
+			}
+			claimedAt, attempts := readReminderClaim(t, id)
+			if claimedAt != nil {
+				t.Errorf("claimed_at = %v, want NULL after an edit", claimedAt)
+			}
+			if attempts != 0 {
+				t.Errorf("delivery_attempts = %d, want 0 after an edit", attempts)
+			}
+
+			// And it is genuinely claimable again.
+			if _, err := db().Exec(ctx,
+				`UPDATE reminder SET datetime = $1 WHERE id = $2`, time.Now().Add(-time.Minute).UTC(), id,
+			); err != nil {
+				t.Fatalf("make due: %v", err)
+			}
+			claimed, err := ClaimDueReminders(ctx, time.Now())
+			if err != nil {
+				t.Fatalf("ClaimDueReminders: %v", err)
+			}
+			if !containsID(claimed, id) {
+				t.Error("re-armed reminder was not claimed; the edit did not restore PENDING")
+			}
+		})
+	}
+}
+
+// TestDeleteReminderRefusesOtherUsersRow: deleting a row you do not own reports
+// ErrNotFound and leaves it intact.
+func TestDeleteReminderRefusesOtherUsersRow(t *testing.T) {
+	ctx := context.Background()
+	owner := newReminderFixture(t, "del-owner")
+	attacker := newReminderFixture(t, "del-attacker")
+
+	id := owner.create(t, time.Now().Add(time.Hour), "")
+
+	if err := SoftDeleteReminderByUser(ctx, id, attacker.userID); err != ErrNotFound {
+		t.Errorf("DeleteReminder by non-owner err = %v, want ErrNotFound", err)
+	}
+	if _, err := GetReminder(ctx, id); err != nil {
+		t.Errorf("owner's reminder was affected by a non-owner delete: %v", err)
+	}
+}
+
+// TestDeleteReminderSoftDeletes: DeleteReminder sets deleted=TRUE; the row then
+// disappears from get and list but the physical row remains (soft delete).
+func TestDeleteReminderSoftDeletes(t *testing.T) {
+	ctx := context.Background()
+	owner := newReminderFixture(t, "soft")
+	id := owner.create(t, time.Now().Add(time.Hour), "")
+
+	if err := SoftDeleteReminderByUser(ctx, id, owner.userID); err != nil {
+		t.Fatalf("DeleteReminder: %v", err)
+	}
+
+	if _, err := GetReminder(ctx, id); err != ErrNotFound {
+		t.Errorf("GetReminder after soft delete err = %v, want ErrNotFound", err)
+	}
+
+	list, err := listOwn(ctx, owner.userID)
+	if err != nil {
+		t.Fatalf("ListReminders: %v", err)
+	}
+	for _, r := range list {
+		if r.Reminder.ID == id {
+			t.Errorf("soft-deleted reminder %s still appears in list", id)
+		}
+	}
+
+	// Soft delete, not physical: the row must still exist with deleted=TRUE.
+	var deleted bool
+	if err := db().QueryRow(ctx, `SELECT deleted FROM reminder WHERE id = $1`, id).Scan(&deleted); err != nil {
+		t.Fatalf("row was physically removed, expected a soft delete: %v", err)
+	}
+	if !deleted {
+		t.Error("deleted flag was not set")
+	}
+}
+
+// TestClaimDueRemindersIsAtomicUnderConcurrency is AC10 — the headline property.
+//
+// The claim query must flip PENDING->SENT atomically so that concurrent claimers
+// each obtain every due reminder AT MOST ONCE. This runs many claimers in
+// parallel over a set of due reminders and asserts every reminder is claimed
+// exactly once across all of them, and that none is claimed twice. Run under
+// -race.
+func TestClaimDueRemindersIsAtomicUnderConcurrency(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "claim")
+
+	const dueCount = 20
+	due := make(map[string]bool, dueCount)
+	past := time.Now().Add(-time.Minute)
+	for i := 0; i < dueCount; i++ {
+		id := f.create(t, past.Add(-time.Duration(i)*time.Second), "")
+		due[id] = true
+	}
+
+	now := time.Now()
+
+	const claimers = 8
+	var (
+		mu      sync.Mutex
+		claimed = map[string]int{}
+		start   sync.WaitGroup
+		done    sync.WaitGroup
+	)
+	start.Add(1)
+	for i := 0; i < claimers; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait() // release together to maximise contention
+			rows, err := ClaimDueReminders(ctx, now)
+			if err != nil {
+				t.Errorf("ClaimDueReminders: %v", err)
+				return
+			}
+			mu.Lock()
+			for _, r := range rows {
+				claimed[r.ID]++
+			}
+			mu.Unlock()
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	// Every due reminder in our fixture must have been claimed exactly once
+	// total across all claimers. Reminders from other tests are ignored.
+	for id := range due {
+		switch claimed[id] {
+		case 0:
+			t.Errorf("due reminder %s was never claimed", id)
+		case 1:
+			// correct
+		default:
+			t.Errorf("reminder %s was claimed %d times; the claim is not atomic", id, claimed[id])
+		}
+	}
+
+	// And each claimed row must now be SENT, claimed exactly once.
+	for id := range due {
+		if got := readReminderStatus(t, id); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_SENT) {
+			t.Errorf("reminder %s status = %d, want SENT", id, got)
+		}
+		claimedAt, attempts := readReminderClaim(t, id)
+		if claimedAt == nil {
+			t.Errorf("reminder %s has no claimed_at; the reclaim would never see it", id)
+		}
+		if attempts != 1 {
+			t.Errorf("reminder %s delivery_attempts = %d, want 1 after a single claim", id, attempts)
+		}
+	}
+}
+
+// TestClaimDueRemindersTwiceClaimsEachOnce: calling the claim query twice in
+// quick succession claims each due reminder on the first call only; the second
+// returns nothing for the same rows, because the first flipped them to SENT.
+func TestClaimDueRemindersTwiceClaimsEachOnce(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "claim2")
+
+	id := f.create(t, time.Now().Add(-time.Minute), "")
+	now := time.Now()
+
+	first, err := ClaimDueReminders(ctx, now)
+	if err != nil {
+		t.Fatalf("first ClaimDueReminders: %v", err)
+	}
+	second, err := ClaimDueReminders(ctx, now)
+	if err != nil {
+		t.Fatalf("second ClaimDueReminders: %v", err)
+	}
+
+	if !containsID(first, id) {
+		t.Errorf("first claim did not include %s", id)
+	}
+	if containsID(second, id) {
+		t.Errorf("second claim re-claimed already-SENT reminder %s", id)
+	}
+}
+
+// TestClaimDueRemindersResolvesTheDeliveryPayload is the extraction nothing used
+// to assert.
+//
+// The claim's whole purpose is to hand the push everything it needs in one
+// query: the platform to route to, the channel to post in
+// (destination_meta->>'destination_uid'), and the owner's platform id for the DM
+// fallback and the ConfirmDelivery metadata. A typo in either jsonb path yields
+// NULL and would have shipped silently.
+func TestClaimDueRemindersResolvesTheDeliveryPayload(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "payload")
+
+	id := f.create(t, time.Now().Add(-time.Minute), "")
+
+	claimed, err := ClaimDueReminders(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("ClaimDueReminders: %v", err)
+	}
+	got, ok := claimedByID(claimed, id)
+	if !ok {
+		t.Fatalf("due reminder %s was not claimed", id)
+	}
+
+	if got.PlatformEnum != int32(pb.Platform_PLATFORM_DISCORD.Number()) {
+		t.Errorf("PlatformEnum = %d, want %d (PLATFORM_DISCORD)",
+			got.PlatformEnum, pb.Platform_PLATFORM_DISCORD.Number())
+	}
+	if got.DestinationUID == nil {
+		t.Fatalf("DestinationUID is NULL; destination_meta->>%q did not resolve",
+			callermeta.FieldDestinationUID)
+	}
+	if *got.DestinationUID != f.origin.DestinationUID {
+		t.Errorf("DestinationUID = %q, want %q", *got.DestinationUID, f.origin.DestinationUID)
+	}
+	if got.OwnerPlatformUID == nil {
+		t.Fatal("OwnerPlatformUID is NULL although the owner has a platform_user row for this platform")
+	}
+	if *got.OwnerPlatformUID != f.platformUID {
+		t.Errorf("OwnerPlatformUID = %q, want %q", *got.OwnerPlatformUID, f.platformUID)
+	}
+	if got.Message == nil || *got.Message != "msg-"+f.suffix {
+		t.Errorf("Message = %v, want %q", got.Message, "msg-"+f.suffix)
+	}
+}
+
+// TestClaimDueRemindersLeavesOwnerUIDNullOnAnUnlinkedPlatform is the other half
+// of the LEFT JOIN.
+//
+// The owner is registered on Discord; the destination is a Matrix room. The
+// reminder must still claim and still carry its channel — only the DM fallback
+// is unavailable, which is what a NULL OwnerPlatformUID means.
+func TestClaimDueRemindersLeavesOwnerUIDNullOnAnUnlinkedPlatform(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixtureOn(t, "unlinked",
+		pb.Platform_PLATFORM_DISCORD, pb.Platform_PLATFORM_MATRIX_PROTOCOL)
+
+	id := f.create(t, time.Now().Add(-time.Minute), "")
+
+	claimed, err := ClaimDueReminders(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("ClaimDueReminders: %v", err)
+	}
+	got, ok := claimedByID(claimed, id)
+	if !ok {
+		t.Fatal("a reminder whose owner has no platform_user row for the destination's platform was not claimed")
+	}
+
+	if got.OwnerPlatformUID != nil {
+		t.Errorf("OwnerPlatformUID = %q, want NULL: the owner has no identity on this platform",
+			*got.OwnerPlatformUID)
+	}
+	// The channel still resolves, so the reminder can still be delivered.
+	if got.DestinationUID == nil || *got.DestinationUID != f.origin.DestinationUID {
+		t.Errorf("DestinationUID = %v, want %q", got.DestinationUID, f.origin.DestinationUID)
+	}
+	if got.PlatformEnum != int32(pb.Platform_PLATFORM_MATRIX_PROTOCOL.Number()) {
+		t.Errorf("PlatformEnum = %d, want %d (PLATFORM_MATRIX_PROTOCOL)",
+			got.PlatformEnum, pb.Platform_PLATFORM_MATRIX_PROTOCOL.Number())
+	}
+}
+
+// TestReclaimStaleRemindersUsesClaimedAtNotUpdatedAt is the MUST-FIX regression
+// test for the reclaim's clock.
+//
+// The reclaim used to compare reminder.updated_at — a `timestamp without time
+// zone` written by a trigger as NOW(), so through a session-TimeZone-dependent
+// cast — against a Go-computed UTC cutoff. Here claimed_at is backdated well
+// past the grace window while the trigger sets updated_at to NOW(), i.e. FRESH.
+// The old comparison would have found nothing to reclaim; the new one must
+// reclaim the row.
+func TestReclaimStaleRemindersUsesClaimedAtNotUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "reclaim")
+
+	id := f.create(t, time.Now().Add(-time.Hour), "")
+
+	// Claim it the way the delivery loop does, then age only the claim stamp.
+	// The UPDATE fires trg_reminder_updated_at, so updated_at is NOW() —
+	// deliberately fresh.
+	if _, err := ClaimDueReminders(ctx, time.Now()); err != nil {
+		t.Fatalf("ClaimDueReminders: %v", err)
+	}
+	stale := time.Now().Add(-time.Hour).UTC()
+	if _, err := db().Exec(ctx, `UPDATE reminder SET claimed_at = $1 WHERE id = $2`, stale, id); err != nil {
+		t.Fatalf("backdate claimed_at: %v", err)
+	}
+
+	// Confirm the premise: updated_at is NOT stale, so a reclaim keyed on it
+	// would find nothing.
+	var updatedAt time.Time
+	if err := db().QueryRow(ctx, `SELECT updated_at FROM reminder WHERE id = $1`, id).Scan(&updatedAt); err != nil {
+		t.Fatalf("read updated_at: %v", err)
+	}
+	if updatedAt.Before(stale.Add(time.Minute)) {
+		t.Fatalf("test premise drifted: updated_at %v is already stale, so this proves nothing", updatedAt)
+	}
+
+	outcome, err := ReclaimStaleReminders(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("ReclaimStaleReminders: %v", err)
+	}
+	if outcome.Retried < 1 {
+		t.Errorf("retried %d reminders, want at least 1", outcome.Retried)
+	}
+
+	if got := readReminderStatus(t, id); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
+		t.Errorf("stuck reminder status = %d, want PENDING after reclaim", got)
+	}
+	// The stamp must be cleared, or a later cycle would measure age from a claim
+	// that has already been resolved.
+	claimedAt, _ := readReminderClaim(t, id)
+	if claimedAt != nil {
+		t.Errorf("claimed_at = %v, want NULL after a reclaim", claimedAt)
+	}
+}
+
+// TestReclaimStaleRemindersIgnoresAFreshClaim is the other direction, and the
+// AC10 no-double-delivery guarantee.
+//
+// A reminder claimed a moment ago is IN FLIGHT: reclaiming it would re-push and
+// double-post. updated_at is forced far into the past here to prove the reclaim
+// does not consult it at all — under the old code this row would have been
+// reclaimed on the very next tick and re-pushed once per second.
+func TestReclaimStaleRemindersIgnoresAFreshClaim(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "fresh-claim")
+
+	id := f.create(t, time.Now().Add(-time.Hour), "")
+	if _, err := ClaimDueReminders(ctx, time.Now()); err != nil {
+		t.Fatalf("ClaimDueReminders: %v", err)
+	}
+
+	// Backdate updated_at only. The trg_reminder_updated_at BEFORE-UPDATE
+	// trigger rewrites updated_at on every UPDATE, so it is disabled for this one
+	// statement and re-enabled immediately; both toggles' errors are asserted.
+	if _, err := db().Exec(ctx, `ALTER TABLE reminder DISABLE TRIGGER trg_reminder_updated_at`); err != nil {
+		t.Fatalf("disable updated_at trigger: %v", err)
+	}
+	_, updErr := db().Exec(ctx,
+		`UPDATE reminder SET updated_at = $1 WHERE id = $2`, time.Now().Add(-time.Hour).UTC(), id)
+	if _, err := db().Exec(ctx, `ALTER TABLE reminder ENABLE TRIGGER trg_reminder_updated_at`); err != nil {
+		t.Fatalf("re-enable updated_at trigger: %v", err)
+	}
+	if updErr != nil {
+		t.Fatalf("backdate updated_at: %v", updErr)
+	}
+
+	if _, err := ReclaimStaleReminders(ctx, time.Now()); err != nil {
+		t.Fatalf("ReclaimStaleReminders: %v", err)
+	}
+
+	if got := readReminderStatus(t, id); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_SENT) {
+		t.Errorf("in-flight reminder status = %d, want SENT; a fresh claim was reclaimed and will double-post", got)
+	}
+}
+
+// TestReclaimStaleRemindersGivesUpAtTheAttemptCap bounds the retry loop.
+//
+// A confirmation can be rejected PERMANENTLY rather than lost — the owner has no
+// platform_user row, so the client's confirm carries no user_id and the
+// interceptor answers InvalidArgument every time — while the channel post
+// succeeds on every cycle. Without a cap the user is notified once per grace
+// period forever. At maxDeliveryAttempts the reclaim must mark the reminder
+// FAILED instead of returning it to PENDING.
+func TestReclaimStaleRemindersGivesUpAtTheAttemptCap(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "cap")
+
+	tests := []struct {
+		name       string
+		attempts   int32
+		wantStatus pb.ReminderStatus
+	}{
+		{
+			name:       "one attempt short of the cap retries",
+			attempts:   maxDeliveryAttempts - 1,
+			wantStatus: pb.ReminderStatus_REMINDER_STATUS_PENDING,
+		},
+		{
+			name:       "at the cap gives up",
+			attempts:   maxDeliveryAttempts,
+			wantStatus: pb.ReminderStatus_REMINDER_STATUS_FAILED,
+		},
+		{
+			name:       "past the cap gives up",
+			attempts:   maxDeliveryAttempts + 3,
+			wantStatus: pb.ReminderStatus_REMINDER_STATUS_FAILED,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := f.create(t, time.Now().Add(-time.Hour), "")
+
+			// Put it in flight with a stale claim and the attempt count under test.
+			if _, err := db().Exec(ctx,
+				`UPDATE reminder SET status = $1, claimed_at = $2, delivery_attempts = $3 WHERE id = $4`,
+				statusOf(pb.ReminderStatus_REMINDER_STATUS_SENT),
+				time.Now().Add(-time.Hour).UTC(), tt.attempts, id,
+			); err != nil {
+				t.Fatalf("seed stale claim: %v", err)
+			}
+
+			if _, err := ReclaimStaleReminders(ctx, time.Now()); err != nil {
+				t.Fatalf("ReclaimStaleReminders: %v", err)
+			}
+
+			if got := readReminderStatus(t, id); got != statusOf(tt.wantStatus) {
+				t.Errorf("status = %d, want %d (%v)", got, statusOf(tt.wantStatus), tt.wantStatus)
+			}
+			// Either way the claim stamp is cleared.
+			claimedAt, _ := readReminderClaim(t, id)
+			if claimedAt != nil {
+				t.Errorf("claimed_at = %v, want NULL", claimedAt)
+			}
+		})
+	}
+}
+
+// TestReclaimStaleRemindersCountsBothOutcomes: the cron logs a retry and a
+// give-up differently, so the two must be reported separately and must not be
+// double-counted.
+func TestReclaimStaleRemindersCountsBothOutcomes(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "counts")
+
+	retryID := f.create(t, time.Now().Add(-time.Hour), "")
+	giveUpID := f.create(t, time.Now().Add(-time.Hour), "")
+
+	stale := time.Now().Add(-time.Hour).UTC()
+	seed := func(id string, attempts int32) {
+		if _, err := db().Exec(ctx,
+			`UPDATE reminder SET status = $1, claimed_at = $2, delivery_attempts = $3 WHERE id = $4`,
+			statusOf(pb.ReminderStatus_REMINDER_STATUS_SENT), stale, attempts, id,
+		); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed(retryID, 1)
+	seed(giveUpID, maxDeliveryAttempts)
+
+	outcome, err := ReclaimStaleReminders(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("ReclaimStaleReminders: %v", err)
+	}
+
+	// Other tests share the table, so these are lower bounds; the per-row
+	// statuses below are the exact assertions.
+	if outcome.Retried < 1 {
+		t.Errorf("Retried = %d, want at least 1", outcome.Retried)
+	}
+	if outcome.FailedOut < 1 {
+		t.Errorf("FailedOut = %d, want at least 1", outcome.FailedOut)
+	}
+
+	if got := readReminderStatus(t, retryID); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
+		t.Errorf("retryable reminder status = %d, want PENDING", got)
+	}
+	if got := readReminderStatus(t, giveUpID); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_FAILED) {
+		t.Errorf("capped reminder status = %d, want FAILED", got)
+	}
+}
+
+// TestAdvanceReminderStatusIfSentOnlyMovesASentRow is the double-confirm guard,
+// tested as the helper it is.
+//
+// The bool return is the whole point: it is what lets ConfirmDelivery tell a real
+// transition from a no-op, and therefore what stops a duplicate confirmation
+// writing a second REMINDER_DELIVERED analytics row.
+func TestAdvanceReminderStatusIfSentOnlyMovesASentRow(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "advance")
+
+	tests := []struct {
+		name         string
+		from         pb.ReminderStatus
+		wantAdvanced bool
+	}{
+		{name: "from SENT", from: pb.ReminderStatus_REMINDER_STATUS_SENT, wantAdvanced: true},
+		{name: "from PENDING", from: pb.ReminderStatus_REMINDER_STATUS_PENDING, wantAdvanced: false},
+		{name: "from DELIVERED", from: pb.ReminderStatus_REMINDER_STATUS_DELIVERED, wantAdvanced: false},
+		{name: "from FAILED", from: pb.ReminderStatus_REMINDER_STATUS_FAILED, wantAdvanced: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := f.create(t, time.Now().Add(time.Hour), "")
+			if err := SetReminderStatus(ctx, id, tt.from); err != nil {
+				t.Fatalf("SetReminderStatus: %v", err)
+			}
+
+			advanced, err := AdvanceReminderStatusIfSent(ctx, id, pb.ReminderStatus_REMINDER_STATUS_DELIVERED)
+			if err != nil {
+				t.Fatalf("AdvanceReminderStatusIfSent: %v", err)
+			}
+			if advanced != tt.wantAdvanced {
+				t.Errorf("advanced = %v, want %v", advanced, tt.wantAdvanced)
+			}
+
+			want := tt.from
+			if tt.wantAdvanced {
+				want = pb.ReminderStatus_REMINDER_STATUS_DELIVERED
+			}
+			if got := readReminderStatus(t, id); got != statusOf(want) {
+				t.Errorf("status = %d, want %d (%v)", got, statusOf(want), want)
+			}
+		})
+	}
+}
+
+// TestAdvanceReminderStatusIfSentIsIdempotent: a second call for the same
+// reminder reports false and changes nothing — the property that makes a retried
+// or duplicated confirmation harmless.
+func TestAdvanceReminderStatusIfSentIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "advance-twice")
+
+	id := f.create(t, time.Now().Add(-time.Minute), "")
+	if _, err := ClaimDueReminders(ctx, time.Now()); err != nil {
+		t.Fatalf("ClaimDueReminders: %v", err)
+	}
+
+	first, err := AdvanceReminderStatusIfSent(ctx, id, pb.ReminderStatus_REMINDER_STATUS_DELIVERED)
+	if err != nil {
+		t.Fatalf("first advance: %v", err)
+	}
+	second, err := AdvanceReminderStatusIfSent(ctx, id, pb.ReminderStatus_REMINDER_STATUS_FAILED)
+	if err != nil {
+		t.Fatalf("second advance: %v", err)
+	}
+
+	if !first {
+		t.Error("first advance reported no change")
+	}
+	if second {
+		t.Error("second advance reported a change; a duplicate confirm is not a no-op")
+	}
+	if got := readReminderStatus(t, id); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_DELIVERED) {
+		t.Errorf("status = %d, want DELIVERED; the duplicate confirm overwrote it", got)
+	}
+	claimedAt, _ := readReminderClaim(t, id)
+	if claimedAt != nil {
+		t.Errorf("claimed_at = %v, want NULL once the reminder left SENT", claimedAt)
+	}
+}
+
+// TestRescheduleReminderIfSentOnlyMovesASentRow: same guard for the repeating
+// path, plus the delivery bookkeeping reset that keeps a healthy daily repeat
+// from eventually failing out on an accumulated attempt count.
+func TestRescheduleReminderIfSentOnlyMovesASentRow(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "resched")
+
+	next := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+
+	t.Run("from SENT", func(t *testing.T) {
+		id := f.create(t, time.Now().Add(-time.Minute), "0 9 * * *")
+		if _, err := ClaimDueReminders(ctx, time.Now()); err != nil {
+			t.Fatalf("ClaimDueReminders: %v", err)
+		}
+
+		rescheduled, err := RescheduleReminderIfSent(ctx, id, next)
+		if err != nil {
+			t.Fatalf("RescheduleReminderIfSent: %v", err)
+		}
+		if !rescheduled {
+			t.Fatal("rescheduled = false for a SENT reminder")
+		}
+
+		got, err := GetReminder(ctx, id)
+		if err != nil {
+			t.Fatalf("GetReminder: %v", err)
+		}
+		if got.Status != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
+			t.Errorf("status = %d, want PENDING", got.Status)
+		}
+		if !got.Datetime.UTC().Truncate(time.Second).Equal(next) {
+			t.Errorf("datetime = %v, want %v", got.Datetime.UTC(), next)
+		}
+		if got.ClaimedAt != nil {
+			t.Errorf("claimed_at = %v, want NULL after a reschedule", got.ClaimedAt)
+		}
+		if got.DeliveryAttempts != 0 {
+			t.Errorf("delivery_attempts = %d, want 0: this occurrence delivered", got.DeliveryAttempts)
+		}
+	})
+
+	t.Run("from PENDING is a no-op", func(t *testing.T) {
+		id := f.create(t, time.Now().Add(time.Hour), "0 9 * * *")
+		before, err := GetReminder(ctx, id)
+		if err != nil {
+			t.Fatalf("GetReminder: %v", err)
+		}
+
+		rescheduled, err := RescheduleReminderIfSent(ctx, id, next)
+		if err != nil {
+			t.Fatalf("RescheduleReminderIfSent: %v", err)
+		}
+		if rescheduled {
+			t.Error("rescheduled a reminder that was not SENT")
+		}
+
+		after, err := GetReminder(ctx, id)
+		if err != nil {
+			t.Fatalf("GetReminder: %v", err)
+		}
+		if !after.Datetime.Equal(before.Datetime) {
+			t.Errorf("datetime moved from %v to %v on a guarded no-op", before.Datetime, after.Datetime)
+		}
+	})
+}
+
+// TestCountActiveRemindersCountsOnlyPendingOwned: the per-user cap is enforced
+// inside CreateReminder's transaction using this exact predicate
+// (activeReminderCountSQL). It must count only the caller's own PENDING,
+// non-deleted reminders — a delivered, deleted, or another user's reminder must
+// not count toward the cap.
+func TestCountActiveRemindersCountsOnlyPendingOwned(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "count")
+	other := newReminderFixture(t, "count-other")
+
+	future := time.Now().Add(time.Hour)
+
+	// Two pending for the owner.
+	f.create(t, future, "")
+	pendingID := f.create(t, future, "")
+
+	// One that we mark DELIVERED — must not count.
+	deliveredID := f.create(t, future, "")
+	if err := SetReminderStatus(ctx, deliveredID, pb.ReminderStatus_REMINDER_STATUS_DELIVERED); err != nil {
+		t.Fatalf("SetReminderStatus: %v", err)
+	}
+
+	// One soft-deleted — must not count.
+	deletedID := f.create(t, future, "")
+	if err := SoftDeleteReminderByUser(ctx, deletedID, f.userID); err != nil {
+		t.Fatalf("SoftDeleteReminderByUser: %v", err)
+	}
+
+	// One belonging to another user — must not count toward the owner.
+	other.create(t, future, "")
+
+	count, err := CountActiveReminders(ctx, f.userID)
+	if err != nil {
+		t.Fatalf("CountActiveReminders: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("active count = %d, want 2 (only owned pending: %s and one more)", count, pendingID)
+	}
+}
+
+// TestCreateReminderRefusesAtTheCap: the cap lives in the insert, so the helper
+// reports ErrReminderCapReached rather than silently writing past it.
+func TestCreateReminderRefusesAtTheCap(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "cap-refuse")
+
+	const cap = 2
+	future := time.Now().Add(time.Hour)
+	message := "capped"
+	req := pb.CreateReminderReq_builder{
+		Datetime:    timestamppb.New(future.UTC()),
+		Timezone:    strPtr("Europe/Helsinki"),
+		Message:     &message,
+		Destination: f.destination,
+	}.Build()
+
+	t.Cleanup(func() {
+		if _, err := db().Exec(context.Background(),
+			`DELETE FROM reminder WHERE user_id = $1`, f.userID); err != nil {
+			t.Errorf("cleanup reminders for %s: %v", f.userID, err)
+		}
+	})
+
+	for i := 0; i < cap; i++ {
+		if _, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap); err != nil {
+			t.Fatalf("CreateReminder %d of %d: %v", i+1, cap, err)
+		}
+	}
+
+	if _, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap); err != ErrReminderCapReached {
+		t.Errorf("create past the cap err = %v, want ErrReminderCapReached", err)
+	}
+
+	count, err := CountActiveReminders(ctx, f.userID)
+	if err != nil {
+		t.Fatalf("CountActiveReminders: %v", err)
+	}
+	if count != cap {
+		t.Errorf("active count = %d, want exactly the cap %d", count, cap)
+	}
+}
+
+// TestCreateReminderCapHoldsUnderConcurrency is AC13 — the cap must be a real
+// limit, not a check-then-insert race.
+//
+// Many creates are fired simultaneously at a low cap. Reading the count and then
+// inserting let two callers at the limit both pass the check and both write; the
+// insert is now inside a transaction that first takes a per-owner advisory lock,
+// so the total can never exceed the cap however many callers race. Run under
+// -race.
+func TestCreateReminderCapHoldsUnderConcurrency(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "cap-race")
+
+	const (
+		cap      = 5
+		creators = 24
+	)
+
+	future := time.Now().Add(time.Hour)
+	message := "racing"
+	req := pb.CreateReminderReq_builder{
+		Datetime:    timestamppb.New(future.UTC()),
+		Timezone:    strPtr("Europe/Helsinki"),
+		Message:     &message,
+		Destination: f.destination,
+	}.Build()
+
+	t.Cleanup(func() {
+		if _, err := db().Exec(context.Background(),
+			`DELETE FROM reminder WHERE user_id = $1`, f.userID); err != nil {
+			t.Errorf("cleanup reminders for %s: %v", f.userID, err)
+		}
+	})
+
+	var (
+		mu       sync.Mutex
+		accepted int
+		start    sync.WaitGroup
+		done     sync.WaitGroup
+	)
+	start.Add(1)
+	for i := 0; i < creators; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait() // release together to maximise contention
+
+			_, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap)
+			switch err {
+			case nil:
+				mu.Lock()
+				accepted++
+				mu.Unlock()
+			case ErrReminderCapReached:
+				// The expected refusal.
+			default:
+				t.Errorf("CreateReminder: %v", err)
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	if accepted != cap {
+		t.Errorf("%d creates were accepted, want exactly the cap %d", accepted, cap)
+	}
+
+	count, err := CountActiveReminders(ctx, f.userID)
+	if err != nil {
+		t.Fatalf("CountActiveReminders: %v", err)
+	}
+	if count > cap {
+		t.Errorf("stored active reminders = %d, which exceeds the cap %d: the check-then-insert race is still open",
+			count, cap)
+	}
+}

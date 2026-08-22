@@ -120,16 +120,29 @@ type Reminder struct {
 	Deleted       bool
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	// ClaimedAt is the absolute instant the delivery loop claimed this reminder,
+	// and is NULL in every status other than SENT. It is the reclaim's clock;
+	// updated_at is deliberately not used for that, because it is a
+	// `timestamp without time zone` written through a session-timezone-dependent
+	// cast. There is no protobuf counterpart: it is an internal scheduling
+	// detail, not something a client has any use for.
+	ClaimedAt *time.Time
+	// DeliveryAttempts counts claims that never got a confirmation to stick, and
+	// bounds retrying a delivery whose confirm is rejected permanently rather
+	// than merely lost. Also deliberately absent from the protobuf.
+	DeliveryAttempts int32
 }
 
 // ReminderColumns lists reminder columns in the order ScanTargets expects.
 const ReminderColumns = `id, datetime, timezone, repeat_cron, destination_id, status,
-	user_id, message, parent_id, deleted, created_at, updated_at`
+	user_id, message, parent_id, deleted, created_at, updated_at,
+	claimed_at, delivery_attempts`
 
 func (r *Reminder) ScanTargets() []any {
 	return []any{
 		&r.ID, &r.Datetime, &r.Timezone, &r.RepeatCron, &r.DestinationID, &r.Status,
 		&r.UserID, &r.Message, &r.ParentID, &r.Deleted, &r.CreatedAt, &r.UpdatedAt,
+		&r.ClaimedAt, &r.DeliveryAttempts,
 	}
 }
 

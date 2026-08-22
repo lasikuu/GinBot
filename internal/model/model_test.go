@@ -135,7 +135,9 @@ func TestUserToProtoCarriesOptionals(t *testing.T) {
 }
 
 // Reminder.ToProto takes the destination as an argument, so it must tolerate nil
-// — GetExpiredReminders passes nil when the destination row has been removed.
+// — GetReminder passes nil when the destination row has been removed, treating
+// db.ErrNotFound from the destination lookup as "no destination" rather than as a
+// failure.
 func TestReminderToProtoHandlesNilDestination(t *testing.T) {
 	message := "water the plants"
 	r := &Reminder{
