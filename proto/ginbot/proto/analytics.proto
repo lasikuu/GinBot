@@ -34,8 +34,8 @@ message ActionRecord {
   google.protobuf.Timestamp action_timestamp = 3;
   // Time taken to perform the Action in milliseconds
   int64 action_time = 4;
-  // User ID of the actor
-  int64 actor_id = 5;
+  // User UUIDv7 of the actor
+  string actor_id = 5;
 }
 
 message CreateActionRecordReq {
@@ -43,8 +43,8 @@ message CreateActionRecordReq {
   ActionType action_type = 1;
   // Time taken to perform the Action in milliseconds
   int64 action_time = 2;
-  // User ID of the actor
-  int64 actor_id = 3;
+  // User UUIDv7 of the actor
+  string actor_id = 3;
 }
 
 message CreateActionRecordResp {
@@ -59,8 +59,8 @@ message ListActionRecordsReq {
   int64 offset = 2;
   // Type of the action to search for
   ActionType action_type = 3;
-  // Search for recorded actions by this actor
-  int64 actor_id = 4;
+  // User UUIDv7 of the actor
+  string actor_id = 4;
   // Search for recorded actions starting from this date
   google.protobuf.Timestamp period_start = 5;
   // Search for recorded actions ending at this date

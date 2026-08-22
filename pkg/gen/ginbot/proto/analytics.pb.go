@@ -84,7 +84,7 @@ type ActionRecord struct {
 	xxx_hidden_ActionType      ActionType             `protobuf:"varint,2,opt,name=action_type,json=actionType,enum=ginbot.proto.ActionType" json:"action_type,omitempty"`
 	xxx_hidden_ActionTimestamp *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=action_timestamp,json=actionTimestamp" json:"action_timestamp,omitempty"`
 	xxx_hidden_ActionTime      int64                  `protobuf:"varint,4,opt,name=action_time,json=actionTime" json:"action_time,omitempty"`
-	xxx_hidden_ActorId         int64                  `protobuf:"varint,5,opt,name=actor_id,json=actorId" json:"actor_id,omitempty"`
+	xxx_hidden_ActorId         *string                `protobuf:"bytes,5,opt,name=actor_id,json=actorId" json:"actor_id,omitempty"`
 	XXX_raceDetectHookData     protoimpl.RaceDetectHookData
 	XXX_presence               [1]uint32
 	unknownFields              protoimpl.UnknownFields
@@ -146,11 +146,14 @@ func (x *ActionRecord) GetActionTime() int64 {
 	return 0
 }
 
-func (x *ActionRecord) GetActorId() int64 {
+func (x *ActionRecord) GetActorId() string {
 	if x != nil {
-		return x.xxx_hidden_ActorId
+		if x.xxx_hidden_ActorId != nil {
+			return *x.xxx_hidden_ActorId
+		}
+		return ""
 	}
-	return 0
+	return ""
 }
 
 func (x *ActionRecord) SetId(v int64) {
@@ -172,8 +175,8 @@ func (x *ActionRecord) SetActionTime(v int64) {
 	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 5)
 }
 
-func (x *ActionRecord) SetActorId(v int64) {
-	x.xxx_hidden_ActorId = v
+func (x *ActionRecord) SetActorId(v string) {
+	x.xxx_hidden_ActorId = &v
 	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 5)
 }
 
@@ -233,7 +236,7 @@ func (x *ActionRecord) ClearActionTime() {
 
 func (x *ActionRecord) ClearActorId() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
-	x.xxx_hidden_ActorId = 0
+	x.xxx_hidden_ActorId = nil
 }
 
 type ActionRecord_builder struct {
@@ -247,8 +250,8 @@ type ActionRecord_builder struct {
 	ActionTimestamp *timestamppb.Timestamp
 	// Time taken to perform the Action in milliseconds
 	ActionTime *int64
-	// User ID of the actor
-	ActorId *int64
+	// User UUIDv7 of the actor
+	ActorId *string
 }
 
 func (b0 ActionRecord_builder) Build() *ActionRecord {
@@ -270,7 +273,7 @@ func (b0 ActionRecord_builder) Build() *ActionRecord {
 	}
 	if b.ActorId != nil {
 		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 5)
-		x.xxx_hidden_ActorId = *b.ActorId
+		x.xxx_hidden_ActorId = b.ActorId
 	}
 	return m0
 }
@@ -279,7 +282,7 @@ type CreateActionRecordReq struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_ActionType  ActionType             `protobuf:"varint,1,opt,name=action_type,json=actionType,enum=ginbot.proto.ActionType" json:"action_type,omitempty"`
 	xxx_hidden_ActionTime  int64                  `protobuf:"varint,2,opt,name=action_time,json=actionTime" json:"action_time,omitempty"`
-	xxx_hidden_ActorId     int64                  `protobuf:"varint,3,opt,name=actor_id,json=actorId" json:"actor_id,omitempty"`
+	xxx_hidden_ActorId     *string                `protobuf:"bytes,3,opt,name=actor_id,json=actorId" json:"actor_id,omitempty"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -327,11 +330,14 @@ func (x *CreateActionRecordReq) GetActionTime() int64 {
 	return 0
 }
 
-func (x *CreateActionRecordReq) GetActorId() int64 {
+func (x *CreateActionRecordReq) GetActorId() string {
 	if x != nil {
-		return x.xxx_hidden_ActorId
+		if x.xxx_hidden_ActorId != nil {
+			return *x.xxx_hidden_ActorId
+		}
+		return ""
 	}
-	return 0
+	return ""
 }
 
 func (x *CreateActionRecordReq) SetActionType(v ActionType) {
@@ -344,8 +350,8 @@ func (x *CreateActionRecordReq) SetActionTime(v int64) {
 	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
 }
 
-func (x *CreateActionRecordReq) SetActorId(v int64) {
-	x.xxx_hidden_ActorId = v
+func (x *CreateActionRecordReq) SetActorId(v string) {
+	x.xxx_hidden_ActorId = &v
 	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
 }
 
@@ -382,7 +388,7 @@ func (x *CreateActionRecordReq) ClearActionTime() {
 
 func (x *CreateActionRecordReq) ClearActorId() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
-	x.xxx_hidden_ActorId = 0
+	x.xxx_hidden_ActorId = nil
 }
 
 type CreateActionRecordReq_builder struct {
@@ -392,8 +398,8 @@ type CreateActionRecordReq_builder struct {
 	ActionType *ActionType
 	// Time taken to perform the Action in milliseconds
 	ActionTime *int64
-	// User ID of the actor
-	ActorId *int64
+	// User UUIDv7 of the actor
+	ActorId *string
 }
 
 func (b0 CreateActionRecordReq_builder) Build() *CreateActionRecordReq {
@@ -410,7 +416,7 @@ func (b0 CreateActionRecordReq_builder) Build() *CreateActionRecordReq {
 	}
 	if b.ActorId != nil {
 		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
-		x.xxx_hidden_ActorId = *b.ActorId
+		x.xxx_hidden_ActorId = b.ActorId
 	}
 	return m0
 }
@@ -496,7 +502,7 @@ type ListActionRecordsReq struct {
 	xxx_hidden_Limit       int64                  `protobuf:"varint,1,opt,name=limit" json:"limit,omitempty"`
 	xxx_hidden_Offset      int64                  `protobuf:"varint,2,opt,name=offset" json:"offset,omitempty"`
 	xxx_hidden_ActionType  ActionType             `protobuf:"varint,3,opt,name=action_type,json=actionType,enum=ginbot.proto.ActionType" json:"action_type,omitempty"`
-	xxx_hidden_ActorId     int64                  `protobuf:"varint,4,opt,name=actor_id,json=actorId" json:"actor_id,omitempty"`
+	xxx_hidden_ActorId     *string                `protobuf:"bytes,4,opt,name=actor_id,json=actorId" json:"actor_id,omitempty"`
 	xxx_hidden_PeriodStart *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=period_start,json=periodStart" json:"period_start,omitempty"`
 	xxx_hidden_PeriodEnd   *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=period_end,json=periodEnd" json:"period_end,omitempty"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
@@ -553,11 +559,14 @@ func (x *ListActionRecordsReq) GetActionType() ActionType {
 	return ActionType_ACTION_TYPE_UNSPECIFIED
 }
 
-func (x *ListActionRecordsReq) GetActorId() int64 {
+func (x *ListActionRecordsReq) GetActorId() string {
 	if x != nil {
-		return x.xxx_hidden_ActorId
+		if x.xxx_hidden_ActorId != nil {
+			return *x.xxx_hidden_ActorId
+		}
+		return ""
 	}
-	return 0
+	return ""
 }
 
 func (x *ListActionRecordsReq) GetPeriodStart() *timestamppb.Timestamp {
@@ -589,8 +598,8 @@ func (x *ListActionRecordsReq) SetActionType(v ActionType) {
 	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 6)
 }
 
-func (x *ListActionRecordsReq) SetActorId(v int64) {
-	x.xxx_hidden_ActorId = v
+func (x *ListActionRecordsReq) SetActorId(v string) {
+	x.xxx_hidden_ActorId = &v
 	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 6)
 }
 
@@ -661,7 +670,7 @@ func (x *ListActionRecordsReq) ClearActionType() {
 
 func (x *ListActionRecordsReq) ClearActorId() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
-	x.xxx_hidden_ActorId = 0
+	x.xxx_hidden_ActorId = nil
 }
 
 func (x *ListActionRecordsReq) ClearPeriodStart() {
@@ -681,8 +690,8 @@ type ListActionRecordsReq_builder struct {
 	Offset *int64
 	// Type of the action to search for
 	ActionType *ActionType
-	// Search for recorded actions by this actor
-	ActorId *int64
+	// User UUIDv7 of the actor
+	ActorId *string
 	// Search for recorded actions starting from this date
 	PeriodStart *timestamppb.Timestamp
 	// Search for recorded actions ending at this date
@@ -707,7 +716,7 @@ func (b0 ListActionRecordsReq_builder) Build() *ListActionRecordsReq {
 	}
 	if b.ActorId != nil {
 		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 6)
-		x.xxx_hidden_ActorId = *b.ActorId
+		x.xxx_hidden_ActorId = b.ActorId
 	}
 	x.xxx_hidden_PeriodStart = b.PeriodStart
 	x.xxx_hidden_PeriodEnd = b.PeriodEnd
@@ -796,7 +805,7 @@ var file_ginbot_proto_analytics_proto_rawDesc = []byte{
 	0x61, 0x6d, 0x70, 0x12, 0x1f, 0x0a, 0x0b, 0x61, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x74, 0x69,
 	0x6d, 0x65, 0x18, 0x04, 0x20, 0x01, 0x28, 0x03, 0x52, 0x0a, 0x61, 0x63, 0x74, 0x69, 0x6f, 0x6e,
 	0x54, 0x69, 0x6d, 0x65, 0x12, 0x19, 0x0a, 0x08, 0x61, 0x63, 0x74, 0x6f, 0x72, 0x5f, 0x69, 0x64,
-	0x18, 0x05, 0x20, 0x01, 0x28, 0x03, 0x52, 0x07, 0x61, 0x63, 0x74, 0x6f, 0x72, 0x49, 0x64, 0x22,
+	0x18, 0x05, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x61, 0x63, 0x74, 0x6f, 0x72, 0x49, 0x64, 0x22,
 	0x8e, 0x01, 0x0a, 0x15, 0x43, 0x72, 0x65, 0x61, 0x74, 0x65, 0x41, 0x63, 0x74, 0x69, 0x6f, 0x6e,
 	0x52, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x52, 0x65, 0x71, 0x12, 0x39, 0x0a, 0x0b, 0x61, 0x63, 0x74,
 	0x69, 0x6f, 0x6e, 0x5f, 0x74, 0x79, 0x70, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0e, 0x32, 0x18,
@@ -805,7 +814,7 @@ var file_ginbot_proto_analytics_proto_rawDesc = []byte{
 	0x54, 0x79, 0x70, 0x65, 0x12, 0x1f, 0x0a, 0x0b, 0x61, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x74,
 	0x69, 0x6d, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x03, 0x52, 0x0a, 0x61, 0x63, 0x74, 0x69, 0x6f,
 	0x6e, 0x54, 0x69, 0x6d, 0x65, 0x12, 0x19, 0x0a, 0x08, 0x61, 0x63, 0x74, 0x6f, 0x72, 0x5f, 0x69,
-	0x64, 0x18, 0x03, 0x20, 0x01, 0x28, 0x03, 0x52, 0x07, 0x61, 0x63, 0x74, 0x6f, 0x72, 0x49, 0x64,
+	0x64, 0x18, 0x03, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x61, 0x63, 0x74, 0x6f, 0x72, 0x49, 0x64,
 	0x22, 0x28, 0x0a, 0x16, 0x43, 0x72, 0x65, 0x61, 0x74, 0x65, 0x41, 0x63, 0x74, 0x69, 0x6f, 0x6e,
 	0x52, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x52, 0x65, 0x73, 0x70, 0x12, 0x0e, 0x0a, 0x02, 0x69, 0x64,
 	0x18, 0x01, 0x20, 0x01, 0x28, 0x03, 0x52, 0x02, 0x69, 0x64, 0x22, 0x94, 0x02, 0x0a, 0x14, 0x4c,
@@ -817,7 +826,7 @@ var file_ginbot_proto_analytics_proto_rawDesc = []byte{
 	0x18, 0x03, 0x20, 0x01, 0x28, 0x0e, 0x32, 0x18, 0x2e, 0x67, 0x69, 0x6e, 0x62, 0x6f, 0x74, 0x2e,
 	0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2e, 0x41, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x54, 0x79, 0x70, 0x65,
 	0x52, 0x0a, 0x61, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x54, 0x79, 0x70, 0x65, 0x12, 0x19, 0x0a, 0x08,
-	0x61, 0x63, 0x74, 0x6f, 0x72, 0x5f, 0x69, 0x64, 0x18, 0x04, 0x20, 0x01, 0x28, 0x03, 0x52, 0x07,
+	0x61, 0x63, 0x74, 0x6f, 0x72, 0x5f, 0x69, 0x64, 0x18, 0x04, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07,
 	0x61, 0x63, 0x74, 0x6f, 0x72, 0x49, 0x64, 0x12, 0x3d, 0x0a, 0x0c, 0x70, 0x65, 0x72, 0x69, 0x6f,
 	0x64, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x18, 0x05, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1a, 0x2e,
 	0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x62, 0x75, 0x66, 0x2e,

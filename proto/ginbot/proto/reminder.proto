@@ -28,7 +28,14 @@ service ReminderService {
   rpc CreateReminder(CreateReminderReq) returns (CreateReminderResp);
   rpc UpdateReminder(UpdateReminderReq) returns (google.protobuf.Empty);
   rpc DeleteReminder(DeleteReminderReq) returns (google.protobuf.Empty);
-  rpc GetExpiredReminders(google.protobuf.Empty) returns (GetExpiredRemindersResp);
+  // ConfirmDelivery reports the outcome of a pushed reminder notification.
+  //
+  // Delivery is otherwise fire-and-forget: SendAction drops on a full client
+  // buffer and returns nothing. The server marks a reminder SENT when it pushes,
+  // and only advances it to DELIVERED (or reschedules a repeat) when the client
+  // confirms here. A reminder never confirmed is reclaimed and retried, so it is
+  // not silently lost.
+  rpc ConfirmDelivery(ConfirmDeliveryReq) returns (google.protobuf.Empty);
 }
 
 // Message representing a Reminder
@@ -157,9 +164,18 @@ message UpdateReminderReq {
   string message = 4;
   // Destinations to send the reminder to
   ReminderDestination destination = 5;
-  // Repeat in cron format
+  // Repeat in cron format.
+  //
+  // This field is PATCH-SHAPED, unlike the rest of the message: leaving it
+  // unset leaves the stored schedule untouched, so a client that only wants to
+  // change the message or the time cannot silently destroy an existing repeat.
+  //
+  // Setting it to the EMPTY STRING is the explicit "clear the repeat" sentinel —
+  // hence the trailing `?` on the pattern, which the create-side pattern does not
+  // have (there is nothing to clear at create time). Any other value must be a
+  // syntactically plausible schedule, checked semantically by the handler.
   string repeat_cron = 6 [
-    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|midnight|hourly|reboot)|@every[ \\t]+(\\d+(ns|us|µs|ms|s|m|h))+|(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*([ \\t]+(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*){4,5})$"
+    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|midnight|hourly|reboot)|@every[ \\t]+(\\d+(ns|us|µs|ms|s|m|h))+|(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*([ \\t]+(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*){4,5})?$"
   ];
   // Parent reminder UUIDv7
   string parent_id = 7 [
@@ -174,6 +190,14 @@ message DeleteReminderReq {
   ];
 }
 
-message GetExpiredRemindersResp {
-  repeated Reminder reminders = 1;
+message ConfirmDeliveryReq {
+  // Reminder UUIDv7 that was delivered.
+  string id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
+  // Whether the client managed to post the reminder. A false outcome (the
+  // channel is gone and the DM fallback also failed, or the user blocked the
+  // bot) lets the server record the failure rather than retry forever.
+  bool delivered = 2;
 }
