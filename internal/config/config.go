@@ -20,11 +20,6 @@ type OptionsModel struct {
 	GRPC    GRPCServerOptions
 }
 
-type CredentialsModel struct {
-	JWTSecret  string
-	Passphrase string
-}
-
 var AppEnvironment enum.Environment
 var LogLevel zapcore.Level
 
@@ -88,7 +83,7 @@ func dialOptions() []grpc.DialOption {
 		return gRPCDialOptions
 	}
 
-	tlsCredentials := auth.LoadClientCredentials()
+	tlsCredentials := auth.LoadClientCredentials(certsPath())
 
 	gRPCDialOptions = append(gRPCDialOptions, grpc.WithTransportCredentials(tlsCredentials))
 	return gRPCDialOptions

@@ -40,8 +40,14 @@ func gRPCTLS() bool {
 	return os.Getenv("GINBOT_GRPC_TLS") == "true"
 }
 
+// certsPath returns the directory holding the mutual TLS material.
+// Relative paths are resolved against the working directory.
 func certsPath() string {
-	return os.Getenv("GINBOT_CERTS_PATH")
+	value := os.Getenv("GINBOT_CERTS_PATH")
+	if value == "" {
+		return auth.DefaultCertsDir
+	}
+	return value
 }
 
 func serverOptions() []grpc.ServerOption {
@@ -51,7 +57,7 @@ func serverOptions() []grpc.ServerOption {
 		return gRPCServerOptions
 	}
 
-	tlsCredentials := auth.LoadServerCredentials()
+	tlsCredentials := auth.LoadServerCredentials(certsPath())
 	gRPCServerOptions = append(gRPCServerOptions, grpc.Creds(tlsCredentials))
 
 	return gRPCServerOptions
