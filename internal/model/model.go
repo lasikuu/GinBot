@@ -149,22 +149,3 @@ func (r *Reminder) ToProto(destination *pb.ReminderDestination) *pb.Reminder {
 		UpdatedAt:   timestamppb.New(r.UpdatedAt),
 	}.Build()
 }
-
-// Destination mirrors a row of destination.
-type Destination struct {
-	ID              int64
-	InstanceID      int64
-	DestinationMeta *structpb.Struct
-	Deleted         bool
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
-
-// DestinationColumns lists destination columns in the order ScanTargets expects.
-const DestinationColumns = `id, instance_id, destination_meta, deleted, created_at, updated_at`
-
-func (d *Destination) ScanTargets() []any {
-	return []any{
-		&d.ID, &d.InstanceID, &d.DestinationMeta, &d.Deleted, &d.CreatedAt, &d.UpdatedAt,
-	}
-}
