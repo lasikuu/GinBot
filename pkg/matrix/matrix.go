@@ -13,6 +13,7 @@ import (
 	"maunium.net/go/mautrix/id"
 
 	"github.com/lasikuu/GinBot/internal/config"
+	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 )
@@ -34,7 +35,7 @@ func InitializeMatrix() {
 
 		lastRoomID = evt.RoomID
 		if evt.Content.AsMessage().Body == "!healthcheck" {
-			resp, err := UtilityServiceClient.HealthCheck(ctx, &emptypb.Empty{})
+			resp, err := client.UtilityServiceClient.HealthCheck(ctx, &emptypb.Empty{})
 			if err != nil {
 				log.Z.Error("failed to call HealthCheck", zap.Error(err))
 				return
