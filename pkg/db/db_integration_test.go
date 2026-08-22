@@ -12,6 +12,7 @@ package db
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,6 +49,46 @@ func meta(t *testing.T, kv map[string]string) *structpb.Struct {
 	return s
 }
 
+// cleanupUser removes a user and its platform identities.
+//
+// platform_user.user_id has no ON DELETE CASCADE, so deleting user_account
+// first always fails the foreign key. Errors are asserted rather than
+// discarded — silently ignoring them leaked rows on every run.
+func cleanupUser(t *testing.T, userID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if _, err := db().Exec(ctx, `DELETE FROM platform_user WHERE user_id = $1`, userID); err != nil {
+			t.Errorf("cleanup platform_user for %s: %v", userID, err)
+		}
+		if _, err := db().Exec(ctx, `DELETE FROM user_account WHERE id = $1`, userID); err != nil {
+			t.Errorf("cleanup user_account %s: %v", userID, err)
+		}
+	})
+}
+
+// cleanupInstanceByMeta removes an instance and everything hanging off it.
+func cleanupInstanceByMeta(t *testing.T, instanceMeta *structpb.Struct) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if _, err := db().Exec(ctx,
+			`DELETE FROM reminder WHERE destination_id IN (
+			     SELECT d.id FROM destination d JOIN instance i ON d.instance_id = i.id
+			     WHERE i.instance_meta = $1)`, instanceMeta); err != nil {
+			t.Errorf("cleanup reminders: %v", err)
+		}
+		if _, err := db().Exec(ctx,
+			`DELETE FROM destination WHERE instance_id IN (
+			     SELECT id FROM instance WHERE instance_meta = $1)`, instanceMeta); err != nil {
+			t.Errorf("cleanup destinations: %v", err)
+		}
+		if _, err := db().Exec(ctx, `DELETE FROM instance WHERE instance_meta = $1`, instanceMeta); err != nil {
+			t.Errorf("cleanup instances: %v", err)
+		}
+	})
+}
+
 func TestCreateAndGetUser(t *testing.T) {
 	ctx := context.Background()
 	platformUID := "test-uid-" + time.Now().Format("150405.000000")
@@ -57,9 +98,7 @@ func TestCreateAndGetUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = db().Exec(ctx, `DELETE FROM user_account WHERE id = $1`, userID)
-	})
+	cleanupUser(t, userID)
 
 	user, err := GetUser(ctx, userID)
 	if err != nil {
@@ -106,9 +145,7 @@ func TestCreateUserIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first CreateUser: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = db().Exec(ctx, `DELETE FROM user_account WHERE id = $1`, firstID)
-	})
+	cleanupUser(t, firstID)
 
 	var before int
 	if err := db().QueryRow(ctx, `SELECT COUNT(*) FROM user_account`).Scan(&before); err != nil {
@@ -139,6 +176,8 @@ func TestGetOrCreateDestinationIsIdempotent(t *testing.T) {
 		InstanceMeta:    meta(t, map[string]string{"guild_id": "g-" + suffix}),
 		DestinationMeta: meta(t, map[string]string{"channel_id": "c-" + suffix}),
 	}.Build()
+
+	cleanupInstanceByMeta(t, destination.GetInstanceMeta())
 
 	first, err := GetOrCreateDestinationByMeta(ctx, destination)
 	if err != nil {
@@ -181,9 +220,7 @@ func TestCreateAndReadReminder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = db().Exec(ctx, `DELETE FROM user_account WHERE id = $1`, userID)
-	})
+	cleanupUser(t, userID)
 
 	platform := pb.Platform_PLATFORM_DISCORD
 	destination := pb.ReminderDestination_builder{
@@ -191,6 +228,8 @@ func TestCreateAndReadReminder(t *testing.T) {
 		InstanceMeta:    meta(t, map[string]string{"guild_id": "rg-" + suffix}),
 		DestinationMeta: meta(t, map[string]string{"channel_id": "rc-" + suffix}),
 	}.Build()
+
+	cleanupInstanceByMeta(t, destination.GetInstanceMeta())
 
 	destinationID, err := GetOrCreateDestinationByMeta(ctx, destination)
 	if err != nil {
@@ -274,10 +313,82 @@ func TestCreateAndReadReminder(t *testing.T) {
 	}
 }
 
+// Regression test for the get-or-create race. Before the unique indexes and the
+// ON CONFLICT inserts, concurrent callers for the same channel all missed the
+// SELECT and each inserted, producing duplicate instance and destination rows
+// that later lookups would pick from arbitrarily.
+func TestGetOrCreateDestinationIsRaceSafe(t *testing.T) {
+	ctx := context.Background()
+	suffix := time.Now().Format("150405.000000")
+
+	platform := pb.Platform_PLATFORM_DISCORD
+	instanceMeta := meta(t, map[string]string{"guild_id": "race-" + suffix})
+	destination := pb.ReminderDestination_builder{
+		PlatformEnum:    &platform,
+		InstanceMeta:    instanceMeta,
+		DestinationMeta: meta(t, map[string]string{"channel_id": "race-c-" + suffix}),
+	}.Build()
+
+	cleanupInstanceByMeta(t, instanceMeta)
+
+	const concurrency = 16
+	ids := make([]int64, concurrency)
+	errs := make([]error, concurrency)
+
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < concurrency; i++ {
+		done.Add(1)
+		go func(i int) {
+			defer done.Done()
+			start.Wait() // release all goroutines together to maximise contention
+			ids[i], errs[i] = GetOrCreateDestinationByMeta(ctx, destination)
+		}(i)
+	}
+	start.Done()
+	done.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: %v", i, err)
+		}
+	}
+
+	// Every caller must observe the same destination.
+	for i, id := range ids {
+		if id != ids[0] {
+			t.Errorf("goroutine %d got destination %d, goroutine 0 got %d", i, id, ids[0])
+		}
+	}
+
+	var instances, destinations int
+	if err := db().QueryRow(ctx,
+		`SELECT COUNT(*) FROM instance WHERE instance_meta = $1`, instanceMeta,
+	).Scan(&instances); err != nil {
+		t.Fatalf("count instances: %v", err)
+	}
+	if err := db().QueryRow(ctx,
+		`SELECT COUNT(*) FROM destination d JOIN instance i ON d.instance_id = i.id
+		 WHERE i.instance_meta = $1`, instanceMeta,
+	).Scan(&destinations); err != nil {
+		t.Fatalf("count destinations: %v", err)
+	}
+
+	if instances != 1 {
+		t.Errorf("instance rows = %d, want 1", instances)
+	}
+	if destinations != 1 {
+		t.Errorf("destination rows = %d, want 1", destinations)
+	}
+}
+
 func TestGetInstanceByMetaMatchesOnPlatformAndMeta(t *testing.T) {
 	ctx := context.Background()
 	suffix := time.Now().Format("150405.000000")
 	instanceMeta := meta(t, map[string]string{"guild_id": "im-" + suffix})
+
+	cleanupInstanceByMeta(t, instanceMeta)
 
 	id, err := CreateInstance(ctx, pb.Platform_PLATFORM_DISCORD, instanceMeta, "general")
 	if err != nil {
