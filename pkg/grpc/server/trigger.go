@@ -89,6 +89,18 @@ func newTriggerServer(fetcher *storage.Fetcher, blobs storage.Storage) *TriggerS
 	return s
 }
 
+// PruneForcedLimiter drops forced-fire records that can no longer refuse
+// anything.
+//
+// trigger.ForcedLimiter keeps one entry per author and documents that Allow does
+// not prune, so that it stays O(1) — pruning is the caller's job and nothing was
+// doing it. That was harmless only while no client ever set forced; the Discord
+// client now sets it on every mention, so the map would otherwise grow by one
+// entry per distinct author for the lifetime of the process.
+func (s *TriggerServer) PruneForcedLimiter() {
+	s.limiter.Prune()
+}
+
 // loadCandidates is the trigger.Loader backing s.cache: it fetches every live
 // trigger scoped to an instance and compiles each one's pattern once, here,
 // rather than per message.
