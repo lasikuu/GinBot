@@ -12,6 +12,16 @@ type DiscordOptions struct {
 	ClientId          string
 	EraseCommands     bool
 	CommandPrefixes   CommandPrefixes
+	// MessageContent opts in to the privileged MESSAGE_CONTENT gateway intent
+	// on its own. Trigger matching requires it: without the intent every
+	// MessageCreate arrives with an empty Content, so there is nothing to match
+	// a phrase against. Chat commands already imply it, so this only matters for
+	// a deployment that wants triggers without any chat prefix configured.
+	//
+	// It must stay opt-in. The intent has to be enabled for the application in
+	// the Discord developer portal first, and requesting it when it is not makes
+	// the gateway close with 4014 — a bot that cannot start at all.
+	MessageContent bool
 }
 
 // CommandPrefixes holds the configured chat command prefixes. An empty
@@ -40,6 +50,10 @@ func clientId() string {
 
 func eraseCommands() bool {
 	return os.Getenv("DISCORD_REMOVE_COMMANDS") == "true"
+}
+
+func messageContent() bool {
+	return os.Getenv("DISCORD_MESSAGE_CONTENT") == "true"
 }
 
 // commandPrefixes parses the chat command prefixes.

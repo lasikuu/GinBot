@@ -59,6 +59,7 @@ func SetEnv() {
 			ClientId:          clientId(),
 			EraseCommands:     eraseCommands(),
 			CommandPrefixes:   commandPrefixes(),
+			MessageContent:    messageContent(),
 		},
 		GRPC: GRPCServerOptions{
 			Host:      gRPCHost(),
