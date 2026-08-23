@@ -25,6 +25,7 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"github.com/lasikuu/GinBot/pkg/reminder"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -64,15 +65,60 @@ func originFor(suffix string) callermeta.Origin {
 	}
 }
 
-// destinationFor builds a unique Discord destination for a reminder create.
-func destinationFor(t *testing.T, suffix string) *pb.ReminderDestination {
+// destinationFor builds a unique Discord destination for a reminder create, and
+// schedules cleanup of the instance and destination rows it will cause.
+//
+// CreateReminder resolves a destination through db.GetOrCreateDestinationByMeta,
+// which inserts an instance and a destination as a side effect. Cleaning up only
+// the reminder leaked both of those on every call — 19 instance and 19
+// destination rows per suite run. The pool is threaded in rather than left to
+// each caller so the cleanup cannot be forgotten at a new call site.
+func destinationFor(t *testing.T, pool *pgxpool.Pool, suffix string) *pb.ReminderDestination {
 	t.Helper()
 	origin := originFor(suffix)
+	instanceMeta := origin.InstanceMeta()
+
+	// LIFO: registered before the reminder's own cleanup, so it runs after it.
+	// destination is referenced by reminder.destination_id with NO ACTION, so
+	// the children must go first.
+	cleanupInstanceRows(t, pool, instanceMeta)
+
 	return pb.ReminderDestination_builder{
 		PlatformEnum:    pb.Platform_PLATFORM_DISCORD.Enum(),
-		InstanceMeta:    origin.InstanceMeta(),
+		InstanceMeta:    instanceMeta,
 		DestinationMeta: origin.DestinationMeta(),
 	}.Build()
+}
+
+// cleanupInstanceRows removes the reminders, destination and instance created
+// for a fixture, innermost first. Every error is asserted: a silently discarded
+// cleanup is how the leak above went unnoticed.
+//
+// Reminders are deleted here as well as by their own cleanup, because
+// t.Cleanup is LIFO and a test that repoints a reminder at a SECOND destination
+// registers that destination's cleanup last — so it would otherwise run while
+// the reminder still references it, and fk_reminder_destination is NO ACTION.
+// Deleting the referencing rows first makes this independent of ordering.
+func cleanupInstanceRows(t *testing.T, pool *pgxpool.Pool, instanceMeta *structpb.Struct) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if _, err := pool.Exec(ctx,
+			`DELETE FROM reminder WHERE destination_id IN (
+			     SELECT d.id FROM destination d JOIN instance i ON d.instance_id = i.id
+			     WHERE i.instance_meta = $1)`, instanceMeta); err != nil {
+			t.Errorf("cleanup reminders for instance: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`DELETE FROM destination WHERE instance_id IN (
+			     SELECT id FROM instance WHERE instance_meta = $1)`, instanceMeta); err != nil {
+			t.Errorf("cleanup destinations: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`DELETE FROM instance WHERE instance_meta = $1`, instanceMeta); err != nil {
+			t.Errorf("cleanup instance: %v", err)
+		}
+	})
 }
 
 // createReminderVia creates a reminder through the public CreateReminder RPC as
@@ -88,7 +134,7 @@ func createReminderVia(t *testing.T, h *harness, pool *pgxpool.Pool, platformUID
 		Datetime:    timestamppb.New(future),
 		Timezone:    &tz,
 		Message:     &message,
-		Destination: destinationFor(t, suffix),
+		Destination: destinationFor(t, pool, suffix),
 	}
 	if repeatCron != "" {
 		b.RepeatCron = &repeatCron
@@ -201,7 +247,7 @@ func TestUpdateReminderRefusesAnotherUsersRow(t *testing.T) {
 			Datetime:    timestamppb.New(future),
 			Timezone:    &tz,
 			Message:     &newMsg,
-			Destination: destinationFor(t, uniqueUID("upd-dest")),
+			Destination: destinationFor(t, pool, uniqueUID("upd-dest")),
 		}.Build(),
 	)
 	requireCode(t, err, codes.NotFound)
@@ -324,7 +370,7 @@ func TestCreateReminderRefusedAtPerUserCap(t *testing.T) {
 			Datetime:    timestamppb.New(future),
 			Timezone:    &tz,
 			Message:     &message,
-			Destination: destinationFor(t, uniqueUID("cap-over")),
+			Destination: destinationFor(t, pool, uniqueUID("cap-over")),
 		}.Build(),
 	)
 	requireCode(t, err, codes.FailedPrecondition)
@@ -624,7 +670,7 @@ func TestUpdateReminderKeepsAnUnsuppliedRepeat(t *testing.T) {
 			Datetime:    timestamppb.New(future),
 			Timezone:    &tz,
 			Message:     &newMsg,
-			Destination: destinationFor(t, uniqueUID("keep-dest")),
+			Destination: destinationFor(t, pool, uniqueUID("keep-dest")),
 		}.Build(),
 	); err != nil {
 		t.Fatalf("UpdateReminder: %v", err)
@@ -669,7 +715,7 @@ func TestUpdateReminderClearsTheRepeatWithTheEmptySentinel(t *testing.T) {
 			Timezone:    &tz,
 			Message:     &msg,
 			RepeatCron:  &cleared,
-			Destination: destinationFor(t, uniqueUID("clear-dest")),
+			Destination: destinationFor(t, pool, uniqueUID("clear-dest")),
 		}.Build(),
 	); err != nil {
 		t.Fatalf("UpdateReminder with the clear sentinel: %v", err)
@@ -711,7 +757,7 @@ func TestUpdateReminderRejectsATooFrequentRepeat(t *testing.T) {
 			Timezone:    &tz,
 			Message:     &msg,
 			RepeatCron:  &hourly,
-			Destination: destinationFor(t, uniqueUID("floor-dest")),
+			Destination: destinationFor(t, pool, uniqueUID("floor-dest")),
 		}.Build(),
 	)
 	requireCode(t, err, codes.InvalidArgument)

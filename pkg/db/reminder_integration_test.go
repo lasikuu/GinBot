@@ -589,6 +589,24 @@ func TestClaimDueRemindersIsAtomicUnderConcurrency(t *testing.T) {
 
 	// Every due reminder in our fixture must have been claimed exactly once
 	// total across all claimers. Reminders from other tests are ignored.
+	//
+	// ClaimDueReminders is global by design — the delivery loop claims whatever
+	// is due, not whatever one test created. So a ginbot-server running against
+	// this same database will claim these rows first with its one-second cron,
+	// and they arrive here already SENT and unclaimable. That is the environment
+	// interfering, not the property failing, so it is reported as a skip with the
+	// cause named rather than as a confusing "never claimed".
+	for id := range due {
+		if claimed[id] == 0 {
+			if status := readReminderStatus(t, id); status != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
+				t.Skipf("another claimer is running against this database "+
+					"(reminder %s went to status %d without this test claiming it) — "+
+					"stop any ginbot-server pointed at it before running the integration suite",
+					id, status)
+			}
+		}
+	}
+
 	for id := range due {
 		switch claimed[id] {
 		case 0:
