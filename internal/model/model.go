@@ -166,3 +166,87 @@ func (r *Reminder) ToProto(destination *pb.ReminderDestination) *pb.Reminder {
 		UpdatedAt:   timestamppb.New(r.UpdatedAt),
 	}.Build()
 }
+
+// Trigger mirrors a row of trigger.
+type Trigger struct {
+	ID        string
+	Phrase    string
+	Reply     *string
+	FileID    *string
+	UserID    *string
+	Chance    int32
+	Mode      int32
+	Deleted   bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// TriggerColumns lists trigger columns in the order ScanTargets expects.
+const TriggerColumns = `id, phrase, reply, file_id, user_id, chance, mode,
+	deleted, created_at, updated_at`
+
+// ScanTargets returns pointers to every field, in TriggerColumns order.
+func (t *Trigger) ScanTargets() []any {
+	return []any{
+		&t.ID, &t.Phrase, &t.Reply, &t.FileID, &t.UserID, &t.Chance, &t.Mode,
+		&t.Deleted, &t.CreatedAt, &t.UpdatedAt,
+	}
+}
+
+// ToProto converts the row to its protobuf representation.
+//
+// file is looked up separately by the caller when the trigger has one; it is
+// optional here. instances likewise.
+func (t *Trigger) ToProto(file *pb.TriggerFile, instances []*pb.TriggerInstance) *pb.Trigger {
+	mode := pb.TriggerMode(t.Mode)
+	return pb.Trigger_builder{
+		Id:        &t.ID,
+		Phrase:    &t.Phrase,
+		Reply:     t.Reply,
+		UserId:    t.UserID,
+		Instances: instances,
+		Chance:    &t.Chance,
+		CreatedAt: timestamppb.New(t.CreatedAt),
+		UpdatedAt: timestamppb.New(t.UpdatedAt),
+		Mode:      &mode,
+		File:      file,
+	}.Build()
+}
+
+// File mirrors a row of file.
+type File struct {
+	ID        string
+	Category  int32
+	Path      string
+	MimeType  string
+	ByteSize  int32
+	FileHash  string
+	Deleted   bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// FileColumns lists file columns in the order ScanTargets expects.
+const FileColumns = `id, category, path, mime_type, byte_size, file_hash,
+	deleted, created_at, updated_at`
+
+// ScanTargets returns pointers to every field, in FileColumns order.
+func (f *File) ScanTargets() []any {
+	return []any{
+		&f.ID, &f.Category, &f.Path, &f.MimeType, &f.ByteSize, &f.FileHash,
+		&f.Deleted, &f.CreatedAt, &f.UpdatedAt,
+	}
+}
+
+// ToProto converts the row to its protobuf representation. filename is not a
+// column: the original name is not stored, so the caller supplies what it wants
+// the attachment to be called.
+func (f *File) ToProto(filename string) *pb.TriggerFile {
+	byteSize := int64(f.ByteSize)
+	return pb.TriggerFile_builder{
+		FileId:   &f.ID,
+		Filename: &filename,
+		MimeType: &f.MimeType,
+		ByteSize: &byteSize,
+	}.Build()
+}
