@@ -1,7 +1,9 @@
 package discord
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/pkg/command"
@@ -39,6 +41,19 @@ var commandLocalizations = map[string]localization{
 	},
 }
 
+// Discord's limits on a chat-input command. Exceeding any of them fails
+// ApplicationCommandCreate with an HTTP 400 that names only an option index, so
+// they are checked here where the offending field can be named instead.
+//
+// https://discord.com/developers/docs/interactions/application-commands
+const (
+	maxCommandName        = 32
+	maxCommandDescription = 100
+	maxOptionName         = 32
+	maxOptionDescription  = 100
+	maxOptionsPerCommand  = 25
+)
+
 // initCommands builds the registry. A collision or a malformed command is a
 // programming error that would otherwise register a command that never
 // responds, so it aborts startup.
@@ -51,7 +66,60 @@ func initCommands() {
 		}
 	}
 
+	// Checked before the session is opened, so a too-long description is a clear
+	// message here rather than a Discord 400 partway through registering.
+	if err := validateApplicationCommands(applicationCommands(registry)); err != nil {
+		log.Z.Fatal("generated command definitions are invalid.", zap.Error(err))
+	}
+
 	commandRegistry = registry
+}
+
+// validateApplicationCommands checks the generated definitions against Discord's
+// documented limits.
+//
+// Deriving the definitions from the registry (ADR-0009) means a command's
+// description is written where no Discord constraint is visible, so nothing
+// stopped one growing past the limit. Discord then rejects it at
+// ApplicationCommandCreate with a fatal error at boot, and reports it as
+// `options.3.description` — an index, with no command name. This turns that into
+// a named failure, and lets a test catch it before it ever reaches a live start.
+func validateApplicationCommands(applications []*discordgo.ApplicationCommand) error {
+	for _, application := range applications {
+		if n := len(application.Name); n == 0 || n > maxCommandName {
+			return fmt.Errorf("command %q: name is %d characters, want 1-%d",
+				application.Name, n, maxCommandName)
+		}
+		// Discord requires a chat-input command name to be lowercase.
+		if application.Name != strings.ToLower(application.Name) {
+			return fmt.Errorf("command %q: name must be lowercase", application.Name)
+		}
+		if n := len(application.Description); n == 0 || n > maxCommandDescription {
+			return fmt.Errorf("command %q: description is %d characters, want 1-%d",
+				application.Name, n, maxCommandDescription)
+		}
+		if n := len(application.Options); n > maxOptionsPerCommand {
+			return fmt.Errorf("command %q: has %d options, want at most %d",
+				application.Name, n, maxOptionsPerCommand)
+		}
+
+		for _, option := range application.Options {
+			if n := len(option.Name); n == 0 || n > maxOptionName {
+				return fmt.Errorf("command %q option %q: name is %d characters, want 1-%d",
+					application.Name, option.Name, n, maxOptionName)
+			}
+			if option.Name != strings.ToLower(option.Name) {
+				return fmt.Errorf("command %q option %q: name must be lowercase",
+					application.Name, option.Name)
+			}
+			if n := len(option.Description); n == 0 || n > maxOptionDescription {
+				return fmt.Errorf("command %q option %q: description is %d characters, want 1-%d",
+					application.Name, option.Name, n, maxOptionDescription)
+			}
+		}
+	}
+
+	return nil
 }
 
 // commandDefinitions lists every command the Discord client exposes.

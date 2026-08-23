@@ -2,6 +2,7 @@ package discord
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -47,6 +48,91 @@ func TestCommandDefinitionsRegister(t *testing.T) {
 
 	if !slices.Equal(got, want) {
 		t.Errorf("registered commands = %q, want %q", got, want)
+	}
+}
+
+// TestApplicationCommandsRespectDiscordLimits is the regression test for a live
+// boot failure: remindermod's repeat description was 120 characters against
+// Discord's 100 limit, so ApplicationCommandCreate returned HTTP 400 and the
+// bot died at startup — reporting only `options.3.description`, with no command
+// name.
+//
+// Descriptions are written in the registry, where no Discord constraint is
+// visible, so nothing else stops one growing. This asserts the real generated
+// definitions, so it fails here rather than against the live API.
+func TestApplicationCommandsRespectDiscordLimits(t *testing.T) {
+	if err := validateApplicationCommands(applicationCommands(newTestRegistry(t))); err != nil {
+		t.Errorf("generated commands violate Discord's limits: %v", err)
+	}
+}
+
+// TestValidateApplicationCommandsCatchesViolations proves the check above can
+// actually fail — a validator that always returns nil would pass it silently.
+func TestValidateApplicationCommandsCatchesViolations(t *testing.T) {
+	tests := []struct {
+		name        string
+		application *discordgo.ApplicationCommand
+	}{
+		{
+			name: "option description too long",
+			application: &discordgo.ApplicationCommand{
+				Name:        "ok",
+				Description: "fine",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Name:        "repeat",
+						Description: strings.Repeat("x", maxOptionDescription+1),
+						Type:        discordgo.ApplicationCommandOptionString,
+					},
+				},
+			},
+		},
+		{
+			name: "command description too long",
+			application: &discordgo.ApplicationCommand{
+				Name:        "ok",
+				Description: strings.Repeat("x", maxCommandDescription+1),
+			},
+		},
+		{
+			name: "empty command description",
+			application: &discordgo.ApplicationCommand{
+				Name:        "ok",
+				Description: "",
+			},
+		},
+		{
+			name: "command name too long",
+			application: &discordgo.ApplicationCommand{
+				Name:        strings.Repeat("x", maxCommandName+1),
+				Description: "fine",
+			},
+		},
+		{
+			name: "uppercase command name",
+			application: &discordgo.ApplicationCommand{
+				Name:        "Remind",
+				Description: "fine",
+			},
+		},
+		{
+			name: "empty option description",
+			application: &discordgo.ApplicationCommand{
+				Name:        "ok",
+				Description: "fine",
+				Options: []*discordgo.ApplicationCommandOption{
+					{Name: "when", Description: "", Type: discordgo.ApplicationCommandOptionString},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateApplicationCommands([]*discordgo.ApplicationCommand{tt.application}); err == nil {
+				t.Error("expected a validation error, got nil")
+			}
+		})
 	}
 }
 
@@ -162,6 +248,34 @@ func TestLocalizedNamesResolveAsAliases(t *testing.T) {
 		{alias: "TUPLAT", want: "doubles"},
 		{alias: "triplat", want: "triples"},
 		{alias: "ヘルスチェック", want: "healthcheck"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alias, func(t *testing.T) {
+			cmd, ok := registry.Lookup(tt.alias)
+			if !ok {
+				t.Fatalf("alias %q does not resolve", tt.alias)
+			}
+			if cmd.Name != tt.want {
+				t.Errorf("alias %q resolved to %q, want %q", tt.alias, cmd.Name, tt.want)
+			}
+		})
+	}
+}
+
+// TestLegacyReminderNamesResolve pins the names the previous bot used. They are
+// what people have in muscle memory, and dropping one would fail silently: an
+// unknown chat command is ignored without a reply.
+func TestLegacyReminderNamesResolve(t *testing.T) {
+	registry := newTestRegistry(t)
+
+	tests := []struct {
+		alias string
+		want  string
+	}{
+		{alias: "remindme", want: "remind"},
+		{alias: "reminderadd", want: "remind"},
+		{alias: "reminderdetails", want: "reminderinfo"},
 	}
 
 	for _, tt := range tests {

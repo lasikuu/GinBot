@@ -38,7 +38,10 @@ const clearRepeatSentinel = "none"
 
 func remindCommand() command.Command {
 	return command.Command{
-		Name:        "remind",
+		Name: "remind",
+		// remindme was the old bot's name for this, so it is the one people have
+		// in muscle memory. reminderadd matches the reminderdel/mod/info family.
+		Aliases:     []string{"remindme", "reminderadd"},
 		Description: "Set a reminder, e.g. remind \"in 2 hours\" \"stretch\"",
 		Args: []command.Arg{
 			{
@@ -152,7 +155,9 @@ func listReminders(ctx context.Context, _ *command.Invocation) (*command.Respons
 
 func reminderInfoCommand() command.Command {
 	return command.Command{
-		Name:        "reminderinfo",
+		Name: "reminderinfo",
+		// reminderdetails was the old bot's name for this.
+		Aliases:     []string{"reminderdetails"},
 		Description: "Show one of your reminders",
 		Args: []command.Arg{
 			{
@@ -317,10 +322,12 @@ func reminderModCommand() command.Command {
 				Required:    true,
 			},
 			{
-				Name: "repeat",
-				Description: repeatArgDescription +
-					". Omit to keep the current repeat, \"" + clearRepeatSentinel + "\" to remove it",
-				Type: command.ArgString,
+				// Kept short deliberately: Discord rejects an option description
+				// over maxOptionDescription characters, and the combined
+				// "schedule plus how to clear it" wording went over it.
+				Name:        "repeat",
+				Description: "New repeat; omit to keep it, \"" + clearRepeatSentinel + "\" to remove it",
+				Type:        command.ArgString,
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
