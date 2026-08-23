@@ -18,6 +18,7 @@ type OptionsModel struct {
 	Discord DiscordOptions
 	DB      DBOptions
 	GRPC    GRPCServerOptions
+	Storage StorageOptions
 }
 
 var AppEnvironment enum.Environment
@@ -73,11 +74,20 @@ func SetEnv() {
 			Password:   dbPassword(),
 			Migrations: dbMigrationsEnabled(),
 		},
+		Storage: StorageOptions{
+			Path: storagePath(),
+		},
 	}
 }
 
 func dialOptions() []grpc.DialOption {
-	var gRPCDialOptions []grpc.DialOption
+	gRPCDialOptions := []grpc.DialOption{
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(MaxGRPCMessageBytes),
+			grpc.MaxCallSendMsgSize(MaxGRPCMessageBytes),
+		),
+	}
+
 	if !gRPCTLS() {
 		gRPCDialOptions = append(gRPCDialOptions, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		return gRPCDialOptions

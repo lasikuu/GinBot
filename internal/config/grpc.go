@@ -25,6 +25,17 @@ type GRPCClientOptions struct {
 	DialOptions []grpc.DialOption
 }
 
+// MaxGRPCMessageBytes bounds a single gRPC message. It must exceed
+// storage.MaxFileBytes, because GetFile returns a file's bytes inline in one
+// unary response rather than as a stream: streaming would put the RPC outside
+// the unary clearance interceptor and therefore outside authorization.
+//
+// Not imported from pkg/storage to avoid pulling a storage dependency into
+// every gRPC client (Discord, Matrix) for the sake of one constant; the
+// relationship between the two values is enforced only by this comment, not
+// by the compiler.
+const MaxGRPCMessageBytes = 12 << 20
+
 func gRPCHost() string {
 	value := os.Getenv("GINBOT_GRPC_HOST")
 	if value == "" {
@@ -59,7 +70,10 @@ func certsPath() string {
 // TLS is enabled. Only the server binary should call this — see the note on
 // GRPCServerOptions.
 func ServerOptions() []grpc.ServerOption {
-	var gRPCServerOptions []grpc.ServerOption
+	gRPCServerOptions := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(MaxGRPCMessageBytes),
+		grpc.MaxSendMsgSize(MaxGRPCMessageBytes),
+	}
 
 	if !gRPCTLS() {
 		return gRPCServerOptions
