@@ -65,6 +65,12 @@ func RunCronJobs(ctx context.Context) {
 			// drains over several hours rather than in one long tick.
 			cronjob.CollectOrphanFiles(ctx)
 
+			// Same reasoning as the orphan sweep above: retention defaults to
+			// forever (W1), so most instances are never even listed, but the
+			// ones with a finite window still need a periodic pass rather
+			// than an unbounded delete on read.
+			cronjob.SweepRepostEntries(ctx)
+
 			// Cheap, and nothing else does it: ForcedLimiter documents that
 			// Allow deliberately does not prune, so its map grows by one entry
 			// per author who mentions the bot until someone calls this.
