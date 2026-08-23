@@ -50,6 +50,7 @@ var commandLocalizations = map[string]localization{
 // ship with an empty description that Discord would reject anyway.
 var commandGroupDescriptions = map[string]string{
 	reminderGroup: "Create and manage your reminders",
+	triggerGroup:  "Create and manage auto-responder triggers",
 }
 
 // Discord's limits on a chat-input command. Exceeding any of them fails
@@ -186,6 +187,13 @@ func commandDefinitions() []command.Command {
 		reminderInfoCommand(),
 		reminderModCommand(),
 		timezoneCommand(),
+		triggerAddCommand(),
+		triggerDelCommand(),
+		triggerExecCommand(),
+		triggerInfoCommand(),
+		triggerListCommand(),
+		triggerModCommand(),
+		triggerStatsCommand(),
 		userInfoCommand(),
 	}
 

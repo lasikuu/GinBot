@@ -39,7 +39,9 @@ func TestCommandDefinitionsRegister(t *testing.T) {
 	want := []string{
 		"doubles", "healthcheck", "help", "info", "locale", "number", "ping",
 		"quads", "quints", "register", "remind", "reminderdel", "reminderinfo",
-		"remindermod", "reminders", "sexts", "timezone", "triples", "userinfo",
+		"remindermod", "reminders", "sexts", "timezone", "triggeradd",
+		"triggerdel", "triggerexec", "triggerinfo", "triggermod", "triggers",
+		"triggerstats", "triples", "userinfo",
 	}
 
 	got := make([]string, 0, len(want))
