@@ -6,3 +6,6 @@
 .env
 /cert/*.pem
 /cert/*.srl
+
+# Build output
+coverage.out
