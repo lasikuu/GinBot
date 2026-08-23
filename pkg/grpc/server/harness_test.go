@@ -11,6 +11,10 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
+	"github.com/lasikuu/GinBot/pkg/repost"
+	"github.com/lasikuu/GinBot/pkg/repost/fingerprint"
+	"github.com/lasikuu/GinBot/pkg/repost/urlnorm"
+	"github.com/lasikuu/GinBot/pkg/storage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -132,6 +136,7 @@ type harnessConfig struct {
 	resolve       interceptor.CallerResolver
 	resolveOrigin interceptor.OriginResolver
 	triggerServer *TriggerServer
+	repostServer  *RepostServer
 }
 
 type harnessOption func(*harnessConfig)
@@ -168,6 +173,29 @@ func withTriggerServer(server *TriggerServer) harnessOption {
 	return func(cfg *harnessConfig) { cfg.triggerServer = server }
 }
 
+// withRepostServer replaces the default RepostServer, e.g. with one built over
+// newRepostServer(fetcher, hasher, norm, tiers) so the attachment fetch path
+// can be exercised against an httptest server instead of the real,
+// allow-listed CDN hosts, exactly as withTriggerServer does for TriggerServer.
+func withRepostServer(server *RepostServer) harnessOption {
+	return func(cfg *harnessConfig) { cfg.repostServer = server }
+}
+
+// defaultTestRepostServer builds a RepostServer with the same defaults
+// NewRepostServer would apply given an unconfigured environment
+// (repost.DefaultTiers, fingerprint.DefaultGuards, the platform CDN
+// allow-list, no ffmpeg path), but without touching config.Options. It exists
+// purely so newHarness has something safe to fall back to; tests that care
+// about the fetch/hash path inject their own via withRepostServer instead.
+func defaultTestRepostServer() *RepostServer {
+	return newRepostServer(
+		storage.NewFetcher(nil, storage.DefaultAllowedHosts(), storage.MaxFileBytes),
+		fingerprint.NewHasher(fingerprint.DefaultGuards(), ""),
+		urlnorm.New(nil),
+		repost.DefaultTiers(),
+	)
+}
+
 // harness is a running in-process server plus a client for every service.
 type harness struct {
 	Conn *grpc.ClientConn
@@ -180,6 +208,7 @@ type harness struct {
 	Entertainment pb.EntertainmentServiceClient
 	Reverse       pb.ReverseServiceClient
 	Trigger       pb.TriggerServiceClient
+	Repost        pb.RepostServiceClient
 }
 
 // newHarness starts a server and connects a client to it. Everything is torn
@@ -242,6 +271,20 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 	}
 	pb.RegisterTriggerServiceServer(grpcServer, triggerServer)
 
+	repostServer := cfg.repostServer
+	if repostServer == nil {
+		// NOT NewRepostServer(): it reads config.Options directly, which is
+		// nil in every test in this package (this harness deliberately stays
+		// config-free, matching reverse_test.go's TestMain and the same
+		// reasoning documented on triggerServer above), so calling it here
+		// would nil-deref before a single test in the whole package could
+		// run. newRepostServer with hardcoded, config-independent defaults is
+		// the same seam trigger_media_integration_test.go uses to bypass
+		// NewTriggerServer's package-level storage dependency.
+		repostServer = defaultTestRepostServer()
+	}
+	pb.RegisterRepostServiceServer(grpcServer, repostServer)
+
 	listener := bufconn.Listen(bufSize)
 
 	served := make(chan struct{})
@@ -283,6 +326,7 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		Entertainment: pb.NewEntertainmentServiceClient(conn),
 		Reverse:       pb.NewReverseServiceClient(conn),
 		Trigger:       pb.NewTriggerServiceClient(conn),
+		Repost:        pb.NewRepostServiceClient(conn),
 	}
 }
 

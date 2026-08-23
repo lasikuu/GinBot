@@ -28,6 +28,7 @@ func servedDescriptors() []grpc.ServiceDesc {
 		pb.AnalyticsService_ServiceDesc,
 		pb.EntertainmentService_ServiceDesc,
 		pb.ReverseService_ServiceDesc,
+		pb.RepostService_ServiceDesc,
 	}
 }
 

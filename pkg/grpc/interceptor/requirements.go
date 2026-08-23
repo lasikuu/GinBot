@@ -67,6 +67,8 @@ func DefaultRequirements() Requirements {
 		// the reminder surface.
 		pb.ReminderService_ConfirmDelivery_FullMethodName: registered,
 
+		pb.RepostService_CheckRepost_FullMethodName: registered,
+
 		pb.TriggerService_TryTrigger_FullMethodName:      registered,
 		pb.TriggerService_ExecTrigger_FullMethodName:     registered,
 		pb.TriggerService_GetTrigger_FullMethodName:      registered,

@@ -101,6 +101,7 @@ func main() {
 	pb.RegisterEntertainmentServiceServer(grpcServer, service.EntertainmentServer)
 	pb.RegisterReverseServiceServer(grpcServer, service.ReverseServer)
 	pb.RegisterTriggerServiceServer(grpcServer, service.TriggerServer)
+	pb.RegisterRepostServiceServer(grpcServer, service.RepostServer)
 
 	// Cancelled on SIGINT or SIGTERM. Serve() is run in a goroutine so the signal
 	// can be acted on: without this, main blocked in Serve() until log.Z.Fatal
