@@ -196,3 +196,123 @@ func TestCommandPrefixes(t *testing.T) {
 		})
 	}
 }
+
+// TestDiscordPassthroughAccessorsAreVerbatim: three of the Discord accessors
+// do nothing but read the variable. Pinned so that a later "helpful" default
+// — a placeholder owner id, say — cannot be introduced silently, and because
+// an empty value here means "unset" to every caller downstream.
+func TestDiscordPassthroughAccessorsAreVerbatim(t *testing.T) {
+	tests := []struct {
+		name   string
+		env    string
+		read   func() string
+		sample string
+	}{
+		{"owner id", "DISCORD_OWNER_ID", ownerId, "123456789012345678"},
+		{"client id", "DISCORD_CLIENT_ID", clientId, "987654321098765432"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unsetEnv(t, tt.env)
+			if got := tt.read(); got != "" {
+				t.Errorf("%s unset = %q, want the empty string", tt.env, got)
+			}
+
+			t.Setenv(tt.env, tt.sample)
+			if got := tt.read(); got != tt.sample {
+				t.Errorf("%s = %q, want %q", tt.env, got, tt.sample)
+			}
+		})
+	}
+}
+
+// TestBotTokenAppliesTheBotPrefixExactlyOnce is the accessor worth the most
+// attention in this package: it is the only one that TRANSFORMS its value, and
+// AGENTS.md calls it out by name because operators keep writing "Bot xyz" into
+// .env themselves. Discord rejects "Bot Bot xyz" with a 401 at gateway
+// connect, which surfaces nowhere near the configuration that caused it.
+//
+// The unset case is pinned deliberately too: it yields the bare prefix "Bot ",
+// NOT the empty string, so a caller cannot test the token for emptiness to
+// decide whether Discord is configured.
+func TestBotTokenAppliesTheBotPrefixExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name  string
+		set   bool
+		value string
+		want  string
+	}{
+		{"unset still yields the bare prefix", false, "", "Bot "},
+		{"an empty value still yields the bare prefix", true, "", "Bot "},
+		{"a raw token is prefixed", true, "abc.def.ghi", "Bot abc.def.ghi"},
+		{"an already-prefixed token is prefixed AGAIN, not deduplicated", true, "Bot abc", "Bot Bot abc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.set {
+				t.Setenv("DISCORD_BOT_TOKEN", tt.value)
+			} else {
+				unsetEnv(t, "DISCORD_BOT_TOKEN")
+			}
+
+			if got := botToken(); got != tt.want {
+				t.Errorf("botToken() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDiscordBooleanGatesRequireTheExactLiteralTrue: both are `== "true"`, so
+// every other spelling leaves the feature OFF. That is the safe direction for
+// DISCORD_REMOVE_COMMANDS, which deletes every registered slash command, and
+// the load-bearing one for DISCORD_MESSAGE_CONTENT, which opts into a
+// privileged intent — Discord closes the gateway with 4014 if the bot requests
+// it without approval, so "MESSAGE_CONTENT=True quietly did nothing" is a much
+// better failure than "the bot will not start".
+func TestDiscordBooleanGatesRequireTheExactLiteralTrue(t *testing.T) {
+	gates := []struct {
+		name string
+		env  string
+		read func() bool
+	}{
+		{"eraseCommands", "DISCORD_REMOVE_COMMANDS", eraseCommands},
+		{"messageContent", "DISCORD_MESSAGE_CONTENT", messageContent},
+	}
+
+	values := []struct {
+		name  string
+		set   bool
+		value string
+		want  bool
+	}{
+		{"unset", false, "", false},
+		{"empty", true, "", false},
+		{"the exact literal true enables it", true, "true", true},
+		{"capitalised True does NOT enable it", true, "True", false},
+		{"uppercase TRUE does NOT enable it", true, "TRUE", false},
+		{"one does NOT enable it", true, "1", false},
+		{"yes does NOT enable it", true, "yes", false},
+		{"a trailing space does NOT enable it", true, "true ", false},
+		{"false disables it", true, "false", false},
+	}
+
+	for _, gate := range gates {
+		t.Run(gate.name, func(t *testing.T) {
+			for _, v := range values {
+				t.Run(v.name, func(t *testing.T) {
+					if v.set {
+						t.Setenv(gate.env, v.value)
+					} else {
+						unsetEnv(t, gate.env)
+					}
+
+					if got := gate.read(); got != v.want {
+						t.Errorf("%s with %s=%q = %v, want %v", gate.name, gate.env, v.value, got, v.want)
+					}
+				})
+			}
+		})
+	}
+}
