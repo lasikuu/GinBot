@@ -20,12 +20,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TriggerService_TryTrigger_FullMethodName    = "/ginbot.proto.TriggerService/TryTrigger"
-	TriggerService_GetTrigger_FullMethodName    = "/ginbot.proto.TriggerService/GetTrigger"
-	TriggerService_ListTriggers_FullMethodName  = "/ginbot.proto.TriggerService/ListTriggers"
-	TriggerService_CreateTrigger_FullMethodName = "/ginbot.proto.TriggerService/CreateTrigger"
-	TriggerService_UpdateTrigger_FullMethodName = "/ginbot.proto.TriggerService/UpdateTrigger"
-	TriggerService_DeleteTrigger_FullMethodName = "/ginbot.proto.TriggerService/DeleteTrigger"
+	TriggerService_TryTrigger_FullMethodName      = "/ginbot.proto.TriggerService/TryTrigger"
+	TriggerService_ExecTrigger_FullMethodName     = "/ginbot.proto.TriggerService/ExecTrigger"
+	TriggerService_GetTrigger_FullMethodName      = "/ginbot.proto.TriggerService/GetTrigger"
+	TriggerService_ListTriggers_FullMethodName    = "/ginbot.proto.TriggerService/ListTriggers"
+	TriggerService_CreateTrigger_FullMethodName   = "/ginbot.proto.TriggerService/CreateTrigger"
+	TriggerService_UpdateTrigger_FullMethodName   = "/ginbot.proto.TriggerService/UpdateTrigger"
+	TriggerService_DeleteTrigger_FullMethodName   = "/ginbot.proto.TriggerService/DeleteTrigger"
+	TriggerService_GetTriggerStats_FullMethodName = "/ginbot.proto.TriggerService/GetTriggerStats"
+	TriggerService_GetFile_FullMethodName         = "/ginbot.proto.TriggerService/GetFile"
 )
 
 // TriggerServiceClient is the client API for TriggerService service.
@@ -33,11 +36,14 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type TriggerServiceClient interface {
 	TryTrigger(ctx context.Context, in *TryTriggerReq, opts ...grpc.CallOption) (*TryTriggerResp, error)
+	ExecTrigger(ctx context.Context, in *ExecTriggerReq, opts ...grpc.CallOption) (*TryTriggerResp, error)
 	GetTrigger(ctx context.Context, in *GetTriggerReq, opts ...grpc.CallOption) (*GetTriggerResp, error)
 	ListTriggers(ctx context.Context, in *ListTriggersReq, opts ...grpc.CallOption) (*ListTriggersResp, error)
 	CreateTrigger(ctx context.Context, in *CreateTriggerReq, opts ...grpc.CallOption) (*CreateTriggerResp, error)
 	UpdateTrigger(ctx context.Context, in *UpdateTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	GetTriggerStats(ctx context.Context, in *GetTriggerStatsReq, opts ...grpc.CallOption) (*GetTriggerStatsResp, error)
+	GetFile(ctx context.Context, in *GetFileReq, opts ...grpc.CallOption) (*GetFileResp, error)
 }
 
 type triggerServiceClient struct {
@@ -52,6 +58,16 @@ func (c *triggerServiceClient) TryTrigger(ctx context.Context, in *TryTriggerReq
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TryTriggerResp)
 	err := c.cc.Invoke(ctx, TriggerService_TryTrigger_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *triggerServiceClient) ExecTrigger(ctx context.Context, in *ExecTriggerReq, opts ...grpc.CallOption) (*TryTriggerResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TryTriggerResp)
+	err := c.cc.Invoke(ctx, TriggerService_ExecTrigger_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -108,16 +124,39 @@ func (c *triggerServiceClient) DeleteTrigger(ctx context.Context, in *DeleteTrig
 	return out, nil
 }
 
+func (c *triggerServiceClient) GetTriggerStats(ctx context.Context, in *GetTriggerStatsReq, opts ...grpc.CallOption) (*GetTriggerStatsResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTriggerStatsResp)
+	err := c.cc.Invoke(ctx, TriggerService_GetTriggerStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *triggerServiceClient) GetFile(ctx context.Context, in *GetFileReq, opts ...grpc.CallOption) (*GetFileResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetFileResp)
+	err := c.cc.Invoke(ctx, TriggerService_GetFile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TriggerServiceServer is the server API for TriggerService service.
 // All implementations must embed UnimplementedTriggerServiceServer
 // for forward compatibility.
 type TriggerServiceServer interface {
 	TryTrigger(context.Context, *TryTriggerReq) (*TryTriggerResp, error)
+	ExecTrigger(context.Context, *ExecTriggerReq) (*TryTriggerResp, error)
 	GetTrigger(context.Context, *GetTriggerReq) (*GetTriggerResp, error)
 	ListTriggers(context.Context, *ListTriggersReq) (*ListTriggersResp, error)
 	CreateTrigger(context.Context, *CreateTriggerReq) (*CreateTriggerResp, error)
 	UpdateTrigger(context.Context, *UpdateTriggerReq) (*emptypb.Empty, error)
 	DeleteTrigger(context.Context, *DeleteTriggerReq) (*emptypb.Empty, error)
+	GetTriggerStats(context.Context, *GetTriggerStatsReq) (*GetTriggerStatsResp, error)
+	GetFile(context.Context, *GetFileReq) (*GetFileResp, error)
 	mustEmbedUnimplementedTriggerServiceServer()
 }
 
@@ -130,6 +169,9 @@ type UnimplementedTriggerServiceServer struct{}
 
 func (UnimplementedTriggerServiceServer) TryTrigger(context.Context, *TryTriggerReq) (*TryTriggerResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TryTrigger not implemented")
+}
+func (UnimplementedTriggerServiceServer) ExecTrigger(context.Context, *ExecTriggerReq) (*TryTriggerResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExecTrigger not implemented")
 }
 func (UnimplementedTriggerServiceServer) GetTrigger(context.Context, *GetTriggerReq) (*GetTriggerResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTrigger not implemented")
@@ -145,6 +187,12 @@ func (UnimplementedTriggerServiceServer) UpdateTrigger(context.Context, *UpdateT
 }
 func (UnimplementedTriggerServiceServer) DeleteTrigger(context.Context, *DeleteTriggerReq) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteTrigger not implemented")
+}
+func (UnimplementedTriggerServiceServer) GetTriggerStats(context.Context, *GetTriggerStatsReq) (*GetTriggerStatsResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetTriggerStats not implemented")
+}
+func (UnimplementedTriggerServiceServer) GetFile(context.Context, *GetFileReq) (*GetFileResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetFile not implemented")
 }
 func (UnimplementedTriggerServiceServer) mustEmbedUnimplementedTriggerServiceServer() {}
 func (UnimplementedTriggerServiceServer) testEmbeddedByValue()                        {}
@@ -181,6 +229,24 @@ func _TriggerService_TryTrigger_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TriggerServiceServer).TryTrigger(ctx, req.(*TryTriggerReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TriggerService_ExecTrigger_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExecTriggerReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TriggerServiceServer).ExecTrigger(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TriggerService_ExecTrigger_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TriggerServiceServer).ExecTrigger(ctx, req.(*ExecTriggerReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -275,6 +341,42 @@ func _TriggerService_DeleteTrigger_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TriggerService_GetTriggerStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTriggerStatsReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TriggerServiceServer).GetTriggerStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TriggerService_GetTriggerStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TriggerServiceServer).GetTriggerStats(ctx, req.(*GetTriggerStatsReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TriggerService_GetFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFileReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TriggerServiceServer).GetFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TriggerService_GetFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TriggerServiceServer).GetFile(ctx, req.(*GetFileReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TriggerService_ServiceDesc is the grpc.ServiceDesc for TriggerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -285,6 +387,10 @@ var TriggerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TryTrigger",
 			Handler:    _TriggerService_TryTrigger_Handler,
+		},
+		{
+			MethodName: "ExecTrigger",
+			Handler:    _TriggerService_ExecTrigger_Handler,
 		},
 		{
 			MethodName: "GetTrigger",
@@ -305,6 +411,14 @@ var TriggerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteTrigger",
 			Handler:    _TriggerService_DeleteTrigger_Handler,
+		},
+		{
+			MethodName: "GetTriggerStats",
+			Handler:    _TriggerService_GetTriggerStats_Handler,
+		},
+		{
+			MethodName: "GetFile",
+			Handler:    _TriggerService_GetFile_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

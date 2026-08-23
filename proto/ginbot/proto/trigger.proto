@@ -4,6 +4,7 @@ package ginbot.proto;
 
 option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto";
 
+import "ginbot/proto/analytics.proto";
 import "ginbot/proto/platform.proto";
 
 import "google/protobuf/timestamp.proto";
@@ -15,11 +16,14 @@ option features.(pb.go).api_level = API_OPAQUE;
 
 service TriggerService {
   rpc TryTrigger(TryTriggerReq) returns (TryTriggerResp);
+  rpc ExecTrigger(ExecTriggerReq) returns (TryTriggerResp);
   rpc GetTrigger(GetTriggerReq) returns (GetTriggerResp);
   rpc ListTriggers(ListTriggersReq) returns (ListTriggersResp);
   rpc CreateTrigger(CreateTriggerReq) returns (CreateTriggerResp);
   rpc UpdateTrigger(UpdateTriggerReq) returns (google.protobuf.Empty);
   rpc DeleteTrigger(DeleteTriggerReq) returns (google.protobuf.Empty);
+  rpc GetTriggerStats(GetTriggerStatsReq) returns (GetTriggerStatsResp);
+  rpc GetFile(GetFileReq) returns (GetFileResp);
 }
 
 // How a trigger's phrase is matched against a message.
@@ -32,6 +36,18 @@ enum TriggerMode {
   TRIGGER_MODE_ANY = 2;
   // Phrase is a regular expression. Requires elevated clearance.
   TRIGGER_MODE_REGEX = 3;
+}
+
+// A stored media file attached to a trigger.
+message TriggerFile {
+  // File UUIDv7
+  string file_id = 1;
+  // Original filename, for display and for the attachment name on playback
+  string filename = 2;
+  // Sniffed content type, never the one the URL claimed
+  string mime_type = 3;
+  // Size in bytes
+  int64 byte_size = 4;
 }
 
 // Message representing a Trigger
@@ -56,6 +72,8 @@ message Trigger {
   google.protobuf.Timestamp updated_at = 9;
   // How the phrase is matched
   TriggerMode mode = 10;
+  // Stored file reply, unset when the trigger replies with text
+  TriggerFile file = 11;
 }
 
 message TriggerInstance {
@@ -68,21 +86,31 @@ message TriggerInstance {
 message TryTriggerReq {
   // Platform to trigger the response
   TriggerInstance instance = 1;
-  // Phrase to trigger the response
+  // The full message text to match against
   string phrase = 2;
   // User UUIDv7 of the triggerer
   string user_id = 3;
+  // Forced fires bypass the chance roll and record TRIGGER_CALLED instead of
+  // TRIGGER_OCCURRED. Set when the bot was mentioned. Rate limited per author.
+  bool forced = 4;
 }
 
 message TryTriggerResp {
-  // Trigger UUIDv7
+  // Trigger UUIDv7. Unset when nothing fired.
   string id = 1;
   oneof oneof_reply {
     // Reply to send in response to the trigger
     string reply = 2;
     // File to send in response to the trigger
-    string filename = 3;
+    TriggerFile file = 3;
   }
+}
+
+message ExecTriggerReq {
+  // Trigger UUIDv7 to fire
+  string id = 1;
+  // Platform the trigger is being fired on
+  TriggerInstance instance = 2;
 }
 
 message GetTriggerReq {
@@ -134,6 +162,9 @@ message CreateTriggerReq {
   int32 chance = 6;
   // How the phrase is matched
   TriggerMode mode = 7;
+  // Platform CDN URL the server fetches the media from. The server never trusts
+  // the URL's extension or host without checking both.
+  string file_url = 8;
 }
 
 message CreateTriggerResp {
@@ -158,9 +189,54 @@ message UpdateTriggerReq {
   int32 chance = 7;
   // How the phrase is matched
   TriggerMode mode = 8;
+  // Platform CDN URL to replace the current file with
+  string file_url = 9;
 }
 
 message DeleteTriggerReq {
   // Trigger UUIDv7
   string id = 1;
+}
+
+message GetTriggerStatsReq {
+  // Instance to scope the leaderboard to
+  TriggerInstance instance = 1;
+  // ACTION_TYPE_TRIGGER_OCCURRED or ACTION_TYPE_TRIGGER_CALLED
+  ActionType action_type = 2;
+  // Maximum rows returned
+  int64 limit = 3;
+  // Count actions from this instant onwards
+  google.protobuf.Timestamp period_start = 4;
+  // Count actions up to this instant
+  google.protobuf.Timestamp period_end = 5;
+}
+
+// One row of the trigger leaderboard.
+message TriggerStat {
+  // Trigger UUIDv7
+  string trigger_id = 1;
+  // The trigger's phrase
+  string phrase = 2;
+  // How many times the action was recorded in the period
+  int64 count = 3;
+  // The trigger's stored chance
+  int32 chance = 4;
+  // How the phrase is matched
+  TriggerMode mode = 5;
+}
+
+message GetTriggerStatsResp {
+  repeated TriggerStat stats = 1;
+}
+
+message GetFileReq {
+  // File UUIDv7
+  string file_id = 1;
+}
+
+message GetFileResp {
+  // File metadata
+  TriggerFile file = 1;
+  // The full file contents
+  bytes content = 2;
 }

@@ -36,6 +36,8 @@ message ActionRecord {
   int64 action_time = 4;
   // User UUIDv7 of the actor
   string actor_id = 5;
+  // UUIDv7 of the subject the action was performed on, e.g. the trigger that fired
+  string subject_id = 6;
 }
 
 message CreateActionRecordReq {
@@ -45,6 +47,8 @@ message CreateActionRecordReq {
   int64 action_time = 2;
   // User UUIDv7 of the actor
   string actor_id = 3;
+  // UUIDv7 of the subject the action was performed on, e.g. the trigger that fired
+  string subject_id = 4;
 }
 
 message CreateActionRecordResp {
@@ -65,6 +69,8 @@ message ListActionRecordsReq {
   google.protobuf.Timestamp period_start = 5;
   // Search for recorded actions ending at this date
   google.protobuf.Timestamp period_end = 6;
+  // Subject UUIDv7 to filter by
+  string subject_id = 7;
 }
 
 message ListActionRecordsResp {
