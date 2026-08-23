@@ -26,10 +26,6 @@ func timestamp(t *time.Time) *timestamppb.Timestamp {
 	return timestamppb.New(*t)
 }
 
-// Note: ToProto assigns message-typed fields (InstanceMeta, Destination) by
-// pointer, so the returned protobuf shares that state with the row struct.
-// Callers must not mutate either afterwards; clone first if that is ever needed.
-
 // User mirrors a row of user_account.
 type User struct {
 	ID                  string
@@ -57,6 +53,13 @@ func (u *User) ScanTargets() []any {
 	}
 }
 
+// ToProto converts the row to its protobuf representation.
+//
+// It shares no message-typed state with the row: every timestamp is freshly
+// allocated by timestamppb.New and the rest are scalars. Unlike Instance,
+// Reminder and Trigger, this one carries no aliasing contract — the only
+// pointers it retains are into the row's own string fields, which nothing
+// reassigns after conversion.
 func (u *User) ToProto() *pb.User {
 	clearance := pb.Clearance(u.Clearance)
 	return pb.User_builder{
@@ -94,6 +97,12 @@ func (i *Instance) ScanTargets() []any {
 	}
 }
 
+// ToProto converts the row to its protobuf representation.
+//
+// SHARED BY POINTER: the returned Instance's instance_meta IS i.InstanceMeta,
+// the same *structpb.Struct, not a copy. Nothing is cloned, so neither the row
+// nor the returned message may be mutated after this call; clone first if that
+// is ever needed.
 func (i *Instance) ToProto() *pb.Instance {
 	platform := pb.Platform(i.PlatformEnum)
 	return pb.Instance_builder{
@@ -150,6 +159,13 @@ func (r *Reminder) ScanTargets() []any {
 //
 // destination is looked up separately by the caller when the full
 // ReminderDestination is required; it is optional here.
+//
+// SHARED BY POINTER: the returned Reminder's destination IS the destination
+// argument, not a copy. Nothing is cloned, so neither the argument nor the
+// returned message may be mutated after this call; clone first if that is ever
+// needed. The list path (ListRemindersByUser -> ListReminders) builds a fresh
+// ReminderDestination per row, so no caller currently reuses one across
+// conversions.
 func (r *Reminder) ToProto(destination *pb.ReminderDestination) *pb.Reminder {
 	status := pb.ReminderStatus(r.Status)
 	return pb.Reminder_builder{
@@ -197,6 +213,18 @@ func (t *Trigger) ScanTargets() []any {
 //
 // file is looked up separately by the caller when the trigger has one; it is
 // optional here. instances likewise.
+//
+// SHARED BY POINTER: the returned Trigger's file IS the file argument and its
+// instances IS the instances slice — same backing array, same elements — not
+// copies. Nothing is cloned, so neither the arguments nor the returned message
+// may be mutated after this call; clone first if that is ever needed.
+//
+// This is documented rather than defended against because no call site
+// currently exhibits it: ListTriggers, the only path that converts many rows in
+// a loop, builds a fresh file and a fresh instances slice per iteration. Cloning
+// every row on the list paths would allocate on every listing to guard a latent
+// footgun rather than a live bug, and the aliasing is confined to this single
+// conversion at the service boundary.
 func (t *Trigger) ToProto(file *pb.TriggerFile, instances []*pb.TriggerInstance) *pb.Trigger {
 	mode := pb.TriggerMode(t.Mode)
 	return pb.Trigger_builder{
@@ -313,6 +341,9 @@ func (f *File) ScanTargets() []any {
 // ToProto converts the row to its protobuf representation. filename is not a
 // column: the original name is not stored, so the caller supplies what it wants
 // the attachment to be called.
+//
+// Like User.ToProto, it shares no message-typed state with the row — every
+// field is a scalar — so it carries no aliasing contract.
 func (f *File) ToProto(filename string) *pb.TriggerFile {
 	byteSize := int64(f.ByteSize)
 	return pb.TriggerFile_builder{
