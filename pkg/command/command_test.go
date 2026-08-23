@@ -37,7 +37,12 @@ var (
 	// consumed.
 	_ func(*Registry, string, []string) (Command, []string, bool) = (*Registry).ResolveChat
 
-	_ = Response{Content: "", Ephemeral: false, ReRollID: ""}
+	_ = Response{Content: "", Ephemeral: false, ReRollID: "", File: nil}
+	// A response file carries BYTES, not a URL. The platform CDN URL a trigger
+	// was created from has expired long before the trigger fires, so a []byte
+	// here is the contract and swapping it for a string would silently reopen
+	// that hole.
+	_ = ResponseFile{Name: "", MIMEType: "", Content: []byte(nil)}
 	_ = Arg{Name: "", Description: "", Type: ArgString, Required: false, Default: nil}
 	_ = Invocation{Args: map[string]any{}}
 	_ = Command{

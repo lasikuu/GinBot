@@ -39,6 +39,14 @@ type Arg struct {
 }
 
 // Response is a platform-neutral command result. The platform layer renders it.
+//
+// Every field beyond Content is a REQUEST, not an instruction: a platform that
+// cannot express one degrades rather than fails (ADR-0010).
+//
+// File is the exception ADR-0010 predicted. Dropping it loses the response
+// itself, and a file-only response has an empty Content to degrade to, so a
+// platform without attachments must say something of its own rather than send
+// an empty message.
 type Response struct {
 	Content string
 	// Ephemeral asks the platform to show the response only to the invoker.
@@ -47,6 +55,19 @@ type Response struct {
 	// ReRollID, when non-empty, asks the platform to attach a re-invoke control
 	// carrying this identifier. Platforms without the concept ignore it.
 	ReRollID string
+	// File, when non-nil, asks the platform to attach this file to the response.
+	// Platforms without attachments should fall back to Content alone rather
+	// than dropping the response.
+	File *ResponseFile
+}
+
+// ResponseFile is an attachment on a command response. It carries bytes rather
+// than a URL because the server stores trigger media itself and the platform's
+// own CDN URL has expired by the time a trigger fires (ADR-0007).
+type ResponseFile struct {
+	Name     string
+	MIMEType string
+	Content  []byte
 }
 
 // Invocation is a resolved call: a command's declared arguments bound to the
@@ -141,7 +162,19 @@ type Command struct {
 	Sub string
 	// Clearance is the minimum required level. Not enforced in this phase.
 	Clearance pb.Clearance
-	Handler   Handler
+	// Slow marks a handler that may outlast a platform's acknowledgement
+	// deadline. Discord gives three seconds before it tells the user "the
+	// application did not respond" and invalidates the token, which is not
+	// enough for a handler whose server side fetches media from a CDN.
+	//
+	// A platform that must acknowledge before the handler returns does so
+	// first and delivers the result afterwards. Because that acknowledgement
+	// has to commit to a visibility before the Response exists, Ephemeral is
+	// decided by the acknowledgement rather than by the handler on this path —
+	// unsupported intent degrades, per ADR-0010. Platforms with no such
+	// deadline ignore the field.
+	Slow    bool
+	Handler Handler
 }
 
 // commandGroup is one registered group: the name as it was declared, and its
