@@ -46,6 +46,13 @@ func SetEnv() {
 		DialOptions: dialOptions(),
 	}
 
+	// GINBOT_WEB_URL is deliberately NOT carried on OptionsModel. Nothing reads
+	// the raw URL; the only thing derived from it is the repost exclusion
+	// below, and an exported field that is written and never read is invisible
+	// to `unused` and outlives the reason it was added. Add it back when
+	// something needs the URL itself.
+	web := webURL()
+
 	Options = &OptionsModel{
 		Matrix: MatrixOptions{
 			GRPCClientOptions: clientOptions,
@@ -87,7 +94,7 @@ func SetEnv() {
 			MinWidth:      repostMinWidth(),
 			MinHeight:     repostMinHeight(),
 			MinEntropy:    repostMinEntropy(),
-			ExcludedHosts: repostExcludedHosts(),
+			ExcludedHosts: withSelfHost(repostExcludedHosts(), web),
 			FFmpegPath:    repostFFmpegPath(),
 		},
 	}
@@ -110,6 +117,15 @@ func dialOptions() []grpc.DialOption {
 
 	gRPCDialOptions = append(gRPCDialOptions, grpc.WithTransportCredentials(tlsCredentials))
 	return gRPCDialOptions
+}
+
+// webURL returns the bot's own public web address, raw and unnormalised.
+//
+// It stays raw on purpose: hostOf normalises it at the point of use, and
+// trimming or lowercasing here as well would give the two layers different
+// ideas of what was configured. Empty means the bot has no web presence.
+func webURL() string {
+	return os.Getenv("GINBOT_WEB_URL")
 }
 
 func loadEnvironment() {

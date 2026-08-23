@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -123,4 +124,72 @@ func repostExcludedHosts() []string {
 
 func repostFFmpegPath() string {
 	return os.Getenv("GINBOT_REPOST_FFMPEG_PATH")
+}
+
+// hostOf extracts the hostname from a URL, tolerating a bare host with no
+// scheme.
+//
+// GINBOT_WEB_URL is documented as the bot's web ADDRESS, so operators write
+// anything from "bot.example" to "https://bot.example/path". Prepending "//"
+// when there is no scheme is what makes the bare forms work: url.Parse reads
+// "bot.example:443" as scheme "bot.example" with opaque "443" otherwise, and
+// would report no host at all.
+//
+// Unparseable input yields "", which withSelfHost then skips — a malformed web
+// URL should cost the self-exclusion, not startup.
+//
+// A leading "www." is deliberately left on: urlnorm.New strips it already, and
+// stripping it twice is just an opportunity for the two to disagree.
+func hostOf(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	if !strings.Contains(raw, "://") {
+		raw = "//" + raw
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+
+	return strings.ToLower(parsed.Hostname())
+}
+
+// withSelfHost returns hosts plus the bot's own host, deduplicated.
+//
+// This is what makes "the bot's own links are never indexed" true by default
+// rather than only when an operator remembers to repeat the host in
+// GINBOT_REPOST_EXCLUDED_HOSTS. The result is a new slice: the input comes
+// straight from repostExcludedHosts and appending in place would be an
+// aliasing surprise for no gain.
+func withSelfHost(hosts []string, rawWebURL string) []string {
+	out := make([]string, 0, len(hosts)+1)
+	out = append(out, hosts...)
+
+	self := hostOf(rawWebURL)
+	if self == "" {
+		return out
+	}
+
+	// Compared with any www. prefix removed on BOTH sides, because that is the
+	// form urlnorm.New reduces every entry to before matching. Without it,
+	// GINBOT_WEB_URL=https://www.bot.example alongside a configured
+	// bot.example appends a second entry that collapses onto the first anyway —
+	// harmless, but it makes the list lie about what is configured.
+	for _, host := range out {
+		if strings.EqualFold(bareHost(host), bareHost(self)) {
+			return out
+		}
+	}
+
+	return append(out, self)
+}
+
+// bareHost strips the leading www. that urlnorm.New strips too, so two
+// spellings of one host compare equal.
+func bareHost(host string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(host)), "www.")
 }
