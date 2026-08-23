@@ -247,7 +247,7 @@ func TestListTriggersLimitDefaultsAndClamps(t *testing.T) {
 			b.WriteString(",")
 		}
 		base := i * 6
-		b.WriteString(fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d)", base+1, base+2, base+3, base+4, base+5, base+6))
+		fmt.Fprintf(&b, "($%d,$%d,$%d,$%d,$%d,$%d)", base+1, base+2, base+3, base+4, base+5, base+6)
 		args = append(args,
 			id.String(),
 			fmt.Sprintf("limit-%d-%s", i, f.suffix),

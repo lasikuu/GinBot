@@ -3,23 +3,44 @@
 // Integration tests for the database layer. These require a live Postgres.
 //
 //	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration ./pkg/db/...
+//	go test -tags=integration -race -count=1 ./pkg/db/...
 //
 // Connection settings come from the same GINBOT_DB_* environment variables the
 // server uses.
+//
+// The whole suite runs against a THROWAWAY DATABASE created per run, not
+// against the configured one. That is not tidiness: ReclaimStaleReminders and
+// ClaimDueReminders issue table-global UPDATEs over the entire reminder table
+// by design — the cron sweep genuinely means "every stale reminder" — and
+// `go test ./...` runs packages CONCURRENTLY in separate processes against one
+// Postgres. Sharing a database therefore had this package reclaiming and
+// claiming pkg/grpc/server's fixtures and vice versa, which is what made
+// TestReclaimStaleRemindersCountsBothOutcomes fail roughly one run in five and
+// pass in isolation. Isolating the database is what lets the assertions in
+// this package be exact rather than lower bounds.
+//
+// repost_migration_integration_test.go already established this pattern for
+// its own destructive test and its migrationTestDSN helper is reused below.
+// It creates its own second-level throwaway through db(), which now points at
+// this one — CREATE DATABASE works fine from inside any database, it just
+// cannot run inside a transaction.
 package db
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lasikuu/GinBot/internal/config"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -29,11 +50,128 @@ func TestMain(m *testing.M) {
 	log.InitializeLogger(config.AppEnvironment, config.LogLevel)
 	config.SetEnv()
 
+	// The throwaway is created and later dropped through this pool, because
+	// CREATE DATABASE and DROP DATABASE cannot run from inside the database
+	// they name.
 	InitDB()
-	EnsureLatestVersion()
-	defer CloseDB()
+	sharedPool := dbpool
 
-	m.Run()
+	// A migrated-from-scratch database is the entire premise of this suite. If
+	// migrations are off, every test would fail against empty schema with a
+	// confusing "relation does not exist" instead of the real cause.
+	if !config.Options.DB.Migrations {
+		fatalf("GINBOT_DB_MIGRATIONS is disabled, so the throwaway database cannot be migrated; " +
+			"unset it or set it to anything but the exact literal \"false\" to run the integration suite")
+	}
+
+	// Reclaim anything a previous run leaked before creating this run's own.
+	// The teardown below is careful, but it cannot cover every exit: a test
+	// that panics, or an EnsureLatestVersion that log.Z.Fatal's, takes the
+	// process out through os.Exit and skips it entirely. Without this sweep the
+	// orphan is invisible — the name carries a pid and a timestamp, so nobody
+	// finds it by guessing — and they accumulate one per crashed run until
+	// Postgres refuses connections.
+	dropLeakedSuiteDatabases(sharedPool)
+
+	// Lowercase and punctuation-free so it needs no quoting as an identifier.
+	// The pid is in the name as well as the timestamp because two `go test`
+	// invocations can start within the same nanosecond bucket on a fast clock.
+	suiteDatabase := fmt.Sprintf("ginbot_suite_%d_%d", os.Getpid(), time.Now().UnixNano())
+
+	if _, err := sharedPool.Exec(context.Background(), `CREATE DATABASE `+suiteDatabase); err != nil {
+		fatalf("create throwaway database %s: %v", suiteDatabase, err)
+	}
+
+	suitePool, err := pgxpool.New(context.Background(), migrationTestDSN(suiteDatabase))
+	if err != nil {
+		fatalf("open throwaway database %s: %v", suiteDatabase, err)
+	}
+
+	// Everything from here on — EnsureLatestVersion included, since it
+	// migrates whatever db() currently points at — acts on the throwaway.
+	dbpool = suitePool
+	EnsureLatestVersion()
+
+	// TestMain has no *testing.T and therefore no t.Cleanup, so the exit code
+	// is captured and teardown is run by hand. `defer CloseDB()` with a bare
+	// m.Run() would never drop the database at all: os.Exit skips defers, and
+	// without capturing the code there is nothing to exit WITH.
+	code := m.Run()
+
+	// The pool on the throwaway has to close before it can be dropped: DROP
+	// DATABASE refuses while a session is connected, and FORCE covers a
+	// connection the pool has not yet released.
+	dbpool = sharedPool
+	suitePool.Close()
+
+	if _, err := sharedPool.Exec(context.Background(), `DROP DATABASE IF EXISTS `+suiteDatabase+` WITH (FORCE)`); err != nil {
+		// Loud, and fatal to the run: a leaked database is silent otherwise
+		// and accumulates one per run until the server refuses connections.
+		log.Z.Error("failed to drop the throwaway database; it has been LEAKED and must be dropped by hand")
+		fmt.Fprintf(os.Stderr, "drop throwaway database %s: %v\n", suiteDatabase, err)
+		code = 1
+	}
+
+	CloseDB()
+
+	os.Exit(code)
+}
+
+// fatalf reports a setup failure TestMain cannot continue past. log.Z is
+// available by the time any caller runs, but the message goes to stderr too:
+// a `go test` failure that only exists in a structured log line is easy to
+// miss in CI output.
+func fatalf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "pkg/db integration setup: "+format+"\n", args...)
+	os.Exit(1)
+}
+
+// dropLeakedSuiteDatabases removes throwaway databases left behind by a run
+// that died before its teardown.
+//
+// Best effort by design: it must never fail the suite. A database still in use
+// by a CONCURRENTLY running suite is skipped rather than forced — DROP without
+// FORCE errors while sessions are attached, which is exactly the protection
+// wanted here, so two developers running the suite at once do not knife each
+// other's fixtures. `ginbot_migtest_%` is swept too; repost_migration's own
+// per-test throwaway has the same failure mode.
+func dropLeakedSuiteDatabases(pool *pgxpool.Pool) {
+	ctx := context.Background()
+
+	rows, err := pool.Query(ctx,
+		`SELECT datname FROM pg_database
+		  WHERE datname LIKE 'ginbot\_suite\_%' OR datname LIKE 'ginbot\_migtest\_%'`)
+	if err != nil {
+		log.Z.Warn("could not look for leaked throwaway databases", zap.Error(err))
+		return
+	}
+
+	var leaked []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			log.Z.Warn("could not read a leaked throwaway database name", zap.Error(err))
+			rows.Close()
+			return
+		}
+		leaked = append(leaked, name)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		log.Z.Warn("could not list leaked throwaway databases", zap.Error(err))
+		return
+	}
+
+	for _, name := range leaked {
+		// Identifier interpolation is safe here: these names came from
+		// pg_database and matched the two literal prefixes above.
+		if _, err := pool.Exec(ctx, `DROP DATABASE IF EXISTS `+name); err != nil {
+			log.Z.Debug("left a throwaway database in place; it is most likely in use by a concurrent run",
+				zap.String("database", name), zap.Error(err))
+			continue
+		}
+		log.Z.Info("dropped a throwaway database leaked by an earlier run", zap.String("database", name))
+	}
 }
 
 // meta builds a structpb.Struct from string key/values.

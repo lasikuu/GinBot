@@ -62,8 +62,14 @@ func newMigrationTestDatabase(t *testing.T) *sql.DB {
 	name := fmt.Sprintf("ginbot_migtest_%d", time.Now().UnixNano())
 
 	// CREATE DATABASE cannot run inside a transaction, so it goes through the
-	// shared pool's plain Exec. This is the ONLY thing this test does to the
-	// shared database.
+	// package pool's plain Exec. This is the ONLY thing this test does to the
+	// database that pool points at.
+	//
+	// Since TestMain gained its own per-run throwaway (db_integration_test.go)
+	// that is now this suite's database rather than the configured one — which
+	// changes nothing here: CREATE DATABASE and DROP DATABASE work from inside
+	// any database, they just cannot name the one issuing them, and this one
+	// never does.
 	if _, err := db().Exec(ctx, `CREATE DATABASE `+name); err != nil {
 		t.Fatalf("create throwaway database %s: %v", name, err)
 	}

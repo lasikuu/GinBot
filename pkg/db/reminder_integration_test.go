@@ -588,20 +588,22 @@ func TestClaimDueRemindersIsAtomicUnderConcurrency(t *testing.T) {
 	done.Wait()
 
 	// Every due reminder in our fixture must have been claimed exactly once
-	// total across all claimers. Reminders from other tests are ignored.
+	// total across all claimers.
 	//
-	// ClaimDueReminders is global by design — the delivery loop claims whatever
-	// is due, not whatever one test created. So a ginbot-server running against
-	// this same database will claim these rows first with its one-second cron,
-	// and they arrive here already SENT and unclaimable. That is the environment
-	// interfering, not the property failing, so it is reported as a skip with the
-	// cause named rather than as a confusing "never claimed".
+	// There used to be a t.Skipf here for "another claimer is running against
+	// this database": ClaimDueReminders is global by design, so a ginbot-server
+	// pointed at the shared test database would claim these rows first with its
+	// one-second cron and they would arrive already SENT. That escape hatch is
+	// gone. This suite now runs against a throwaway database created for this
+	// process alone (TestMain in db_integration_test.go), which no foreign
+	// process knows the name of — so a row that moved without this test
+	// claiming it can only be the atomicity property failing, and skipping
+	// would hide exactly the defect the test exists to catch.
 	for id := range due {
 		if claimed[id] == 0 {
 			if status := readReminderStatus(t, id); status != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
-				t.Skipf("another claimer is running against this database "+
-					"(reminder %s went to status %d without this test claiming it) — "+
-					"stop any ginbot-server pointed at it before running the integration suite",
+				t.Errorf("reminder %s went to status %d without any claimer reporting it; "+
+					"the claim moved the row without returning it, so the delivery loop would never push it",
 					id, status)
 			}
 		}
@@ -777,12 +779,17 @@ func TestReclaimStaleRemindersUsesClaimedAtNotUpdatedAt(t *testing.T) {
 		t.Fatalf("test premise drifted: updated_at %v is already stale, so this proves nothing", updatedAt)
 	}
 
+	requireOnlyStaleClaims(t, id)
+
 	outcome, err := ReclaimStaleReminders(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("ReclaimStaleReminders: %v", err)
 	}
-	if outcome.Retried < 1 {
-		t.Errorf("retried %d reminders, want at least 1", outcome.Retried)
+	// Exactly one: this test created and staled exactly one reminder, and the
+	// precondition above establishes it is the only one in the table. A larger
+	// count would mean the reclaim swept something it was not asked to.
+	if outcome.Retried != 1 {
+		t.Errorf("retried %d reminders, want exactly 1", outcome.Retried)
 	}
 
 	if got := readReminderStatus(t, id); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
@@ -920,19 +927,21 @@ func TestReclaimStaleRemindersCountsBothOutcomes(t *testing.T) {
 	}
 	seed(retryID, 1)
 	seed(giveUpID, maxDeliveryAttempts)
+	requireOnlyStaleClaims(t, retryID, giveUpID)
 
 	outcome, err := ReclaimStaleReminders(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("ReclaimStaleReminders: %v", err)
 	}
 
-	// Other tests share the table, so these are lower bounds; the per-row
-	// statuses below are the exact assertions.
-	if outcome.Retried < 1 {
-		t.Errorf("Retried = %d, want at least 1", outcome.Retried)
+	// Exact, not lower bounds. The counts are what the cron logs, and a
+	// reclaim that double-counted a row into BOTH buckets — the specific
+	// defect this test exists for — would still satisfy ">= 1" on each.
+	if outcome.Retried != 1 {
+		t.Errorf("Retried = %d, want exactly 1", outcome.Retried)
 	}
-	if outcome.FailedOut < 1 {
-		t.Errorf("FailedOut = %d, want at least 1", outcome.FailedOut)
+	if outcome.FailedOut != 1 {
+		t.Errorf("FailedOut = %d, want exactly 1", outcome.FailedOut)
 	}
 
 	if got := readReminderStatus(t, retryID); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
@@ -1247,5 +1256,50 @@ func TestCreateReminderCapHoldsUnderConcurrency(t *testing.T) {
 	if count > cap {
 		t.Errorf("stored active reminders = %d, which exceeds the cap %d: the check-then-insert race is still open",
 			count, cap)
+	}
+}
+
+// requireOnlyStaleClaims asserts that the rows in want are the ONLY reminders
+// ReclaimStaleReminders will act on.
+//
+// ReclaimStaleReminders is table-global by design: the cron sweep really does
+// mean "every stale reminder". So a test that asserts an exact outcome COUNT
+// is implicitly claiming the table holds nothing else stale. That claim holds
+// today because this suite owns its own database (see TestMain) and every
+// fixture registers per-row cleanup — but it is an invariant of the whole
+// package, not of the test asserting it, and the first test to seed a stale
+// claim and leave it behind would break a neighbour with a count mismatch that
+// says nothing about the cause.
+//
+// Stating it as a precondition means that failure names itself instead.
+func requireOnlyStaleClaims(t *testing.T, want ...string) {
+	t.Helper()
+
+	cutoff := time.Now().UTC().Add(-staleClaimGrace)
+	rows, err := db().Query(context.Background(),
+		`SELECT id FROM reminder
+		  WHERE status = $1 AND deleted = FALSE AND claimed_at <= $2 AND id != ALL($3)`,
+		statusOf(pb.ReminderStatus_REMINDER_STATUS_SENT), cutoff, want)
+	if err != nil {
+		t.Fatalf("look for foreign stale claims: %v", err)
+	}
+	defer rows.Close()
+
+	var foreign []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan foreign stale claim: %v", err)
+		}
+		foreign = append(foreign, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate foreign stale claims: %v", err)
+	}
+
+	if len(foreign) > 0 {
+		t.Fatalf("%d reminder(s) outside this test's fixtures are stale-claimed (%v), so the exact "+
+			"ReclaimStaleReminders counts below would be measuring them too; a test that seeds a stale "+
+			"claim must clean it up", len(foreign), foreign)
 	}
 }
