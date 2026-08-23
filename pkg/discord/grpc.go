@@ -29,6 +29,7 @@ func NewDiscordClient(_ context.Context) {
 	client.InitReminderService(conn)
 	client.InitEntertainmentService(conn)
 	client.InitReverseService(conn)
+	client.InitTriggerService(conn)
 }
 
 // startActionStream begins consuming server-pushed actions.

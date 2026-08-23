@@ -11,6 +11,7 @@ var UtilityServer *server.UtilityServer
 var ReminderServer *server.ReminderServer
 var AnalyticsServer *server.AnalyticsServer
 var EntertainmentServer *server.EntertainmentServer
+var TriggerServer *server.TriggerServer
 
 func InitServices() {
 	ReverseServer = server.NewReverseServer()
@@ -20,4 +21,5 @@ func InitServices() {
 	ReminderServer = server.NewReminderServer()
 	AnalyticsServer = server.NewAnalyticsServer()
 	EntertainmentServer = server.NewEntertainmentServer()
+	TriggerServer = server.NewTriggerServer()
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"github.com/lasikuu/GinBot/pkg/grpc/service"
 	"github.com/lasikuu/GinBot/pkg/log"
+	"github.com/lasikuu/GinBot/pkg/storage"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -83,6 +84,13 @@ func main() {
 	)
 	grpcServer := grpc.NewServer(serverOptions...)
 
+	// Trigger media needs somewhere to write blobs before TriggerServer is
+	// constructed: NewTriggerServer reads the package-level store via
+	// storage.Default(), which is nil until this call.
+	if err := storage.Init(config.Options.Storage.Path); err != nil {
+		log.Z.Fatal("failed to initialize storage.", zap.Error(err))
+	}
+
 	service.InitServices()
 
 	pb.RegisterInstanceServiceServer(grpcServer, service.InstanceServer)
@@ -92,6 +100,7 @@ func main() {
 	pb.RegisterAnalyticsServiceServer(grpcServer, service.AnalyticsServer)
 	pb.RegisterEntertainmentServiceServer(grpcServer, service.EntertainmentServer)
 	pb.RegisterReverseServiceServer(grpcServer, service.ReverseServer)
+	pb.RegisterTriggerServiceServer(grpcServer, service.TriggerServer)
 
 	// Cancelled on SIGINT or SIGTERM. Serve() is run in a goroutine so the signal
 	// can be acted on: without this, main blocked in Serve() until log.Z.Fatal

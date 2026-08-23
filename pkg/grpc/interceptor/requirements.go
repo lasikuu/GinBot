@@ -67,12 +67,15 @@ func DefaultRequirements() Requirements {
 		// the reminder surface.
 		pb.ReminderService_ConfirmDelivery_FullMethodName: registered,
 
-		pb.TriggerService_TryTrigger_FullMethodName:    registered,
-		pb.TriggerService_GetTrigger_FullMethodName:    registered,
-		pb.TriggerService_ListTriggers_FullMethodName:  registered,
-		pb.TriggerService_CreateTrigger_FullMethodName: registered,
-		pb.TriggerService_UpdateTrigger_FullMethodName: registered,
-		pb.TriggerService_DeleteTrigger_FullMethodName: registered,
+		pb.TriggerService_TryTrigger_FullMethodName:      registered,
+		pb.TriggerService_ExecTrigger_FullMethodName:     registered,
+		pb.TriggerService_GetTrigger_FullMethodName:      registered,
+		pb.TriggerService_ListTriggers_FullMethodName:    registered,
+		pb.TriggerService_CreateTrigger_FullMethodName:   registered,
+		pb.TriggerService_UpdateTrigger_FullMethodName:   registered,
+		pb.TriggerService_DeleteTrigger_FullMethodName:   registered,
+		pb.TriggerService_GetTriggerStats_FullMethodName: registered,
+		pb.TriggerService_GetFile_FullMethodName:         registered,
 
 		pb.UserService_GetUser_FullMethodName:                   registered,
 		pb.UserService_GetCongratulableBirthdays_FullMethodName: registered,
