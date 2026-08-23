@@ -132,9 +132,27 @@ type Command struct {
 	Aliases     []string
 	Description string
 	Args        []Arg
+	// Group, when non-empty, nests this command under a shared parent on platforms
+	// that support it. Discord renders it as /{Group} {Sub}. Platforms without the
+	// concept keep using Name.
+	Group string
+	// Sub is the command's name WITHIN its group. Required when Group is set,
+	// ignored otherwise.
+	Sub string
 	// Clearance is the minimum required level. Not enforced in this phase.
 	Clearance pb.Clearance
 	Handler   Handler
+}
+
+// commandGroup is one registered group: the name as it was declared, and its
+// members keyed by folded Sub onto the folded canonical command name.
+//
+// The declared name is kept because a platform renders the group verbatim — the
+// folded key exists only so matching is case-insensitive like every other name
+// here.
+type commandGroup struct {
+	name    string
+	members map[string]string
 }
 
 // Registry holds the commands.
@@ -149,17 +167,22 @@ type Registry struct {
 	// canonical maps a folded name or alias onto the folded canonical name, so
 	// that alias resolution costs one lookup and collisions are detectable.
 	canonical map[string]string
+	// groups is keyed by folded group name. A group shares the canonical
+	// namespace: a group name that is also a command name or alias would make
+	// ResolveChat ambiguous, so Register refuses it.
+	groups map[string]commandGroup
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
 		commands:  make(map[string]Command),
 		canonical: make(map[string]string),
+		groups:    make(map[string]commandGroup),
 	}
 }
 
 // Register adds a command. It returns an error if the name or any alias
-// collides with an already-registered name or alias.
+// collides with an already-registered name, alias or group.
 //
 // It also rejects a command that cannot work once dispatched — no handler, no
 // name, a duplicate argument name, or an optional argument before a required
@@ -177,6 +200,9 @@ func (r *Registry) Register(cmd Command) error {
 	if err := validateArgs(cmd); err != nil {
 		return err
 	}
+	if err := validateGrouping(cmd); err != nil {
+		return err
+	}
 
 	// Collect first, insert second: a command must not half-register when its
 	// second alias collides.
@@ -190,6 +216,8 @@ func (r *Registry) Register(cmd Command) error {
 		keys = append(keys, folded)
 	}
 
+	group, sub := fold(cmd.Group), fold(cmd.Sub)
+
 	seen := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		if existing, taken := r.canonical[key]; taken {
@@ -198,12 +226,62 @@ func (r *Registry) Register(cmd Command) error {
 		if _, duplicate := seen[key]; duplicate {
 			return fmt.Errorf("command %q declares %q more than once", cmd.Name, key)
 		}
+		// A flat name that is also a group name would shadow the whole group,
+		// since ResolveChat prefers the flat interpretation.
+		if existing, taken := r.groups[key]; taken {
+			return fmt.Errorf("command %q: %q is already a command group (%q)", cmd.Name, key, existing.name)
+		}
+		if key == group {
+			return fmt.Errorf("command %q declares %q as both its own name or alias and its group", cmd.Name, key)
+		}
 		seen[key] = struct{}{}
+	}
+
+	if group != "" {
+		if existing, taken := r.canonical[group]; taken {
+			return fmt.Errorf("command %q: group %q is already a command name or alias of %q", cmd.Name, cmd.Group, existing)
+		}
+		if existing, taken := r.groups[group].members[sub]; taken {
+			return fmt.Errorf("command %q: %q %q is already registered by %q", cmd.Name, cmd.Group, cmd.Sub, existing)
+		}
 	}
 
 	r.commands[name] = cmd
 	for _, key := range keys {
 		r.canonical[key] = name
+	}
+	if group != "" {
+		existing, ok := r.groups[group]
+		if !ok {
+			existing = commandGroup{name: strings.TrimSpace(cmd.Group), members: make(map[string]string)}
+		}
+		existing.members[sub] = name
+		r.groups[group] = existing
+	}
+
+	return nil
+}
+
+// validateGrouping rejects a half-declared or unusable Group/Sub pair.
+//
+// Both fields are checked before anything is inserted, because a group is a
+// second namespace: a command that lands in one under a blank or lopsided key
+// would be reachable by neither /{Group} {Sub} nor a sensible chat invocation.
+func validateGrouping(cmd Command) error {
+	if cmd.Group == "" && cmd.Sub == "" {
+		return nil
+	}
+	if cmd.Group == "" {
+		return fmt.Errorf("command %q declares sub %q without a group", cmd.Name, cmd.Sub)
+	}
+	if cmd.Sub == "" {
+		return fmt.Errorf("command %q declares group %q without a sub", cmd.Name, cmd.Group)
+	}
+	if fold(cmd.Group) == "" {
+		return fmt.Errorf("command %q declares a blank group %q", cmd.Name, cmd.Group)
+	}
+	if fold(cmd.Sub) == "" {
+		return fmt.Errorf("command %q declares a blank sub %q", cmd.Name, cmd.Sub)
 	}
 
 	return nil
@@ -251,6 +329,54 @@ func (r *Registry) Lookup(name string) (Command, bool) {
 
 	cmd, ok := r.commands[canonical]
 	return cmd, ok
+}
+
+// ResolveChat resolves a chat invocation to a command and the arguments that
+// remain after the command name is consumed.
+//
+// It tries a flat name or alias first, so ??remindme keeps working. Failing
+// that, when name matches a group and the first argument names one of its
+// subcommands, it resolves that and consumes the subcommand token — so
+// ??reminder add behaves exactly like ??remindme.
+func (r *Registry) ResolveChat(name string, args []string) (cmd Command, rest []string, ok bool) {
+	if cmd, found := r.Lookup(name); found {
+		return cmd, args, true
+	}
+
+	group, isGroup := r.groups[fold(name)]
+	if !isGroup || len(args) == 0 {
+		return Command{}, nil, false
+	}
+
+	canonical, found := group.members[fold(args[0])]
+	if !found {
+		return Command{}, nil, false
+	}
+
+	cmd, found = r.commands[canonical]
+	if !found {
+		return Command{}, nil, false
+	}
+
+	return cmd, args[1:], true
+}
+
+// Groups returns every registered group name as it was declared, ordered.
+//
+// Membership is not returned with it: a group's members are the commands in All
+// whose Group matches, which the platform layer already walks to generate its
+// own definitions.
+func (r *Registry) Groups() []string {
+	groups := make([]string, 0, len(r.groups))
+	for _, group := range r.groups {
+		groups = append(groups, group.name)
+	}
+
+	// Map iteration order is random; sorted so a platform generates an identical
+	// definition on every start.
+	slices.Sort(groups)
+
+	return groups
 }
 
 // All returns every registered command, ordered by name.

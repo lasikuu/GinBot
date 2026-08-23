@@ -206,6 +206,354 @@ func TestRegisterIsAtomicOnFailure(t *testing.T) {
 	}
 }
 
+// A group is a second namespace over the same chat prefix, so a half-declared
+// or colliding one makes ??reminder either unreachable or ambiguous. Both are
+// startup-fatal programming errors, like every other Register rejection.
+func TestRegisterRejectsBrokenGrouping(t *testing.T) {
+	tests := []struct {
+		name string
+		seed []Command
+		add  Command
+	}{
+		{
+			name: "sub without group",
+			add:  Command{Name: "remind", Sub: "add", Handler: noopHandler},
+		},
+		{
+			name: "group without sub",
+			add:  Command{Name: "remind", Group: "reminder", Handler: noopHandler},
+		},
+		{
+			name: "whitespace-only group",
+			add:  Command{Name: "remind", Group: "   ", Sub: "add", Handler: noopHandler},
+		},
+		{
+			name: "whitespace-only sub",
+			add:  Command{Name: "remind", Group: "reminder", Sub: "  ", Handler: noopHandler},
+		},
+		{
+			name: "duplicate group and sub",
+			seed: []Command{{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler}},
+			add:  Command{Name: "reminderadd2", Group: "reminder", Sub: "add", Handler: noopHandler},
+		},
+		{
+			// Folding applies to a sub as it does to every other name, so a
+			// differently cased duplicate would make one member unreachable.
+			name: "duplicate sub in a different case",
+			seed: []Command{{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler}},
+			add:  Command{Name: "reminderadd2", Group: "REMINDER", Sub: "ADD", Handler: noopHandler},
+		},
+		{
+			// ResolveChat prefers the flat interpretation, so a command named
+			// after a group would shadow the entire group.
+			name: "group collides with an existing command name",
+			seed: []Command{{Name: "reminder", Handler: noopHandler}},
+			add:  Command{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler},
+		},
+		{
+			name: "group collides with an existing alias",
+			seed: []Command{{Name: "notes", Aliases: []string{"reminder"}, Handler: noopHandler}},
+			add:  Command{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler},
+		},
+		{
+			// The reverse order: the group exists first and the flat name arrives
+			// second. Nothing else would catch it, because the group is not in
+			// the canonical name map.
+			name: "name collides with an existing group",
+			seed: []Command{{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler}},
+			add:  Command{Name: "reminder", Handler: noopHandler},
+		},
+		{
+			name: "alias collides with an existing group",
+			seed: []Command{{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler}},
+			add:  Command{Name: "notes", Aliases: []string{"reminder"}, Handler: noopHandler},
+		},
+		{
+			name: "name collides with an existing group in a different case",
+			seed: []Command{{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler}},
+			add:  Command{Name: "REMINDER", Handler: noopHandler},
+		},
+		{
+			// Self-collision: the command would be reachable flat and would
+			// shadow the group it is itself a member of.
+			name: "command is named after its own group",
+			add:  Command{Name: "reminder", Group: "reminder", Sub: "list", Handler: noopHandler},
+		},
+		{
+			name: "alias collides with the command's own group",
+			add: Command{
+				Name:    "remind",
+				Aliases: []string{"reminder"},
+				Group:   "reminder",
+				Sub:     "add",
+				Handler: noopHandler,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRegistry()
+			for _, cmd := range tt.seed {
+				if err := r.Register(cmd); err != nil {
+					t.Fatalf("seeding %q: %v", cmd.Name, err)
+				}
+			}
+
+			if err := r.Register(tt.add); err == nil {
+				t.Fatalf("Register(%+v) succeeded, want a grouping error", tt.add)
+			}
+			// A rejected Register must leave nothing behind, including in the
+			// group namespace.
+			if got := len(r.All()); got != len(tt.seed) {
+				t.Errorf("All() has %d commands after a rejected Register, want %d", got, len(tt.seed))
+			}
+			if _, ok := r.Lookup(tt.add.Name); ok && len(tt.seed) == 0 {
+				t.Errorf("Lookup(%q) resolved after a rejected Register", tt.add.Name)
+			}
+		})
+	}
+}
+
+// groupedRegistry is the shape the reminder family has: several flat commands,
+// each also a member of one group, plus an ungrouped command alongside them.
+func groupedRegistry(t *testing.T) *Registry {
+	t.Helper()
+
+	r := NewRegistry()
+	seed := []Command{
+		{
+			Name:    "remind",
+			Aliases: []string{"remindme"},
+			Group:   "reminder",
+			Sub:     "add",
+			Args: []Arg{
+				{Name: "when", Type: ArgString, Required: true},
+				{Name: "message", Type: ArgString, Required: true},
+			},
+			Handler: noopHandler,
+		},
+		{Name: "reminders", Group: "reminder", Sub: "list", Handler: noopHandler},
+		{Name: "ping", Aliases: []string{"pong"}, Handler: noopHandler},
+	}
+
+	for _, cmd := range seed {
+		if err := r.Register(cmd); err != nil {
+			t.Fatalf("seeding %q: %v", cmd.Name, err)
+		}
+	}
+
+	return r
+}
+
+func TestResolveChat(t *testing.T) {
+	r := groupedRegistry(t)
+
+	tests := []struct {
+		name     string
+		invoked  string
+		args     []string
+		wantName string
+		wantRest []string
+	}{
+		{
+			name:     "flat name",
+			invoked:  "remind",
+			args:     []string{"in 2h", "tea"},
+			wantName: "remind",
+			wantRest: []string{"in 2h", "tea"},
+		},
+		{
+			name:     "flat alias",
+			invoked:  "remindme",
+			args:     []string{"in 2h", "tea"},
+			wantName: "remind",
+			wantRest: []string{"in 2h", "tea"},
+		},
+		{
+			// The subcommand token is consumed, so what is left binds
+			// positionally exactly as ??remindme would.
+			name:     "group and sub",
+			invoked:  "reminder",
+			args:     []string{"add", "in 2h", "tea"},
+			wantName: "remind",
+			wantRest: []string{"in 2h", "tea"},
+		},
+		{
+			name:     "group and sub with no further arguments",
+			invoked:  "reminder",
+			args:     []string{"list"},
+			wantName: "reminders",
+			wantRest: nil,
+		},
+		{
+			name:     "group in a different case",
+			invoked:  "REMINDER",
+			args:     []string{"add", "in 2h", "tea"},
+			wantName: "remind",
+			wantRest: []string{"in 2h", "tea"},
+		},
+		{
+			name:     "sub in a different case",
+			invoked:  "reminder",
+			args:     []string{"ADD", "in 2h", "tea"},
+			wantName: "remind",
+			wantRest: []string{"in 2h", "tea"},
+		},
+		{
+			name:     "flat name with no arguments",
+			invoked:  "ping",
+			wantName: "ping",
+			wantRest: nil,
+		},
+		{
+			// A flat name wins over the group interpretation, which is what
+			// keeps every legacy invocation working. "remind" is both a command
+			// name and a group member; the flat command is what must resolve,
+			// and "add" must stay an argument rather than being consumed.
+			name:     "a flat name is preferred over a group interpretation",
+			invoked:  "remind",
+			args:     []string{"add", "tea"},
+			wantName: "remind",
+			wantRest: []string{"add", "tea"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, rest, ok := r.ResolveChat(tt.invoked, tt.args)
+			if !ok {
+				t.Fatalf("ResolveChat(%q, %q) ok = false, want true", tt.invoked, tt.args)
+			}
+			if cmd.Name != tt.wantName {
+				t.Errorf("resolved to %q, want %q", cmd.Name, tt.wantName)
+			}
+			if !equalArgs(rest, tt.wantRest) {
+				t.Errorf("rest = %q, want %q", rest, tt.wantRest)
+			}
+		})
+	}
+}
+
+func TestResolveChatMiss(t *testing.T) {
+	r := groupedRegistry(t)
+
+	tests := []struct {
+		name    string
+		invoked string
+		args    []string
+	}{
+		{
+			name:    "unknown name",
+			invoked: "nosuchcommand",
+			args:    []string{"add"},
+		},
+		{
+			// A bare group is not a command: there is no handler to run and no
+			// sensible default member to pick.
+			name:    "group with no following argument",
+			invoked: "reminder",
+		},
+		{
+			name:    "group with an unknown sub",
+			invoked: "reminder",
+			args:    []string{"nope", "in 2h"},
+		},
+		{
+			// The member's FLAT name is not its sub, so it must not resolve as
+			// one; otherwise ??reminder remind would work and ??reminder add
+			// would be one of two spellings for no reason.
+			name:    "group followed by a member's flat name",
+			invoked: "reminder",
+			args:    []string{"remind", "in 2h"},
+		},
+		{
+			// A sub only means anything under its own group.
+			name:    "sub used as a top-level name",
+			invoked: "add",
+			args:    []string{"in 2h"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, rest, ok := r.ResolveChat(tt.invoked, tt.args)
+			if ok {
+				t.Fatalf("ResolveChat(%q, %q) resolved to %q, want no match", tt.invoked, tt.args, cmd.Name)
+			}
+			if cmd.Name != "" {
+				t.Errorf("Name = %q, want the zero Command on a miss", cmd.Name)
+			}
+			if len(rest) != 0 {
+				t.Errorf("rest = %q, want empty on a miss", rest)
+			}
+		})
+	}
+}
+
+// Groups feeds the Discord group parent generation, so it must be complete and
+// deterministically ordered — an unstable order would make every restart look
+// like a command change.
+func TestGroups(t *testing.T) {
+	if got := NewRegistry().Groups(); len(got) != 0 {
+		t.Errorf("Groups() = %v on an empty registry, want empty", got)
+	}
+
+	r := NewRegistry()
+	seed := []Command{
+		{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler},
+		{Name: "reminders", Group: "reminder", Sub: "list", Handler: noopHandler},
+		{Name: "squadadd", Group: "squad", Sub: "add", Handler: noopHandler},
+		{Name: "ping", Handler: noopHandler},
+	}
+	for _, cmd := range seed {
+		if err := r.Register(cmd); err != nil {
+			t.Fatalf("seeding %q: %v", cmd.Name, err)
+		}
+	}
+
+	want := []string{"reminder", "squad"}
+
+	// Called twice: the order must be stable across calls, not merely sorted.
+	for attempt := range 2 {
+		if got := r.Groups(); !equalArgs(got, want) {
+			t.Errorf("attempt %d: Groups() = %q, want %q", attempt, got, want)
+		}
+	}
+}
+
+// Group membership is read off All(), so a grouped command must keep both fields
+// exactly as declared — the Discord layer names the parent and the subcommand
+// from them.
+func TestGroupedCommandKeepsItsGroupAndSub(t *testing.T) {
+	r := groupedRegistry(t)
+
+	cmd, ok := r.Lookup("remind")
+	if !ok {
+		t.Fatal("Lookup(remind) found nothing")
+	}
+	if cmd.Group != "reminder" || cmd.Sub != "add" {
+		t.Errorf("Group/Sub = %q/%q, want %q/%q", cmd.Group, cmd.Sub, "reminder", "add")
+	}
+
+	// An ungrouped command must not acquire one.
+	ping, ok := r.Lookup("ping")
+	if !ok {
+		t.Fatal("Lookup(ping) found nothing")
+	}
+	if ping.Group != "" || ping.Sub != "" {
+		t.Errorf("ungrouped command has Group/Sub = %q/%q, want both empty", ping.Group, ping.Sub)
+	}
+
+	// Lookup stays flat: a group is not a command, and a sub is not a name.
+	// Callers that need the group-aware behaviour use ResolveChat.
+	for _, query := range []string{"reminder", "add", "list"} {
+		if got, found := r.Lookup(query); found {
+			t.Errorf("Lookup(%q) resolved to %q; Lookup must stay flat", query, got.Name)
+		}
+	}
+}
+
 func TestLookupIsCaseInsensitive(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(Command{Name: "HealthCheck", Aliases: []string{"HC"}, Handler: noopHandler}); err != nil {

@@ -26,10 +26,16 @@ var (
 	_ func(*Registry, Command) error          = (*Registry).Register
 	_ func(*Registry, string) (Command, bool) = (*Registry).Lookup
 	_ func(*Registry) []Command               = (*Registry).All
+	_ func(*Registry) []string                = (*Registry).Groups
 	_ func(*Invocation, string) string        = (*Invocation).String
 	_ func(*Invocation, string) int64         = (*Invocation).Int
 	_ func(*Invocation, string) bool          = (*Invocation).Bool
 	_ func(*Invocation, string) bool          = (*Invocation).Has
+
+	// Lookup keeps its flat signature above; ResolveChat is the group-aware one,
+	// and additionally returns the arguments left after the command name is
+	// consumed.
+	_ func(*Registry, string, []string) (Command, []string, bool) = (*Registry).ResolveChat
 
 	_ = Response{Content: "", Ephemeral: false, ReRollID: ""}
 	_ = Arg{Name: "", Description: "", Type: ArgString, Required: false, Default: nil}
@@ -39,6 +45,8 @@ var (
 		Aliases:     nil,
 		Description: "",
 		Args:        nil,
+		Group:       "",
+		Sub:         "",
 		Clearance:   pb.Clearance_CLEARANCE_UNSPECIFIED,
 		Handler:     nil,
 	}
