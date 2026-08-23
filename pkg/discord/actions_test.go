@@ -387,9 +387,18 @@ func TestMentionOwnerOnlyWithoutAnOwnerAllowsNothing(t *testing.T) {
 // TestNoMentionsIsStillTheDMPolicy pins the type the DM path uses, so a change
 // to noMentions cannot silently loosen reminder DMs.
 func TestNoMentionsIsStillTheDMPolicy(t *testing.T) {
+	// The exact return type is the assertion, not incidental to it: discordgo
+	// treats a nil AllowedMentions as "use the default", which mentions
+	// everything the content names. Reading .Parse below would still compile
+	// against some other struct that happens to have the field.
+	//
+	//nolint:staticcheck // QF1011 wants the type dropped because it is
+	// inferable. It is, and that is the point: this line exists to fail
+	// compilation if the inferred type ever changes.
 	var _ *discordgo.MessageAllowedMentions = noMentions()
 
-	if allowed := noMentions(); allowed == nil || allowed.Parse == nil || len(allowed.Parse) != 0 {
+	allowed := noMentions()
+	if allowed == nil || allowed.Parse == nil || len(allowed.Parse) != 0 {
 		t.Errorf("noMentions() = %+v, want a non-nil empty Parse list", allowed)
 	}
 }

@@ -327,7 +327,7 @@ func TestNormaliseEnforcesMonotonicity(t *testing.T) {
 			if !changed {
 				t.Errorf("Normalise() on out-of-order input %+v reported no change", tt.in)
 			}
-			if !(got.Identical <= got.High && got.High <= got.Probable) {
+			if got.Identical > got.High || got.High > got.Probable {
 				t.Errorf("Normalise(%+v) = %+v, not monotonic", tt.in, got)
 			}
 			if got.Probable > MaxDistance {
@@ -349,5 +349,57 @@ func TestNormaliseLeavesAnAlreadyValidTiersUnchanged(t *testing.T) {
 	}
 	if got != valid {
 		t.Errorf("Normalise() = %+v, want the input unchanged: %+v", got, valid)
+	}
+}
+
+// ── Benchmarks ────────────────────────────────────────────────────────────────
+//
+// Chunks and Distance are the two functions in this feature that run per
+// candidate row rather than per request: CheckRepost calls Chunks once to
+// build the lookup and then Distance once for every row the eight-way
+// pigeonhole OR returned, which — see
+// pkg/repost/fingerprint/selectivity_test.go — is a good deal more rows than
+// the N/256 the index design assumes. They are cheap, and these benchmarks
+// exist to keep them that way: a Chunks that started allocating, or a Distance
+// that stopped compiling down to POPCNT, would be invisible in correctness
+// terms and would show up here immediately.
+
+// benchmarkChunkSink and benchmarkDistanceSink are package-level so the
+// compiler cannot prove the results unused and delete the calls outright.
+var (
+	benchmarkChunkSink    [ChunkCount]int16
+	benchmarkDistanceSink int
+)
+
+// benchmarkHashes is a fixed spread of inputs. A single constant hash would
+// let constant folding and a perfectly predicted branch flatter the numbers;
+// varying the input keeps the measurement honest without introducing any
+// randomness into the benchmark itself.
+var benchmarkHashes = [...]uint64{
+	0,
+	^uint64(0),
+	0x0123456789ABCDEF,
+	0xFEDCBA9876543210,
+	0xAAAAAAAAAAAAAAAA,
+	0x5555555555555555,
+	0x00FF00FF00FF00FF,
+	1 << 63,
+}
+
+func BenchmarkChunks(b *testing.B) {
+	i := 0
+	for b.Loop() {
+		benchmarkChunkSink = Chunks(benchmarkHashes[i%len(benchmarkHashes)])
+		i++
+	}
+}
+
+func BenchmarkDistance(b *testing.B) {
+	i := 0
+	for b.Loop() {
+		a := benchmarkHashes[i%len(benchmarkHashes)]
+		c := benchmarkHashes[(i+3)%len(benchmarkHashes)]
+		benchmarkDistanceSink = Distance(a, c)
+		i++
 	}
 }
