@@ -213,6 +213,78 @@ func (t *Trigger) ToProto(file *pb.TriggerFile, instances []*pb.TriggerInstance)
 	}.Build()
 }
 
+// The jsonb field names inside repost_entry.msg_ref. They are a storage
+// contract: renaming one orphans every stored reference, since existing rows'
+// jsonb bodies were written under the old names and nothing rewrites them.
+const (
+	RefFieldInstanceUID    = "instance_uid"
+	RefFieldDestinationUID = "destination_uid"
+	RefFieldMessageUID     = "message_uid"
+	RefFieldAuthorUID      = "author_uid"
+)
+
+// RepostEntry mirrors a row of repost_entry.
+type RepostEntry struct {
+	ID            int64
+	InstanceID    int64
+	DestinationID *int64
+	UserID        *string
+	Kind          int32
+	SourceKey     *string
+	CanonicalURL  *string
+	FileID        *string
+	ContentHash   []byte
+	MsgRef        *structpb.Struct
+	PostedAt      time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// RepostEntryColumns lists repost_entry columns in ScanTargets order.
+const RepostEntryColumns = `id, instance_id, destination_id, user_id, kind,
+	source_key, canonical_url, file_id, content_hash, msg_ref, posted_at,
+	created_at, updated_at`
+
+// ScanTargets returns pointers to every field, in RepostEntryColumns order.
+func (r *RepostEntry) ScanTargets() []any {
+	return []any{
+		&r.ID, &r.InstanceID, &r.DestinationID, &r.UserID, &r.Kind,
+		&r.SourceKey, &r.CanonicalURL, &r.FileID, &r.ContentHash, &r.MsgRef, &r.PostedAt,
+		&r.CreatedAt, &r.UpdatedAt,
+	}
+}
+
+// MessageRef decodes msg_ref into the protobuf reference clients deep-link
+// with. A missing or malformed field yields an empty string rather than an
+// error: a deep link that cannot be built is a degraded notification, not a
+// failure, and RepostMatch.original_ref documents that any field may be
+// empty for an entry stored by a platform that does not carry it.
+func (r *RepostEntry) MessageRef() *pb.MessageRef {
+	instanceUID := r.MsgRef.GetFields()[RefFieldInstanceUID].GetStringValue()
+	destinationUID := r.MsgRef.GetFields()[RefFieldDestinationUID].GetStringValue()
+	messageUID := r.MsgRef.GetFields()[RefFieldMessageUID].GetStringValue()
+	authorUID := r.MsgRef.GetFields()[RefFieldAuthorUID].GetStringValue()
+
+	return pb.MessageRef_builder{
+		InstanceUid:    &instanceUID,
+		DestinationUid: &destinationUID,
+		MessageUid:     &messageUID,
+		AuthorUid:      &authorUID,
+	}.Build()
+}
+
+// NewRepostMsgRef builds the msg_ref jsonb for a new entry.
+func NewRepostMsgRef(instanceUID, destinationUID, messageUID, authorUID string) *structpb.Struct {
+	return &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			RefFieldInstanceUID:    structpb.NewStringValue(instanceUID),
+			RefFieldDestinationUID: structpb.NewStringValue(destinationUID),
+			RefFieldMessageUID:     structpb.NewStringValue(messageUID),
+			RefFieldAuthorUID:      structpb.NewStringValue(authorUID),
+		},
+	}
+}
+
 // File mirrors a row of file.
 type File struct {
 	ID        string
