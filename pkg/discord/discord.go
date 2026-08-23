@@ -47,16 +47,21 @@ func InitializeDiscord(ctx context.Context) {
 	// as a fatal "cannot open the session" — so requesting it unconditionally
 	// would stop the bot booting for anyone who does not use the message path.
 	//
-	// TWO capabilities ride on it, and either is enough: chat commands need the
-	// content to find their prefix, and trigger matching needs it to match a
-	// phrase. So the decision is not "are chat prefixes configured" — a
-	// deployment that only wants triggers sets DISCORD_MESSAGE_CONTENT instead.
-	if messageContentRequired(config.Options.Discord.CommandPrefixes.Prefixes, config.Options.Discord.MessageContent) {
+	// THREE capabilities ride on it, and any one is enough: chat commands need
+	// the content to find their prefix, trigger matching needs it to match a
+	// phrase, and WANHA needs both Content and Attachments populated at all.
+	// So the decision is not "are chat prefixes configured" — a deployment
+	// that only wants triggers or only wants WANHA sets DISCORD_MESSAGE_CONTENT
+	// or GINBOT_REPOST instead. The repost half is OR'd in here rather than
+	// folded into messageContentRequired's own signature, which
+	// TestMessageContentRequired exercises directly with two arguments.
+	if messageContentRequired(config.Options.Discord.CommandPrefixes.Prefixes, config.Options.Discord.MessageContent) || config.Options.Repost.Enabled {
 		discordSession.Identify.Intents |= discordgo.IntentMessageContent
 		discordSession.AddHandler(handleMessage)
+		discordSession.AddHandler(handleMessageUpdate)
 	} else {
-		log.Z.Warn("MESSAGE_CONTENT intent not requested, so chat commands and trigger matching are both disabled. " +
-			"Set DISCORD_COMMAND_PREFIXES or DISCORD_MESSAGE_CONTENT=true, and enable the intent in the Discord developer portal.")
+		log.Z.Warn("MESSAGE_CONTENT intent not requested, so chat commands, trigger matching and WANHA are all disabled. " +
+			"Set DISCORD_COMMAND_PREFIXES, DISCORD_MESSAGE_CONTENT=true or GINBOT_REPOST=true, and enable the intent in the Discord developer portal.")
 	}
 
 	if err = discordSession.Open(); err != nil {

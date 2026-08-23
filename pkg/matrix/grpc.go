@@ -26,6 +26,7 @@ func NewMatrixClient(ctx context.Context) {
 	client.InitEntertainmentService(conn)
 	client.InitReverseService(conn)
 	client.InitTriggerService(conn)
+	client.InitRepostService(conn)
 
 	go client.RunClientActionStream(ctx, pb.Platform_PLATFORM_MATRIX_PROTOCOL, actionHandlers())
 }

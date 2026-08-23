@@ -302,6 +302,11 @@ func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd co
 // its prefix, and trigger matching needs the content to match a phrase against
 // at all. They are separate switches because a deployment can want one without
 // the other.
+//
+// WANHA needing the same intent is deliberately NOT folded in here: this
+// function's signature is exercised directly by TestMessageContentRequired,
+// and widening it would break that test for a change this package's own
+// call site can express just as well with a plain ||. See discord.go.
 func messageContentRequired(prefixes []string, messageContent bool) bool {
 	return len(prefixes) > 0 || messageContent
 }
@@ -394,6 +399,25 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	// Checked before the prefix branch, and unconditionally on every human
+	// message rather than only unprefixed ones: triggerCandidate deliberately
+	// skips attachment-only messages and a prefixed command message, but
+	// WANHA must not be gated by either — a prefixed message can still carry
+	// a link, and an attachment-only message is exactly what WANHA exists to
+	// catch.
+	//
+	// Its own goroutine, unlike attemptTrigger. A repost check costs a CDN
+	// fetch plus a decode server-side, bounded only by repostAttemptTimeout,
+	// and it is NOT the last thing this handler does — running it inline would
+	// delay every chat command and every trigger behind it by up to that
+	// timeout, a regression in paths that worked before this feature existed.
+	// attemptTrigger's reasoning for staying inline does not transfer, because
+	// nothing follows it. Concurrency and memory are already bounded
+	// independently by repostAttemptSlots.
+	if config.Options.Repost.Enabled {
+		go attemptRepost(s, m.Message, false)
+	}
+
 	name, raw, prefixed := command.ParseChat(m.Content, config.Options.Discord.CommandPrefixes.Prefixes)
 	if prefixed {
 		dispatchChatCommand(s, m, name, raw)
@@ -415,6 +439,22 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// needs bounding is memory and RPC lifetime, which is what
 	// triggerAttemptSlots and triggerAttemptTimeout do.
 	attemptTrigger(s, m, forced)
+}
+
+// handleMessageUpdate offers an edited message to WANHA. An edit MATCHES but
+// never INSERTS (W8): CheckRepost enforces that server-side via edit=true,
+// this is just the client-side trigger for it — editing a message to add a
+// link should be able to trigger WANHA, but must not seed the index and make
+// the edited message match itself.
+func handleMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
+	if !config.Options.Repost.Enabled {
+		return
+	}
+	if !isHumanMessage(s, m.Message) {
+		return
+	}
+
+	attemptRepost(s, m.Message, true)
 }
 
 // dispatchChatCommand runs a prefixed chat message through the registry.
@@ -514,11 +554,24 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 	respondChat(s, m, out)
 }
 
-// isHuman reports whether a message should be considered for dispatch. Ignoring
-// bots covers this bot's own messages as well; the explicit self check guards
-// against a future non-bot token and makes the intent obvious.
+// isHuman reports whether a message should be considered for dispatch.
+// Delegates to isHumanMessage; kept with this exact signature because
+// existing tests call it directly.
 func isHuman(s *discordgo.Session, m *discordgo.MessageCreate) bool {
-	if m.Author == nil || m.Author.Bot {
+	return isHumanMessage(s, m.Message)
+}
+
+// isHumanMessage is isHuman's logic, lifted to work on a bare *discordgo.Message
+// so handleMessageUpdate can reuse it: MessageUpdate wraps the same *Message
+// shape as MessageCreate, but is not a MessageCreate itself. Ignoring bots
+// covers this bot's own messages as well; the explicit self check guards
+// against a future non-bot token and makes the intent obvious.
+//
+// m may be nil, or carry a nil Author: Discord sends partial payloads for
+// some message update events (an embed-only update from a link unfurling,
+// for instance), and neither must reach a nil dereference here.
+func isHumanMessage(s *discordgo.Session, m *discordgo.Message) bool {
+	if m == nil || m.Author == nil || m.Author.Bot {
 		return false
 	}
 
