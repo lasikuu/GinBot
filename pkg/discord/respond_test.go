@@ -1,6 +1,8 @@
 package discord
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -282,5 +284,163 @@ func TestClickedMessageReferencePointsAtTheClickedMessage(t *testing.T) {
 	})
 	if absent != nil {
 		t.Errorf("reference = %+v for an interaction with no message, want nil", absent)
+	}
+}
+
+// responseWithFile is a response carrying one attachment, i.e. what a trigger
+// whose reply is a file produces.
+func responseWithFile(name string, content []byte) *command.Response {
+	return &command.Response{
+		Content: "",
+		File: &command.ResponseFile{
+			Name:     name,
+			MIMEType: "image/png",
+			Content:  content,
+		},
+	}
+}
+
+// readAttachment reads a planned attachment back, which is the only way to tell
+// a real attachment from a header with an exhausted reader behind it.
+func readAttachment(t *testing.T, file *discordgo.File) []byte {
+	t.Helper()
+
+	if file.Reader == nil {
+		t.Fatal("attachment has no reader; discordgo would post an empty file")
+	}
+	content, err := io.ReadAll(file.Reader)
+	if err != nil {
+		t.Fatalf("read attachment %q: %v", file.Name, err)
+	}
+
+	return content
+}
+
+// TestResponseFilesRefusesEveryEmptyShape: no code in this repository sent a
+// file to a platform before this, so all of these reach discordgo for the first
+// time. Each one would otherwise post a zero-byte attachment named "" — a
+// visible, undeletable artefact in the channel — and the nil Response is the
+// shape respondCommand already has to handle, because a handler is free to
+// return (nil, nil).
+func TestResponseFilesRefusesEveryEmptyShape(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *command.Response
+	}{
+		{name: "nil response", resp: nil},
+		{name: "a response with no file", resp: &command.Response{Content: "444"}},
+		{name: "a file with nil content", resp: responseWithFile("cat.png", nil)},
+		{name: "a file with empty content", resp: responseWithFile("cat.png", []byte{})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := responseFiles(tt.resp); got != nil {
+				t.Errorf("responseFiles() = %+v, want nil", got)
+			}
+		})
+	}
+}
+
+// TestResponseFilesCarriesTheNameTypeAndBytes is the mapping from the neutral
+// response onto discordgo's attachment.
+//
+// The name is what the user sees and what their client saves the file as; the
+// server never stores an original filename, so a blank one is the ordinary case
+// rather than an error, and Discord rejects an attachment with no name at all.
+// ContentType is what decides whether Discord renders the file inline or as a
+// download.
+func TestResponseFilesCarriesTheNameTypeAndBytes(t *testing.T) {
+	content := []byte("\x89PNG not really")
+
+	tests := []struct {
+		name     string
+		given    string
+		wantName string
+	}{
+		{name: "a named file keeps its name", given: "cat.png", wantName: "cat.png"},
+		{name: "a nameless file gets the fallback", given: "", wantName: fallbackAttachmentName},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := responseFiles(responseWithFile(tt.given, content))
+			if len(files) != 1 {
+				t.Fatalf("responseFiles() produced %d attachments, want 1", len(files))
+			}
+
+			file := files[0]
+			if file.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", file.Name, tt.wantName)
+			}
+			if file.ContentType != "image/png" {
+				t.Errorf("ContentType = %q, want %q", file.ContentType, "image/png")
+			}
+			if got := readAttachment(t, file); !bytes.Equal(got, content) {
+				t.Errorf("attachment content = %q, want %q", got, content)
+			}
+		})
+	}
+}
+
+// TestResponseFilesGivesAFreshReaderPerCall: an io.Reader is consumed once, so a
+// reader cached alongside the response would be empty the second time it was
+// used. That is not hypothetical — respondCommand plans a response and can both
+// answer the interaction and send a channel message from it, and a send that
+// discordgo retries would replay the same reader.
+func TestResponseFilesGivesAFreshReaderPerCall(t *testing.T) {
+	content := []byte("the same bytes twice")
+	resp := responseWithFile("cat.png", content)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		files := responseFiles(resp)
+		if len(files) != 1 {
+			t.Fatalf("attempt %d produced %d attachments, want 1", attempt, len(files))
+		}
+		if got := readAttachment(t, files[0]); !bytes.Equal(got, content) {
+			t.Errorf("attempt %d read %q, want %q", attempt, got, content)
+		}
+	}
+}
+
+// TestPlanResponseCarriesTheFileOnEveryPath is the acceptance criterion that a
+// file reply arrives as a real attachment, reduced to the part that can be
+// checked without a Discord session.
+//
+// All three sources matter and they deliver differently: a slash command's file
+// rides the interaction callback, a chat command's rides a channel message, and
+// a re-roll acknowledges the click and then sends a separate reply. Wiring the
+// attachment into only the one path that was tried by hand is the obvious way to
+// get this wrong.
+func TestPlanResponseCarriesTheFileOnEveryPath(t *testing.T) {
+	content := []byte("attach me")
+
+	for _, source := range []struct {
+		name   string
+		source commandSource
+	}{
+		{name: "slash", source: sourceSlash},
+		{name: "chat", source: sourceChat},
+		{name: "re-roll", source: sourceReRoll},
+	} {
+		t.Run(source.name, func(t *testing.T) {
+			plan := planResponse(source.source, responseWithFile("cat.png", content))
+			if len(plan.files) != 1 {
+				t.Fatalf("plan carries %d attachments, want 1", len(plan.files))
+			}
+			if plan.files[0].Name != "cat.png" {
+				t.Errorf("Name = %q, want %q", plan.files[0].Name, "cat.png")
+			}
+			if got := readAttachment(t, plan.files[0]); !bytes.Equal(got, content) {
+				t.Errorf("attachment content = %q, want %q", got, content)
+			}
+
+			// A response with no file must not grow one, or every text reply
+			// would carry an empty attachment.
+			textOnly := planResponse(source.source, &command.Response{Content: "444"})
+			if len(textOnly.files) != 0 {
+				t.Errorf("a text-only response planned %d attachments, want 0", len(textOnly.files))
+			}
+		})
 	}
 }

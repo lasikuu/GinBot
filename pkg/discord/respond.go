@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"bytes"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -95,6 +96,37 @@ func truncateContent(content string) string {
 	return content[:cut] + ellipsis
 }
 
+// fallbackAttachmentName names an attachment whose own name is blank. Discord
+// rejects a file with an empty filename, which would fail the whole send rather
+// than just the attachment.
+const fallbackAttachmentName = "attachment"
+
+// responseFiles builds the discordgo attachments for a response.
+//
+// No size cap is applied here. storage.MaxFileBytes is enforced server-side on
+// both write and read, and it is set to Discord's own 8 MiB baseline, so a
+// second cap in this direction could only ever refuse a file Discord would have
+// accepted.
+//
+// A FRESH reader is built on every call, deliberately: a reader is consumed by
+// the send, so a shared one would put an empty file on any second use.
+func responseFiles(resp *command.Response) []*discordgo.File {
+	if resp == nil || resp.File == nil || len(resp.File.Content) == 0 {
+		return nil
+	}
+
+	name := resp.File.Name
+	if name == "" {
+		name = fallbackAttachmentName
+	}
+
+	return []*discordgo.File{{
+		Name:        name,
+		ContentType: resp.File.MIMEType,
+		Reader:      bytes.NewReader(resp.File.Content),
+	}}
+}
+
 // respondChatError answers a failed chat command. A chat message is not an
 // interaction, so there is no ephemeral flag to hide the reply behind; it goes
 // to the channel as a reply to the invoking message.
@@ -152,6 +184,8 @@ type responsePlan struct {
 	replyInChannel bool
 	// components is what that outgoing message carries.
 	components []discordgo.MessageComponent
+	// files is what that outgoing message attaches.
+	files []*discordgo.File
 }
 
 // planResponse decides how a command result is delivered.
@@ -163,18 +197,25 @@ type responsePlan struct {
 // its button live, and the new roll follows as a separate reply to it. That
 // reply carries no button of its own, so the chain stops after one hop and
 // clicking the original again simply adds another reply to the same original.
+//
+// An attachment rides on EVERY branch, unlike the re-roll button. A file is the
+// response's substance rather than a control on it, so a trigger that replies
+// with an image has to arrive whether it was played back by a slash command, a
+// chat command or a re-roll.
 func planResponse(source commandSource, resp *command.Response) responsePlan {
 	switch source {
 	case sourceReRoll:
 		return responsePlan{
 			interactionResponse: discordgo.InteractionResponseDeferredMessageUpdate,
 			replyInChannel:      true,
+			files:               responseFiles(resp),
 		}
 	case sourceChat:
 		return responsePlan{
 			interactionResponse: interactionNone,
 			replyInChannel:      true,
 			components:          reRollComponents(resp),
+			files:               responseFiles(resp),
 		}
 	}
 
@@ -182,6 +223,7 @@ func planResponse(source commandSource, resp *command.Response) responsePlan {
 	return responsePlan{
 		interactionResponse: discordgo.InteractionResponseChannelMessageWithSource,
 		components:          reRollComponents(resp),
+		files:               responseFiles(resp),
 	}
 }
 
@@ -203,6 +245,7 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 		response.Data = &discordgo.InteractionResponseData{
 			Content:         truncateContent(resp.Content),
 			Components:      plan.components,
+			Files:           plan.files,
 			AllowedMentions: noMentions(),
 		}
 		if resp.Ephemeral {
@@ -231,6 +274,7 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 	_, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
 		Content:         truncateContent(resp.Content),
 		Components:      plan.components,
+		Files:           plan.files,
 		Reference:       reference,
 		AllowedMentions: noMentions(),
 	})
@@ -238,6 +282,81 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 		// The interaction is already acknowledged, so the user sees no failure
 		// banner and this log is the only trace.
 		log.Z.Error("failed to send re-roll reply.", zap.Error(err))
+	}
+}
+
+// deferInteraction acknowledges a slow command before its handler runs, and
+// reports whether the acknowledgement landed.
+//
+// Discord invalidates an interaction after three seconds, and a command marked
+// Slow can outlast that — /trigger add with a file makes the SERVER fetch from a
+// CDN, bounded at 30 seconds. Without this the user sees "the application did
+// not respond" while the trigger is in fact created, and the token is dead so
+// nothing can report the outcome afterwards. Deferring buys a fifteen-minute
+// follow-up window.
+//
+// Ephemeral, always. The acknowledgement has to commit to a visibility before
+// the handler has produced a Response to read one from, and an ephemeral
+// deferral cannot later be edited into a public message. Every Slow command
+// today answers ephemerally anyway; a future public one has to post its own
+// channel message the way the re-roll path does.
+func deferInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
+	})
+	if err != nil {
+		log.Z.Error("failed to defer a slow command.", zap.Error(err))
+		return false
+	}
+
+	return true
+}
+
+// respondDeferred delivers a slow command's result into the placeholder
+// deferInteraction left behind.
+//
+// It edits rather than sends: the deferral already created the message, so a
+// follow-up would leave the "thinking" placeholder sitting in the channel
+// forever. Content is never left empty — Discord rejects an edit with neither
+// text nor an attachment, and an attachment-only response is legitimate here.
+func respondDeferred(s *discordgo.Session, i *discordgo.InteractionCreate, resp *command.Response) {
+	if resp == nil {
+		log.Z.Error("slow command returned no response.", zap.String("command", i.Type.String()))
+		resp = &command.Response{Content: errorMessage(nil)}
+	}
+
+	files := responseFiles(resp)
+
+	content := truncateContent(resp.Content)
+	if content == "" && len(files) == 0 {
+		content = "Done."
+	}
+
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content:         &content,
+		Files:           files,
+		AllowedMentions: noMentions(),
+	})
+	if err != nil {
+		// The interaction is already acknowledged, so the user sees the
+		// placeholder rather than a failure banner and this log is the only
+		// trace.
+		log.Z.Error("failed to deliver a slow command's response.", zap.Error(err))
+	}
+}
+
+// respondDeferredError reports a failed slow command into its placeholder.
+func respondDeferredError(s *discordgo.Session, i *discordgo.InteractionCreate, err error) {
+	content := errorMessage(err)
+
+	if _, editErr := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content:         &content,
+		AllowedMentions: noMentions(),
+	}); editErr != nil {
+		log.Z.Error("failed to report a slow command's failure.", zap.Error(editErr))
 	}
 }
 
@@ -270,6 +389,7 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 	_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
 		Content:         truncateContent(resp.Content),
 		Components:      plan.components,
+		Files:           plan.files,
 		Reference:       m.Reference(),
 		AllowedMentions: noMentions(),
 	})
