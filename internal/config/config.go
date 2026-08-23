@@ -19,6 +19,7 @@ type OptionsModel struct {
 	DB      DBOptions
 	GRPC    GRPCServerOptions
 	Storage StorageOptions
+	Repost  RepostOptions
 }
 
 var AppEnvironment enum.Environment
@@ -77,6 +78,17 @@ func SetEnv() {
 		},
 		Storage: StorageOptions{
 			Path: storagePath(),
+		},
+		Repost: RepostOptions{
+			Enabled:       repostEnabled(),
+			TierIdentical: repostTierIdentical(),
+			TierHigh:      repostTierHigh(),
+			TierProbable:  repostTierProbable(),
+			MinWidth:      repostMinWidth(),
+			MinHeight:     repostMinHeight(),
+			MinEntropy:    repostMinEntropy(),
+			ExcludedHosts: repostExcludedHosts(),
+			FFmpegPath:    repostFFmpegPath(),
 		},
 	}
 }
