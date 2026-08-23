@@ -382,7 +382,7 @@ func (s *TriggerServer) TryTrigger(ctx context.Context, req *pb.TryTriggerReq) (
 		return nil, err
 	}
 
-	if !(req.HasInstance() && req.GetInstance().HasPlatformEnum() && req.GetInstance().HasInstanceMeta()) {
+	if !req.HasInstance() || !req.GetInstance().HasPlatformEnum() || !req.GetInstance().HasInstanceMeta() {
 		return nil, status.Errorf(codes.InvalidArgument, "instance is required")
 	}
 	if req.GetPhrase() == "" {
@@ -445,7 +445,7 @@ func (s *TriggerServer) ExecTrigger(ctx context.Context, req *pb.ExecTriggerReq)
 	if !req.HasId() {
 		return nil, status.Errorf(codes.InvalidArgument, "id is required")
 	}
-	if !(req.HasInstance() && req.GetInstance().HasPlatformEnum() && req.GetInstance().HasInstanceMeta()) {
+	if !req.HasInstance() || !req.GetInstance().HasPlatformEnum() || !req.GetInstance().HasInstanceMeta() {
 		return nil, status.Errorf(codes.InvalidArgument, "instance is required")
 	}
 
@@ -864,7 +864,7 @@ func (s *TriggerServer) GetTriggerStats(ctx context.Context, req *pb.GetTriggerS
 		return nil, err
 	}
 
-	if !(req.HasInstance() && req.GetInstance().HasPlatformEnum() && req.GetInstance().HasInstanceMeta()) {
+	if !req.HasInstance() || !req.GetInstance().HasPlatformEnum() || !req.GetInstance().HasInstanceMeta() {
 		return nil, status.Errorf(codes.InvalidArgument, "instance is required")
 	}
 

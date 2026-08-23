@@ -127,14 +127,14 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 	// The validation interceptor covers these too, but it is wired only in
 	// cmd/ginbot-server, and AGENTS.md requires handlers to check required
 	// fields themselves.
-	if !(req.HasDatetime() && req.HasTimezone()) {
+	if !req.HasDatetime() || !req.HasTimezone() {
 		return nil, status.Errorf(codes.InvalidArgument, "datetime and timezone are required")
 	}
 
-	if !(req.HasDestination() &&
-		req.GetDestination().HasPlatformEnum() &&
-		req.GetDestination().HasInstanceMeta() &&
-		req.GetDestination().HasDestinationMeta()) {
+	if !req.HasDestination() ||
+		!req.GetDestination().HasPlatformEnum() ||
+		!req.GetDestination().HasInstanceMeta() ||
+		!req.GetDestination().HasDestinationMeta() {
 		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
 	}
 
@@ -210,13 +210,13 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateRemin
 	if !req.HasId() {
 		return nil, status.Errorf(codes.InvalidArgument, "id is required")
 	}
-	if !(req.HasDatetime() && req.HasTimezone()) {
+	if !req.HasDatetime() || !req.HasTimezone() {
 		return nil, status.Errorf(codes.InvalidArgument, "datetime and timezone are required")
 	}
-	if !(req.HasDestination() &&
-		req.GetDestination().HasPlatformEnum() &&
-		req.GetDestination().HasInstanceMeta() &&
-		req.GetDestination().HasDestinationMeta()) {
+	if !req.HasDestination() ||
+		!req.GetDestination().HasPlatformEnum() ||
+		!req.GetDestination().HasInstanceMeta() ||
+		!req.GetDestination().HasDestinationMeta() {
 		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
 	}
 

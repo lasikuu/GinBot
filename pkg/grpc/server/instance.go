@@ -26,7 +26,7 @@ func (s *InstanceServer) CreateInstance(ctx context.Context, req *pb.CreateInsta
 	// Clearance is enforced ahead of this handler: the requirements map holds
 	// CreateInstance at CLEARANCE_ADMINISTRATOR, so reaching here means the
 	// caller has it.
-	if !(req.HasPlatformEnum() && req.HasInstanceMeta()) {
+	if !req.HasPlatformEnum() || !req.HasInstanceMeta() {
 		return nil, status.Errorf(codes.InvalidArgument, "platform_enum and instance_meta are required")
 	}
 
