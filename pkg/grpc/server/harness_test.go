@@ -131,6 +131,7 @@ type harnessConfig struct {
 	requirements  interceptor.Requirements
 	resolve       interceptor.CallerResolver
 	resolveOrigin interceptor.OriginResolver
+	triggerServer *TriggerServer
 }
 
 type harnessOption func(*harnessConfig)
@@ -159,6 +160,14 @@ func withRequirements(reqs interceptor.Requirements) harnessOption {
 	return func(cfg *harnessConfig) { cfg.requirements = reqs }
 }
 
+// withTriggerServer replaces the default TriggerServer, e.g. with one built
+// over newTriggerServer(fetcher, blobs) so the media fetch/store/dedupe path
+// can be exercised against an httptest server instead of the real,
+// allow-listed CDN hosts.
+func withTriggerServer(server *TriggerServer) harnessOption {
+	return func(cfg *harnessConfig) { cfg.triggerServer = server }
+}
+
 // harness is a running in-process server plus a client for every service.
 type harness struct {
 	Conn *grpc.ClientConn
@@ -170,6 +179,7 @@ type harness struct {
 	Analytics     pb.AnalyticsServiceClient
 	Entertainment pb.EntertainmentServiceClient
 	Reverse       pb.ReverseServiceClient
+	Trigger       pb.TriggerServiceClient
 }
 
 // newHarness starts a server and connects a client to it. Everything is torn
@@ -226,6 +236,12 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 	pb.RegisterEntertainmentServiceServer(grpcServer, NewEntertainmentServer())
 	pb.RegisterReverseServiceServer(grpcServer, NewReverseServer())
 
+	triggerServer := cfg.triggerServer
+	if triggerServer == nil {
+		triggerServer = NewTriggerServer()
+	}
+	pb.RegisterTriggerServiceServer(grpcServer, triggerServer)
+
 	listener := bufconn.Listen(bufSize)
 
 	served := make(chan struct{})
@@ -266,6 +282,7 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		Analytics:     pb.NewAnalyticsServiceClient(conn),
 		Entertainment: pb.NewEntertainmentServiceClient(conn),
 		Reverse:       pb.NewReverseServiceClient(conn),
+		Trigger:       pb.NewTriggerServiceClient(conn),
 	}
 }
 
