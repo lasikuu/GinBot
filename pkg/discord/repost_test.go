@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -191,74 +192,105 @@ func TestRepostCandidatesFromLinksOnly(t *testing.T) {
 	}
 }
 
-// TestRepostCandidatesFromAttachmentsOnly: kind is taken from ContentType when
-// present.
-func TestRepostCandidatesFromAttachmentsOnly(t *testing.T) {
-	m := &discordgo.Message{
-		Attachments: []*discordgo.MessageAttachment{
-			attachment("https://cdn.discordapp.com/x.png", "image/png", "x.png"),
+// TestRepostAttachmentKindPrefersContentTypeOverTheFilename is all that is
+// left of this file's kind coverage, and it is the only part pkg/discord is
+// actually responsible for.
+//
+// The classification tables themselves now live in pkg/repost
+// (Kind/KindFromContentType/KindFromFilename) and are tested once there,
+// including the drift test that keeps the MIME and extension tables in
+// agreement. What is local to this package — and testable nowhere else — is
+// the PRECEDENCE rule: Discord populates ContentType for most attachments but
+// not all, so the filename is a fallback and never an override.
+//
+// Every row deliberately makes ContentType and the filename disagree, so a
+// classifier consulting the wrong one cannot pass by coincidence.
+//
+// The kind is a routing hint regardless: the server re-derives the
+// authoritative kind from the fetched bytes' sniffed MIME type and discards
+// this value, which is exactly why one precedence test is the right amount of
+// coverage here rather than a second copy of the classification table.
+func TestRepostAttachmentKindPrefersContentTypeOverTheFilename(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		filename    string
+		want        pb.RepostKind
+	}{
+		{
+			name:        "content type wins over a disagreeing extension",
+			contentType: "image/png",
+			filename:    "clip.mp4",
+			want:        pb.RepostKind_REPOST_KIND_IMAGE,
+		},
+		{
+			name:        "content type wins the other way round too",
+			contentType: "video/mp4",
+			filename:    "photo.png",
+			want:        pb.RepostKind_REPOST_KIND_VIDEO,
+		},
+		{
+			name:        "an unsupported content type wins over a supported extension",
+			contentType: "application/pdf",
+			filename:    "photo.png",
+			want:        pb.RepostKind_REPOST_KIND_FILE,
+		},
+		{
+			name:        "an absent content type falls back to the filename",
+			contentType: "",
+			filename:    "clip.mp4",
+			want:        pb.RepostKind_REPOST_KIND_VIDEO,
+		},
+		{
+			name:        "an absent content type and an unknown extension is a plain file",
+			contentType: "",
+			filename:    "data.xyz123",
+			want:        pb.RepostKind_REPOST_KIND_FILE,
+		},
+		{
+			name:        "an absent content type and no filename at all is a plain file",
+			contentType: "",
+			filename:    "",
+			want:        pb.RepostKind_REPOST_KIND_FILE,
 		},
 	}
 
-	got := repostCandidates(m)
-	if len(got) != 1 {
-		t.Fatalf("repostCandidates() = %d candidates, want 1", len(got))
-	}
-	if got[0].GetKind() != pb.RepostKind_REPOST_KIND_IMAGE {
-		t.Errorf("kind = %v, want REPOST_KIND_IMAGE", got[0].GetKind())
-	}
-	if got[0].GetUrl() != "https://cdn.discordapp.com/x.png" {
-		t.Errorf("url = %q, want the attachment URL", got[0].GetUrl())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Driven through repostCandidates rather than repostAttachmentKind
+			// directly, so the wiring between the two is covered as well as
+			// the precedence rule itself.
+			m := &discordgo.Message{
+				Attachments: []*discordgo.MessageAttachment{
+					attachment("https://cdn.discordapp.com/a", tt.contentType, tt.filename),
+				},
+			}
+
+			got := repostCandidates(m)
+			if len(got) != 1 {
+				t.Fatalf("repostCandidates() = %d candidates, want 1", len(got))
+			}
+			if got[0].GetKind() != tt.want {
+				t.Errorf("kind = %v, want %v (ContentType %q, filename %q)",
+					got[0].GetKind(), tt.want, tt.contentType, tt.filename)
+			}
+		})
 	}
 }
 
-// TestRepostCandidatesFallsBackToFilenameExtensionForKind: an attachment
-// without a usable ContentType still needs a kind, derived from the filename
-// extension, so a video attachment does not get silently dropped or
-// mis-typed as an image.
-func TestRepostCandidatesFallsBackToFilenameExtensionForKind(t *testing.T) {
+// TestRepostCandidatesPutsLinksBeforeAttachments: the ordering is
+// load-bearing, because the cap is applied to the combined list — a message
+// with a link and twenty attachments must not lose the link. Asserted on the
+// URLs rather than on the kinds, which is strictly stronger: two candidates
+// could share a kind and hide a swap.
+func TestRepostCandidatesPutsLinksBeforeAttachments(t *testing.T) {
+	const linkURL = "https://example.com/a"
+	const attachmentURL = "https://cdn.discordapp.com/x.png"
+
 	m := &discordgo.Message{
+		Content: "look at " + linkURL,
 		Attachments: []*discordgo.MessageAttachment{
-			attachment("https://cdn.discordapp.com/clip.mp4", "", "clip.mp4"),
-		},
-	}
-
-	got := repostCandidates(m)
-	if len(got) != 1 {
-		t.Fatalf("repostCandidates() = %d candidates, want 1", len(got))
-	}
-	if got[0].GetKind() != pb.RepostKind_REPOST_KIND_VIDEO {
-		t.Errorf("kind = %v, want REPOST_KIND_VIDEO (from the .mp4 extension)", got[0].GetKind())
-	}
-}
-
-// TestRepostCandidatesFallsBackToFileKindForAnUnknownExtension: neither a
-// usable ContentType nor a recognised extension must still produce SOME
-// candidate rather than silently dropping the attachment, graded FILE (exact
-// hashing only, per docs/plans/wanha.md W6).
-func TestRepostCandidatesFallsBackToFileKindForAnUnknownExtension(t *testing.T) {
-	m := &discordgo.Message{
-		Attachments: []*discordgo.MessageAttachment{
-			attachment("https://cdn.discordapp.com/data.xyz123", "", "data.xyz123"),
-		},
-	}
-
-	got := repostCandidates(m)
-	if len(got) != 1 {
-		t.Fatalf("repostCandidates() = %d candidates, want 1", len(got))
-	}
-	if got[0].GetKind() != pb.RepostKind_REPOST_KIND_FILE {
-		t.Errorf("kind = %v, want REPOST_KIND_FILE for an unrecognised extension", got[0].GetKind())
-	}
-}
-
-// TestRepostCandidatesCombinesLinksAndAttachments: both sources contribute,
-// links first per the specified construction order.
-func TestRepostCandidatesCombinesLinksAndAttachments(t *testing.T) {
-	m := &discordgo.Message{
-		Content: "look at https://example.com/a",
-		Attachments: []*discordgo.MessageAttachment{
-			attachment("https://cdn.discordapp.com/x.png", "image/png", "x.png"),
+			attachment(attachmentURL, "image/png", "x.png"),
 		},
 	}
 
@@ -266,11 +298,65 @@ func TestRepostCandidatesCombinesLinksAndAttachments(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("repostCandidates() = %d candidates, want 2", len(got))
 	}
-	if got[0].GetKind() != pb.RepostKind_REPOST_KIND_LINK {
-		t.Errorf("candidate 0 kind = %v, want REPOST_KIND_LINK (links first)", got[0].GetKind())
+	if got[0].GetUrl() != linkURL {
+		t.Errorf("candidate 0 url = %q, want the link %q (links come first)", got[0].GetUrl(), linkURL)
 	}
-	if got[1].GetKind() != pb.RepostKind_REPOST_KIND_IMAGE {
-		t.Errorf("candidate 1 kind = %v, want REPOST_KIND_IMAGE", got[1].GetKind())
+	if got[0].GetKind() != pb.RepostKind_REPOST_KIND_LINK {
+		t.Errorf("candidate 0 kind = %v, want REPOST_KIND_LINK", got[0].GetKind())
+	}
+	if got[1].GetUrl() != attachmentURL {
+		t.Errorf("candidate 1 url = %q, want the attachment %q", got[1].GetUrl(), attachmentURL)
+	}
+}
+
+// TestRepostCandidatesEmitsAnAttachmentWithNoRecognisableType: neither a
+// usable ContentType nor a recognised extension must still produce a
+// candidate. Dropping it would mean an exactly-reposted file of an unusual
+// type is never detected at all — FILE-kind entries are still content-hashed
+// and matched exactly (docs/plans/wanha.md W6), so there is nothing to gain by
+// discarding it client-side.
+//
+// The kind is not asserted here; pkg/repost owns that. What is asserted is
+// that the candidate exists and carries the right URL.
+func TestRepostCandidatesEmitsAnAttachmentWithNoRecognisableType(t *testing.T) {
+	const url = "https://cdn.discordapp.com/data.xyz123"
+
+	m := &discordgo.Message{
+		Attachments: []*discordgo.MessageAttachment{
+			attachment(url, "", "data.xyz123"),
+		},
+	}
+
+	got := repostCandidates(m)
+	if len(got) != 1 {
+		t.Fatalf("repostCandidates() = %d candidates, want 1; an unrecognised attachment must not be dropped", len(got))
+	}
+	if got[0].GetUrl() != url {
+		t.Errorf("url = %q, want the attachment URL %q", got[0].GetUrl(), url)
+	}
+}
+
+// TestRepostCandidatesSkipsUnusableAttachments: an attachment with no URL is
+// nothing the server could fetch, and CheckRepostReq's own validation rejects
+// a candidate with an empty url — so emitting one would fail the WHOLE call,
+// taking every other candidate in the message down with it. A nil element is
+// covered in the same table because discordgo's slice is of pointers and a
+// dereference here would panic on the event goroutine.
+func TestRepostCandidatesSkipsUnusableAttachments(t *testing.T) {
+	m := &discordgo.Message{
+		Attachments: []*discordgo.MessageAttachment{
+			nil,
+			attachment("", "image/png", "x.png"),
+			attachment("https://cdn.discordapp.com/good.png", "image/png", "good.png"),
+		},
+	}
+
+	got := repostCandidates(m)
+	if len(got) != 1 {
+		t.Fatalf("repostCandidates() = %d candidates, want 1 (the nil and the URL-less attachment must be skipped)", len(got))
+	}
+	if got[0].GetUrl() != "https://cdn.discordapp.com/good.png" {
+		t.Errorf("url = %q, want the one usable attachment", got[0].GetUrl())
 	}
 }
 
@@ -285,19 +371,88 @@ func TestRepostCandidatesReturnsNilForNeither(t *testing.T) {
 
 // TestRepostCandidatesCapsAtTwenty: one message must not be able to cost an
 // unbounded number of fetches (repost.proto's own documented reason for the
-// cap on CheckRepostReq.candidates).
+// cap on CheckRepostReq.candidates), and exceeding it is not merely wasteful —
+// CheckRepostReq.candidates carries max_items = 20, so a 21st candidate makes
+// the server reject the entire request and the message goes unchecked.
+//
+// The cap is enforced in two separate places, once per loop, so both are
+// driven: links alone, attachments alone, and the combined case where the
+// links have already consumed the whole budget.
 func TestRepostCandidatesCapsAtTwenty(t *testing.T) {
-	var b strings.Builder
-	for i := 0; i < 25; i++ {
-		b.WriteString("https://example.com/")
-		b.WriteString(string(rune('a' + i)))
-		b.WriteString(" ")
+	links := func(n int) string {
+		var b strings.Builder
+		for i := 0; i < n; i++ {
+			b.WriteString("https://example.com/")
+			b.WriteString(strconv.Itoa(i))
+			b.WriteString(" ")
+		}
+		return b.String()
 	}
-	m := &discordgo.Message{Content: b.String()}
 
-	got := repostCandidates(m)
-	if len(got) != 20 {
-		t.Errorf("repostCandidates() = %d candidates for 25 links, want capped at 20", len(got))
+	attachments := func(n int) []*discordgo.MessageAttachment {
+		out := make([]*discordgo.MessageAttachment, 0, n)
+		for i := 0; i < n; i++ {
+			name := "x" + strconv.Itoa(i) + ".png"
+			out = append(out, attachment("https://cdn.discordapp.com/"+name, "image/png", name))
+		}
+		return out
+	}
+
+	tests := []struct {
+		name    string
+		message *discordgo.Message
+	}{
+		{
+			name:    "links alone",
+			message: &discordgo.Message{Content: links(25)},
+		},
+		{
+			name:    "attachments alone",
+			message: &discordgo.Message{Attachments: attachments(25)},
+		},
+		{
+			name:    "links and attachments together",
+			message: &discordgo.Message{Content: links(15), Attachments: attachments(15)},
+		},
+		{
+			name: "links already fill the budget",
+			// The link loop returns at the cap, so the attachment loop must
+			// not append even one more on top of a full list.
+			message: &discordgo.Message{Content: links(20), Attachments: attachments(5)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := repostCandidates(tt.message)
+			if len(got) != maxRepostCandidates {
+				t.Errorf("repostCandidates() = %d candidates, want capped at %d", len(got), maxRepostCandidates)
+			}
+		})
+	}
+}
+
+// TestRepostCandidatesKeepsTheLinkWhenAttachmentsWouldFillTheCap is the
+// reason links are gathered first, stated as an assertion rather than left to
+// the construction order: a message with one link and twenty images must still
+// check the link, which is the cheapest and most commonly reposted candidate
+// of the lot.
+func TestRepostCandidatesKeepsTheLinkWhenAttachmentsWouldFillTheCap(t *testing.T) {
+	const linkURL = "https://example.com/the-link"
+
+	files := make([]*discordgo.MessageAttachment, 0, maxRepostCandidates)
+	for i := 0; i < maxRepostCandidates; i++ {
+		name := "x" + strconv.Itoa(i) + ".png"
+		files = append(files, attachment("https://cdn.discordapp.com/"+name, "image/png", name))
+	}
+
+	got := repostCandidates(&discordgo.Message{Content: linkURL, Attachments: files})
+
+	if len(got) != maxRepostCandidates {
+		t.Fatalf("repostCandidates() = %d candidates, want capped at %d", len(got), maxRepostCandidates)
+	}
+	if got[0].GetUrl() != linkURL {
+		t.Errorf("candidate 0 url = %q, want the link %q; the attachments crowded it out", got[0].GetUrl(), linkURL)
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 
 	"github.com/corona10/goimagehash"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"github.com/lasikuu/GinBot/pkg/repost"
 )
 
 // ErrTooSmall reports an image below the minimum dimensions (W4). It is not
@@ -116,15 +117,13 @@ func LookupFFmpeg() string {
 // content actually fetched and sniffed, never by what a caller claims a
 // candidate is — see RepostMatch.kind's own doc comment on the original entry
 // possibly differing from the candidate's declared kind.
+//
+// The table itself moved to repost.Kind, which the client-side classifiers
+// also delegate to; this stays as the name the ingest path already calls, so
+// that there is exactly one table rather than a server copy and a client copy
+// free to drift.
 func Kind(mimeType string) pb.RepostKind {
-	switch mimeType {
-	case "image/png", "image/jpeg", "image/webp":
-		return pb.RepostKind_REPOST_KIND_IMAGE
-	case "image/gif", "video/mp4", "video/webm":
-		return pb.RepostKind_REPOST_KIND_VIDEO
-	default:
-		return pb.RepostKind_REPOST_KIND_FILE
-	}
+	return repost.Kind(mimeType)
 }
 
 // MaxPixels caps the decoded pixel count of anything this package will hash.

@@ -3,8 +3,6 @@ package discord
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -12,6 +10,7 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
+	"github.com/lasikuu/GinBot/pkg/repost"
 	"github.com/lasikuu/GinBot/pkg/repost/urlnorm"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -79,44 +78,19 @@ func repostCandidates(m *discordgo.Message) []*pb.RepostCandidate {
 
 // repostAttachmentKind is a routing hint only: the server re-derives the
 // authoritative kind from the fetched bytes' sniffed MIME type regardless
-// (fingerprint.Kind), since a client-declared kind is not trusted for
-// storage. ContentType is preferred when Discord supplies it; the filename
-// extension is the fallback for the attachments that arrive without one.
+// (fingerprint.Kind), since a client-declared kind is not trusted for storage,
+// and the only distinction it acts on is LINK versus not-LINK. The declared
+// value is still kept truthful rather than filled in with a placeholder — and
+// it now comes from repost's table, the same one the server derives from, so
+// the two cannot disagree the way they used to.
+//
+// ContentType is preferred when Discord supplies it; the filename extension is
+// the fallback for the attachments that arrive without one.
 func repostAttachmentKind(a *discordgo.MessageAttachment) pb.RepostKind {
 	if a.ContentType != "" {
-		return repostKindFromMIME(a.ContentType)
+		return repost.KindFromContentType(a.ContentType)
 	}
-	return repostKindFromExtension(a.Filename)
-}
-
-func repostKindFromMIME(mimeType string) pb.RepostKind {
-	if idx := strings.IndexByte(mimeType, ';'); idx >= 0 {
-		mimeType = strings.TrimSpace(mimeType[:idx])
-	}
-
-	switch {
-	case mimeType == "image/gif":
-		return pb.RepostKind_REPOST_KIND_VIDEO
-	case strings.HasPrefix(mimeType, "image/"):
-		return pb.RepostKind_REPOST_KIND_IMAGE
-	case strings.HasPrefix(mimeType, "video/"):
-		return pb.RepostKind_REPOST_KIND_VIDEO
-	default:
-		return pb.RepostKind_REPOST_KIND_FILE
-	}
-}
-
-func repostKindFromExtension(filename string) pb.RepostKind {
-	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".gif":
-		return pb.RepostKind_REPOST_KIND_VIDEO
-	case ".png", ".jpg", ".jpeg", ".webp":
-		return pb.RepostKind_REPOST_KIND_IMAGE
-	case ".mp4", ".webm", ".mov":
-		return pb.RepostKind_REPOST_KIND_VIDEO
-	default:
-		return pb.RepostKind_REPOST_KIND_FILE
-	}
+	return repost.KindFromFilename(a.Filename)
 }
 
 // attemptRepost offers one message to the server and posts WANHA for
