@@ -37,6 +37,21 @@ func ParseChat(content string, prefixes []string) (name string, args []string, o
 	return tokens[0], tokens[1:], true
 }
 
+// HasPrefix reports whether content carries one of the configured command
+// prefixes, whether or not a command name follows it.
+//
+// ParseChat answers a narrower question — "is this a dispatchable command" — and
+// says no to a bare prefix, which has no name to dispatch. A caller deciding
+// whether a message was ADDRESSED to a bot at all needs the wider answer, and it
+// has to come from this same matcher: two subtly different answers to "is this a
+// command" is precisely the divergence that made config drop its own prefix
+// regex.
+func HasPrefix(content string, prefixes []string) bool {
+	_, found := matchPrefix(content, prefixes)
+
+	return found
+}
+
 // matchPrefix returns the longest configured prefix that content starts with.
 // An empty prefix list disables chat commands entirely, and an empty prefix
 // would match every message, so both yield no match.

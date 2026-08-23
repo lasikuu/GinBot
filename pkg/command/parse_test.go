@@ -364,3 +364,93 @@ func TestParseChatThenLookupIsCaseInsensitive(t *testing.T) {
 		})
 	}
 }
+
+// HasPrefix answers a WIDER question than ParseChat: "was this message addressed
+// to a bot", not "is this a dispatchable command". The gap between the two is
+// the whole reason it exists — a bare "??" carries a prefix but no command name,
+// so ParseChat reports no match while HasPrefix reports one. A caller that has
+// to decide whether to treat a message as ordinary chat needs the wider answer,
+// and it must come from the same matcher so the two cannot drift.
+func TestHasPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		prefixes []string
+		want     bool
+	}{
+		{
+			name:     "a command carries a prefix",
+			content:  "??ping",
+			prefixes: []string{"??"},
+			want:     true,
+		},
+		{
+			name:     "a bare prefix still carries a prefix",
+			content:  "??",
+			prefixes: []string{"?", "??"},
+			want:     true,
+		},
+		{
+			name:     "a prefix followed by only space still carries one",
+			content:  "?? ",
+			prefixes: []string{"??"},
+			want:     true,
+		},
+		{
+			name:     "ordinary chat carries none",
+			content:  "what did you say",
+			prefixes: []string{"??"},
+			want:     false,
+		},
+		{
+			name:     "a prefix elsewhere in the line does not count",
+			content:  "who knows ??ping",
+			prefixes: []string{"??"},
+			want:     false,
+		},
+		{
+			name:     "no configured prefixes matches nothing",
+			content:  "??ping",
+			prefixes: nil,
+			want:     false,
+		},
+		{
+			name:     "an empty prefix must not match everything",
+			content:  "hello",
+			prefixes: []string{""},
+			want:     false,
+		},
+		{
+			name:     "empty content carries no prefix",
+			content:  "",
+			prefixes: []string{"??"},
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasPrefix(tt.content, tt.prefixes); got != tt.want {
+				t.Errorf("HasPrefix(%q, %v) = %v, want %v", tt.content, tt.prefixes, got, tt.want)
+			}
+		})
+	}
+}
+
+// HasPrefix must agree with ParseChat wherever ParseChat commits to an answer:
+// anything ParseChat dispatches necessarily carried a prefix. It is only allowed
+// to be wider, never to disagree.
+func TestHasPrefixAgreesWithParseChatWhereverParseChatMatches(t *testing.T) {
+	prefixes := []string{"?", "??", "!"}
+
+	for _, content := range []string{"?ping", "??ping", "!ping", "??reminder add", "?PING x y"} {
+		t.Run(content, func(t *testing.T) {
+			if _, _, ok := ParseChat(content, prefixes); !ok {
+				t.Fatalf("ParseChat(%q) ok = false, test premise broken", content)
+			}
+			if !HasPrefix(content, prefixes) {
+				t.Errorf("HasPrefix(%q) = false, but ParseChat dispatched it", content)
+			}
+		})
+	}
+}
