@@ -77,8 +77,9 @@ func GetFile(ctx context.Context, id string) (*model.File, error) {
 // ListOrphanFiles returns local file rows that no live trigger references and
 // that are older than olderThan, capped at limit.
 //
-// This exists for the orphan-file GC job a later cycle wires up; the query is
-// implemented now, but nothing schedules it yet.
+// It backs the orphan-file sweep in cronjob.CollectOrphanFiles, which runs
+// hourly. olderThan is the grace period that keeps a blob written seconds before
+// its trigger row commits out of the sweep.
 func ListOrphanFiles(ctx context.Context, olderThan time.Time, limit int64) ([]*model.File, error) {
 	rows, err := db().Query(ctx,
 		`SELECT `+model.FileColumns+`

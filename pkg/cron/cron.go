@@ -57,6 +57,20 @@ func RunCronJobs(ctx context.Context) {
 		// Every hour
 		if now.Minute() == 0 && now.Second() == 0 {
 			log.Z.Debug("hourly cron tick", zap.Time("time", now))
+
+			// Hourly rather than per minute: it is a table scan plus filesystem
+			// work, and an abandoned blob costs only disk until it is collected.
+			// It runs INLINE and so does delay this loop, but boundedly — one
+			// sweep is capped at orphanBatchLimit rows, and a large backlog
+			// drains over several hours rather than in one long tick.
+			cronjob.CollectOrphanFiles(ctx)
+
+			// Cheap, and nothing else does it: ForcedLimiter documents that
+			// Allow deliberately does not prune, so its map grows by one entry
+			// per author who mentions the bot until someone calls this.
+			if service.TriggerServer != nil {
+				service.TriggerServer.PruneForcedLimiter()
+			}
 		}
 	}
 }
