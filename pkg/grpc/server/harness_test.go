@@ -101,9 +101,9 @@ func testUser(id string, clearance pb.Clearance) *model.User {
 	}
 }
 
-// originLog is an in-memory interceptor.OriginResolver. It records the
-// bootstrap writes the chain would have made, so tests can assert both that a
-// guarded call creates an origin and that a public one does not.
+// originLog is an in-memory interceptor.OriginResolver, and the harness
+// default: it records the bootstrap writes the chain would have made instead
+// of writing rows, so a test that is not about origins needs no database.
 type originLog struct {
 	mu           sync.Mutex
 	destinations []*pb.ReminderDestination
@@ -121,13 +121,6 @@ func (o *originLog) resolve(_ context.Context, destination *pb.ReminderDestinati
 
 	o.destinations = append(o.destinations, destination)
 	return int64(len(o.destinations)), nil
-}
-
-// bootstrapCount reports how many origins the chain has recorded.
-func (o *originLog) bootstrapCount() int {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return len(o.destinations)
 }
 
 // harnessConfig is what the options mutate.
@@ -150,19 +143,6 @@ func withResolver(resolve interceptor.CallerResolver) harnessOption {
 // withDirectory is the common case: resolve callers from an in-memory map.
 func withDirectory(dir *directory) harnessOption {
 	return withResolver(dir.resolve)
-}
-
-// withOriginLog records origin bootstraps in memory. Pass
-// db.GetOrCreateDestinationByMeta to write real rows.
-func withOriginLog(origins *originLog) harnessOption {
-	return func(cfg *harnessConfig) { cfg.resolveOrigin = origins.resolve }
-}
-
-// withRequirements overrides the clearance map. Tests that are about the
-// interceptor's own behaviour rather than about the server's policy use this;
-// everything else should exercise the production map.
-func withRequirements(reqs interceptor.Requirements) harnessOption {
-	return func(cfg *harnessConfig) { cfg.requirements = reqs }
 }
 
 // withTriggerServer replaces the default TriggerServer, e.g. with one built
@@ -328,29 +308,6 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		Trigger:       pb.NewTriggerServiceClient(conn),
 		Repost:        pb.NewRepostServiceClient(conn),
 	}
-}
-
-// recoverUnary turns a handler panic into codes.Internal.
-//
-// Tests that inject a resolver leave pkg/db's pool nil on purpose, so any
-// handler that reaches the database dereferences it. Without this the panic
-// takes down the whole test binary instead of failing one call, and the
-// "was this rejected before it got to the database?" assertions become
-// impossible to write.
-func recoverUnary(
-	ctx context.Context,
-	req any,
-	_ *grpc.UnaryServerInfo,
-	handler grpc.UnaryHandler,
-) (resp any, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			resp = nil
-			err = status.Errorf(codes.Internal, "handler panicked: %v", recovered)
-		}
-	}()
-
-	return handler(ctx, req)
 }
 
 // callerCtx attaches caller identity exactly as a platform client does.

@@ -491,6 +491,44 @@ func TestResolverReturningNoUserAndNoErrorIsRejectedWithoutPanicking(t *testing.
 	}
 }
 
+// TestNilResolverFailsClosedOnAGuardedMethod.
+//
+// A nil CallerResolver on a guarded method is a wiring bug — the server was
+// constructed without one — and the only two possible behaviours are "deny
+// everything" and "dereference nil on the first guarded request". This is the
+// one interceptor failure path the rest of this file did not reach: the
+// resolver-returns-an-error and resolver-returns-(nil, nil) cases both supply
+// a resolver, so neither exercises the guard at all.
+//
+// The public path is asserted alongside it, because failing closed must not
+// mean failing closed for /ping too: health checks and latency probes have to
+// keep answering while identity is broken, which is precisely when someone is
+// looking at them.
+func TestNilResolverFailsClosedOnAGuardedMethod(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("interceptor panicked with a nil resolver: %v", r)
+		}
+	}()
+
+	guarded := call(incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "platform-uid"), registeredMethod, testRequirements(), nil)
+
+	// Internal, not PermissionDenied or FailedPrecondition: the caller did
+	// nothing wrong and must not be told to register or to ask for access.
+	requireCode(t, guarded.err, codes.Internal)
+	if guarded.reached {
+		t.Error("handler ran on a guarded method with no caller resolver configured")
+	}
+
+	public := call(context.Background(), publicMethod, testRequirements(), nil)
+	if public.err != nil {
+		t.Errorf("public method rejected with a nil resolver: %v", public.err)
+	}
+	if !public.reached {
+		t.Error("public handler was not reached with a nil resolver")
+	}
+}
+
 func TestResolverErrorIsRejectedWithoutPanicking(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
