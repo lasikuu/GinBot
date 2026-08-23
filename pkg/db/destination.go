@@ -80,6 +80,25 @@ func CreateDestination(ctx context.Context, instanceID int64, destinationMeta *s
 	return destinationID, nil
 }
 
+// GetDestinationIDByMeta resolves a destination row's id within an instance.
+// ErrNotFound when it does not exist.
+func GetDestinationIDByMeta(ctx context.Context, instanceID int64, destinationMeta *structpb.Struct) (int64, error) {
+	var destinationID int64
+	err := db().QueryRow(ctx,
+		`SELECT id FROM destination WHERE instance_id = $1 AND destination_meta = $2 AND deleted = FALSE`,
+		instanceID, destinationMeta,
+	).Scan(&destinationID)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("scan destination by meta: %w", err)
+	}
+
+	return destinationID, nil
+}
+
 // GetReminderDestination rebuilds the protobuf destination for a destination id
 // by joining back to its instance.
 func GetReminderDestination(ctx context.Context, destinationID int64) (*pb.ReminderDestination, error) {
