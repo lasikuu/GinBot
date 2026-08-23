@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
+	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -251,10 +253,35 @@ func isCommandGroup(name string) bool {
 }
 
 // runInteraction executes a command and renders its response to an interaction.
+//
+// A command declaring Slow is acknowledged BEFORE its handler runs, because
+// Discord kills the interaction after three seconds and the handler may take
+// longer than that. Everything else answers in the callback, which keeps the
+// response and the acknowledgement to a single round trip.
 func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd command.Command, inv *command.Invocation) {
 	ctx, err := interactionContext(i)
 	if err != nil {
 		respondError(s, i, err)
+		return
+	}
+
+	if cmd.Slow {
+		if !deferInteraction(s, i) {
+			// Nothing can be delivered against an interaction that was never
+			// acknowledged, and running the handler anyway would apply the
+			// change with no way to report it.
+			return
+		}
+
+		resp, handlerErr := cmd.Handler(ctx, inv)
+		if handlerErr != nil {
+			log.Z.Error("command failed.", zap.String("command", cmd.Name), zap.Error(handlerErr))
+			respondDeferredError(s, i, handlerErr)
+			return
+		}
+
+		respondDeferred(s, i, resp)
+
 		return
 	}
 
@@ -268,17 +295,130 @@ func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd co
 	respondCommand(s, i, resp)
 }
 
-// handleMessage routes a prefixed chat message through the registry.
+// messageContentRequired reports whether the bot must request the privileged
+// MESSAGE_CONTENT intent.
+//
+// Either capability alone justifies it: a chat command needs the content to find
+// its prefix, and trigger matching needs the content to match a phrase against
+// at all. They are separate switches because a deployment can want one without
+// the other.
+func messageContentRequired(prefixes []string, messageContent bool) bool {
+	return len(prefixes) > 0 || messageContent
+}
+
+// triggerCandidate reports whether a message should be offered to TryTrigger.
+func triggerCandidate(content string, prefixes []string) bool {
+	// A prefix is an explicit address to a bot — this one or another one sharing
+	// the prefix. Firing a random trigger on a mistyped or somebody else's
+	// command would be surprising, so a prefixed message is never a candidate,
+	// whether or not a command name follows the prefix or resolves here.
+	// command.HasPrefix rather than ParseChat: ParseChat reports no match for a
+	// bare "??", which is ordinary chat shorthand and must not fire a trigger.
+	if command.HasPrefix(content, prefixes) {
+		return false
+	}
+
+	// The server refuses an empty phrase with InvalidArgument, so an
+	// attachment-only or sticker-only message must not cost a round trip.
+	return strings.TrimSpace(content) != ""
+}
+
+// mentionsBot reports whether a message DELIBERATELY mentions the bot.
+//
+// The comparison is by id, never by display name: a name is attacker-controlled
+// and a nickname is per-guild, so matching one would both miss real mentions and
+// fire on impostors.
+//
+// The mention has to appear in the message TEXT as well as in Mentions, which is
+// what makes it deliberate. Discord adds the replied-to author to Mentions
+// whenever mention_author is set, and that is the client default — so without
+// this, clicking Reply on any message the bot posted and typing anything at all
+// would force a fire. An explicit mention always renders as the <@id> token in
+// the content; a reply ping never does.
+//
+// Every pointer is guarded. discordgo leaves State unpopulated until the session
+// is open and dispatches handlers as bare goroutines with no recover(), so a nil
+// deref here would take the process down.
+func mentionsBot(s *discordgo.Session, m *discordgo.MessageCreate) bool {
+	if s == nil || s.State == nil || s.State.User == nil {
+		return false
+	}
+
+	self := s.State.User.ID
+
+	mentioned := false
+	for _, user := range m.Mentions {
+		if user != nil && user.ID == self {
+			mentioned = true
+			break
+		}
+	}
+	if !mentioned {
+		return false
+	}
+
+	// Both forms: Discord's older clients wrote a nickname mention as <@!id>,
+	// and messages carrying one are still in every channel's history.
+	return strings.Contains(m.Content, "<@"+self+">") ||
+		strings.Contains(m.Content, "<@!"+self+">")
+}
+
+// triggerAttemptTimeout bounds one whole trigger attempt: the TryTrigger call
+// plus, when something fires, the GetFile that pulls its bytes back. It is the
+// outer budget, so triggerFileTimeout has to fit inside it to mean anything.
+const triggerAttemptTimeout = 15 * time.Second
+
+// maxConcurrentTriggerAttempts caps how many trigger attempts are in flight at
+// once.
+//
+// A fired file trigger buffers the whole blob in memory, up to
+// storage.MaxFileBytes, and ADR-0022 records that this happens twice over during
+// unmarshalling with no backpressure anywhere. discordgo dispatches every
+// MessageCreate on its own goroutine, so without a cap the number of concurrent
+// buffers is set by nothing but inbound message rate — an out-of-memory kill
+// reachable by ordinary chat traffic in a busy guild.
+const maxConcurrentTriggerAttempts = 4
+
+// triggerAttemptSlots is that cap. Acquisition is non-blocking: dropping a
+// trigger under load is the right failure, because a queue of stale attempts
+// would post auto-responders to conversations that have already moved on.
+var triggerAttemptSlots = make(chan struct{}, maxConcurrentTriggerAttempts)
+
+// handleMessage routes a chat message: first through the command registry when
+// it carries a prefix, otherwise through trigger matching.
+//
+// The two are exclusive. A prefixed message is a command, and a command that
+// does not resolve is still not an invitation to fire an auto-responder.
 func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if !isHuman(s, m) {
 		return
 	}
 
-	name, raw, ok := command.ParseChat(m.Content, config.Options.Discord.CommandPrefixes.Prefixes)
-	if !ok {
+	name, raw, prefixed := command.ParseChat(m.Content, config.Options.Discord.CommandPrefixes.Prefixes)
+	if prefixed {
+		dispatchChatCommand(s, m, name, raw)
 		return
 	}
 
+	if !triggerCandidate(m.Content, config.Options.Discord.CommandPrefixes.Prefixes) {
+		return
+	}
+
+	// A mention is an explicit ask, so it bypasses the chance roll server-side.
+	forced := mentionsBot(s, m)
+
+	// No goroutine here on purpose. discordgo already dispatches every event
+	// handler on its own goroutine (Session.handle, unless SyncEvents is set,
+	// which nothing here sets), so this handler is not the gateway receive loop
+	// and cannot stall it. Spawning another goroutine would only make the
+	// attempt unobservable to the caller while bounding nothing — what actually
+	// needs bounding is memory and RPC lifetime, which is what
+	// triggerAttemptSlots and triggerAttemptTimeout do.
+	attemptTrigger(s, m, forced)
+}
+
+// dispatchChatCommand runs a prefixed chat message through the registry.
+func dispatchChatCommand(s *discordgo.Session, m *discordgo.MessageCreate, name string, raw []string) {
 	// ResolveChat rather than Lookup, so ??reminder add reaches the same handler
 	// as ??remindme. It returns the arguments left after the command name — which
 	// for a group is one token shorter than raw.
@@ -303,6 +443,75 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	respondChat(s, m, resp)
+}
+
+// attemptTrigger offers one message to the server's matching engine and posts
+// whatever fires.
+//
+// It shares commandContext with the command path so identity and origin travel
+// as metadata rather than as request fields, and it renders through respondChat
+// so truncation, mention suppression and attachment rendering are the same code
+// a command reply goes through.
+//
+// A non-match says NOTHING. Neither does a rate-limited forced fire, a direct
+// message with no instance, or a failed RPC: the alternative is a bot that
+// comments on ordinary conversation.
+func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced bool) {
+	select {
+	case triggerAttemptSlots <- struct{}{}:
+		defer func() { <-triggerAttemptSlots }()
+	default:
+		// Debug, not warn: under a burst this is the design working, and a log
+		// line per dropped message would be its own flood.
+		log.Z.Debug("dropped a trigger attempt; too many already in flight.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(messageContext(m), triggerAttemptTimeout)
+	defer cancel()
+
+	instance, err := currentTriggerInstance(ctx)
+	if err != nil {
+		// No instance means a direct message. Not worth a log line per message.
+		return
+	}
+
+	// The raw content, not a trimmed or lowered copy: the matching modes and the
+	// spoiler stripping are the server's to define (ADR-0019).
+	phrase := m.Content
+
+	// No user_id: the server reads the caller from metadata and rejects any
+	// other. No client-side forced-fire limiter either — trigger.ForcedLimiter
+	// already bounds it to once per author per interval, server-side, where it
+	// cannot be bypassed by a second client.
+	req := pb.TryTriggerReq_builder{
+		Instance: instance,
+		Phrase:   &phrase,
+		Forced:   &forced,
+	}.Build()
+
+	resp, err := client.TriggerServiceClient.TryTrigger(ctx, req)
+	if err != nil {
+		// No phrase in the log line: a stored phrase must not be echoed into
+		// logs, and neither must the message that was matched against it.
+		log.Z.Error("failed to call TryTrigger.", zap.Error(err))
+		return
+	}
+	if resp.GetId() == "" {
+		return
+	}
+
+	out, err := triggerPlaybackResponse(ctx, resp)
+	if err != nil {
+		log.Z.Error("failed to render a fired trigger.",
+			zap.String("trigger_id", resp.GetId()), zap.Error(err))
+		return
+	}
+	if out == nil {
+		return
+	}
+
+	respondChat(s, m, out)
 }
 
 // isHuman reports whether a message should be considered for dispatch. Ignoring

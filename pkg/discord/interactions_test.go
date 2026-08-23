@@ -469,3 +469,233 @@ func TestSlashAndChatBindEquivalently(t *testing.T) {
 		}
 	}
 }
+
+// TestMessageContentRequired pins when the privileged intent is asked for.
+//
+// Requesting MESSAGE_CONTENT when the application does not have it enabled makes
+// the gateway close with 4014, which surfaces as a fatal "cannot open the
+// session" — so it must not be requested for a bot that needs neither chat
+// commands nor triggers. NOT requesting it when either is wanted is the silent
+// failure: every MessageCreate arrives with an empty Content and nothing ever
+// matches, with no error anywhere.
+func TestMessageContentRequired(t *testing.T) {
+	tests := []struct {
+		name           string
+		prefixes       []string
+		messageContent bool
+		want           bool
+	}{
+		{name: "neither chat commands nor triggers", prefixes: nil, messageContent: false, want: false},
+		{name: "an empty prefix list is not a prefix", prefixes: []string{}, messageContent: false, want: false},
+		{name: "chat commands alone", prefixes: []string{"??"}, messageContent: false, want: true},
+		{name: "triggers alone", prefixes: nil, messageContent: true, want: true},
+		{name: "both", prefixes: []string{"??"}, messageContent: true, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := messageContentRequired(tt.prefixes, tt.messageContent); got != tt.want {
+				t.Errorf("messageContentRequired(%q, %v) = %v, want %v",
+					tt.prefixes, tt.messageContent, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTriggerCandidate is the acceptance criterion that a message which parses
+// as a command does NOT also attempt a trigger.
+//
+// A prefix is an explicit address to a bot, so it disqualifies the message
+// whether or not the command behind it resolves: "??nosuchthing" is a typo aimed
+// at a bot, not conversation, and matching a trigger on it would answer a typo
+// with an auto-responder. Blank content is disqualified because every message now
+// costs an RPC and there is nothing to match.
+func TestTriggerCandidate(t *testing.T) {
+	prefixes := []string{"?", "??"}
+
+	tests := []struct {
+		name     string
+		content  string
+		prefixes []string
+		want     bool
+	}{
+		{name: "ordinary conversation", content: "good morning everyone", prefixes: prefixes, want: true},
+		{name: "a resolvable command", content: "??ping", prefixes: prefixes, want: false},
+		{name: "a command that does not resolve", content: "??nosuchcommand", prefixes: prefixes, want: false},
+		{name: "the shorter prefix also disqualifies", content: "?ping", prefixes: prefixes, want: false},
+		{name: "a bare prefix", content: "??", prefixes: prefixes, want: false},
+		{name: "empty", content: "", prefixes: prefixes, want: false},
+		{name: "spaces only", content: "   ", prefixes: prefixes, want: false},
+		{name: "newlines and tabs only", content: "\n\t \n", prefixes: prefixes, want: false},
+		{
+			// With no prefixes configured chat commands are disabled entirely,
+			// so nothing is an address to this bot and a message that looks like
+			// one is still just conversation.
+			name:     "a prefix that is not configured is not a prefix",
+			content:  "??ping",
+			prefixes: nil,
+			want:     true,
+		},
+		{name: "conversation with no prefixes configured", content: "good morning", prefixes: nil, want: true},
+		{
+			// The prefix has to be at the start. A message merely containing one
+			// is conversation.
+			name:     "a prefix in the middle",
+			content:  "what does ??ping do",
+			prefixes: prefixes,
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := triggerCandidate(tt.content, tt.prefixes); got != tt.want {
+				t.Errorf("triggerCandidate(%q, %q) = %v, want %v", tt.content, tt.prefixes, got, tt.want)
+			}
+		})
+	}
+}
+
+// messageMentioning builds a message that mentions users the way Discord
+// delivers a DELIBERATE mention: the users appear in Mentions and their <@id>
+// tokens appear in the content.
+func messageMentioning(users ...*discordgo.User) *discordgo.MessageCreate {
+	m := messageFrom(&discordgo.User{ID: "someone"})
+	m.Mentions = users
+
+	content := "hello"
+	for _, user := range users {
+		if user != nil {
+			content += " <@" + user.ID + ">"
+		}
+	}
+	m.Content = content
+
+	return m
+}
+
+// messageReplyPinging builds a message that mentions users the way Discord
+// delivers a REPLY: the replied-to author is added to Mentions, but no mention
+// token appears in the text the author actually typed.
+func messageReplyPinging(users ...*discordgo.User) *discordgo.MessageCreate {
+	m := messageFrom(&discordgo.User{ID: "someone"})
+	m.Mentions = users
+	m.Content = "sure, thanks"
+
+	return m
+}
+
+// withContent overrides a message's text, for the cases where the token in the
+// content and the resolved Mentions list have to disagree.
+func withContent(m *discordgo.MessageCreate, content string) *discordgo.MessageCreate {
+	m.Content = content
+
+	return m
+}
+
+// TestMentionsBot covers the forced fire's trigger condition. It must be decided
+// against the bot's own user id rather than by string-matching a name: a nickname
+// is per-guild and renameable, and "gin" appears in ordinary conversation.
+//
+// It must also be decided against the message TEXT, not the Mentions list alone.
+// Discord adds the replied-to author to Mentions whenever mention_author is set,
+// which is the client default, so a list-only check would turn every reply to a
+// bot message into a forced fire — bypassing the chance roll on ordinary
+// conversation with the bot.
+//
+// The degenerate shapes are real. discordgo leaves State unpopulated until the
+// session is open, Mentions is nil on the overwhelming majority of messages, and
+// handlers are dispatched without a recover() — so a nil deref here takes the
+// whole process down on somebody's greeting.
+func TestMentionsBot(t *testing.T) {
+	tests := []struct {
+		name    string
+		session *discordgo.Session
+		message *discordgo.MessageCreate
+		want    bool
+	}{
+		{
+			name:    "the bot is mentioned",
+			session: sessionAs("self"),
+			message: messageMentioning(&discordgo.User{ID: "self"}),
+			want:    true,
+		},
+		{
+			name:    "somebody else is mentioned",
+			session: sessionAs("self"),
+			message: messageMentioning(&discordgo.User{ID: "someone-else"}),
+			want:    false,
+		},
+		{
+			name:    "the bot is mentioned alongside others",
+			session: sessionAs("self"),
+			message: messageMentioning(&discordgo.User{ID: "someone-else"}, &discordgo.User{ID: "self"}),
+			want:    true,
+		},
+		{
+			name:    "no mentions at all",
+			session: sessionAs("self"),
+			message: messageMentioning(),
+			want:    false,
+		},
+		{
+			// The whole reason the content is consulted.
+			name:    "a reply ping is not a deliberate mention",
+			session: sessionAs("self"),
+			message: messageReplyPinging(&discordgo.User{ID: "self"}),
+			want:    false,
+		},
+		{
+			name:    "a nickname mention token counts",
+			session: sessionAs("self"),
+			message: withContent(messageReplyPinging(&discordgo.User{ID: "self"}), "oi <@!self> speak"),
+			want:    true,
+		},
+		{
+			// Mentions is what Discord resolved; the token alone must not be
+			// enough, or a member could forge one for an id the bot never had.
+			name:    "a bare token with nothing resolved does not count",
+			session: sessionAs("self"),
+			message: withContent(messageReplyPinging(), "<@self>"),
+			want:    false,
+		},
+		{
+			name:    "a nil entry in the mention list does not panic",
+			session: sessionAs("self"),
+			message: messageMentioning(nil, &discordgo.User{ID: "self"}),
+			want:    true,
+		},
+		{
+			name:    "another user's mention token does not count",
+			session: sessionAs("self"),
+			message: messageMentioning(&discordgo.User{ID: "self-other"}),
+			want:    false,
+		},
+		{
+			name:    "only a nil entry",
+			session: sessionAs("self"),
+			message: messageMentioning(nil),
+			want:    false,
+		},
+		{
+			name:    "an unpopulated state does not panic",
+			session: &discordgo.Session{},
+			message: messageMentioning(&discordgo.User{ID: "self"}),
+			want:    false,
+		},
+		{
+			name:    "a state with no user does not panic",
+			session: &discordgo.Session{State: &discordgo.State{}},
+			message: messageMentioning(&discordgo.User{ID: "self"}),
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mentionsBot(tt.session, tt.message); got != tt.want {
+				t.Errorf("mentionsBot() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

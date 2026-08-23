@@ -38,19 +38,25 @@ func InitializeDiscord(ctx context.Context) {
 
 	discordSession.AddHandler(handleInteraction)
 
-	// Chat commands are opt-in, because they cost a privileged intent.
+	// Reading messages at all is opt-in, because it costs a privileged intent.
 	//
 	// MESSAGE_CONTENT is not in discordgo's default set, so without it every
 	// MessageCreate arrives with an empty Content and nothing can ever match.
 	// Requesting it when it is not enabled for the application in the Discord
 	// developer portal makes the gateway close with 4014, which surfaces here
 	// as a fatal "cannot open the session" — so requesting it unconditionally
-	// would stop the bot booting for anyone who does not use chat commands.
-	if len(config.Options.Discord.CommandPrefixes.Prefixes) > 0 {
+	// would stop the bot booting for anyone who does not use the message path.
+	//
+	// TWO capabilities ride on it, and either is enough: chat commands need the
+	// content to find their prefix, and trigger matching needs it to match a
+	// phrase. So the decision is not "are chat prefixes configured" — a
+	// deployment that only wants triggers sets DISCORD_MESSAGE_CONTENT instead.
+	if messageContentRequired(config.Options.Discord.CommandPrefixes.Prefixes, config.Options.Discord.MessageContent) {
 		discordSession.Identify.Intents |= discordgo.IntentMessageContent
 		discordSession.AddHandler(handleMessage)
 	} else {
-		log.Z.Warn("no command prefixes configured, chat commands are disabled.")
+		log.Z.Warn("MESSAGE_CONTENT intent not requested, so chat commands and trigger matching are both disabled. " +
+			"Set DISCORD_COMMAND_PREFIXES or DISCORD_MESSAGE_CONTENT=true, and enable the intent in the Discord developer portal.")
 	}
 
 	if err = discordSession.Open(); err != nil {
