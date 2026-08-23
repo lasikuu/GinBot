@@ -44,9 +44,9 @@ func liveReminderHarness(t *testing.T) (*harness, *pgxpool.Pool) {
 }
 
 // withOriginResolver injects a real interceptor.OriginResolver (e.g.
-// db.GetOrCreateDestinationByMeta). The shared harness only exposes
-// withOriginLog for the in-memory fake; this option is the integration
-// equivalent and sets resolveOrigin directly on the harness config.
+// db.GetOrCreateDestinationByMeta). The shared harness defaults to the
+// in-memory originLog fake, which writes no rows; this option is the
+// integration equivalent and sets resolveOrigin directly on the harness config.
 func withOriginResolver(resolve interceptor.OriginResolver) harnessOption {
 	return func(cfg *harnessConfig) { cfg.resolveOrigin = resolve }
 }
@@ -225,6 +225,7 @@ func TestUpdateReminderRefusesAnotherUsersRow(t *testing.T) {
 	ownerUID := uniqueUID("rem-owner")
 	ownerID := registerUser(t, h, pool, ownerUID)
 	setClearance(t, pool, ownerID, pb.Clearance_CLEARANCE_REGISTERED)
+	cleanupActionRecords(t, pool, ownerID)
 
 	attackerUID := uniqueUID("rem-attacker")
 	attackerID := registerUser(t, h, pool, attackerUID)
@@ -260,6 +261,7 @@ func TestDeleteReminderRefusesAnotherUsersRow(t *testing.T) {
 	ownerUID := uniqueUID("del-owner")
 	ownerID := registerUser(t, h, pool, ownerUID)
 	setClearance(t, pool, ownerID, pb.Clearance_CLEARANCE_REGISTERED)
+	cleanupActionRecords(t, pool, ownerID)
 
 	attackerUID := uniqueUID("del-attacker")
 	attackerID := registerUser(t, h, pool, attackerUID)
@@ -297,6 +299,8 @@ func TestListRemindersScopesToCaller(t *testing.T) {
 	otherUID := uniqueUID("list-other")
 	otherID := registerUser(t, h, pool, otherUID)
 	setClearance(t, pool, otherID, pb.Clearance_CLEARANCE_REGISTERED)
+	cleanupActionRecords(t, pool, ownerID)
+	cleanupActionRecords(t, pool, otherID)
 
 	mine := createReminderVia(t, h, pool, ownerUID, uniqueUID("mine"), "")
 	theirs := createReminderVia(t, h, pool, otherUID, uniqueUID("theirs"), "")
@@ -331,6 +335,7 @@ func TestCreateReminderRefusedAtPerUserCap(t *testing.T) {
 	ownerUID := uniqueUID("cap-owner")
 	ownerID := registerUser(t, h, pool, ownerUID)
 	setClearance(t, pool, ownerID, pb.Clearance_CLEARANCE_REGISTERED)
+	cleanupActionRecords(t, pool, ownerID)
 
 	// First real create yields a destination we can reuse for the bulk seed.
 	firstID := createReminderVia(t, h, pool, ownerUID, uniqueUID("cap-seed"), "")
@@ -635,7 +640,8 @@ func TestConfirmDeliveryRefusesAnotherUsersRow(t *testing.T) {
 func TestConfirmDeliveryForAnUnknownIdIsNotFound(t *testing.T) {
 	h, pool := liveReminderHarness(t)
 
-	callerUID, _ := registeredCaller(t, h, pool, "cd-ghost")
+	callerUID, cdghostID := registeredCaller(t, h, pool, "cd-ghost")
+	cleanupActionRecords(t, pool, cdghostID)
 
 	unknown := uuidV7(t)
 	delivered := true
@@ -655,7 +661,8 @@ func TestConfirmDeliveryForAnUnknownIdIsNotFound(t *testing.T) {
 func TestUpdateReminderKeepsAnUnsuppliedRepeat(t *testing.T) {
 	h, pool := liveReminderHarness(t)
 
-	ownerUID, _ := registeredCaller(t, h, pool, "keep-repeat")
+	ownerUID, keeprepeatID := registeredCaller(t, h, pool, "keep-repeat")
+	cleanupActionRecords(t, pool, keeprepeatID)
 
 	const schedule = "0 9 * * *"
 	id := createReminderVia(t, h, pool, ownerUID, uniqueUID("keep"), schedule)
@@ -699,7 +706,8 @@ func TestUpdateReminderKeepsAnUnsuppliedRepeat(t *testing.T) {
 func TestUpdateReminderClearsTheRepeatWithTheEmptySentinel(t *testing.T) {
 	h, pool := liveReminderHarness(t)
 
-	ownerUID, _ := registeredCaller(t, h, pool, "clear-repeat")
+	ownerUID, clearrepeatID := registeredCaller(t, h, pool, "clear-repeat")
+	cleanupActionRecords(t, pool, clearrepeatID)
 
 	id := createReminderVia(t, h, pool, ownerUID, uniqueUID("clear"), "0 9 * * *")
 
@@ -741,7 +749,8 @@ func TestUpdateReminderClearsTheRepeatWithTheEmptySentinel(t *testing.T) {
 func TestUpdateReminderRejectsATooFrequentRepeat(t *testing.T) {
 	h, pool := liveReminderHarness(t)
 
-	ownerUID, _ := registeredCaller(t, h, pool, "floor")
+	ownerUID, floorID := registeredCaller(t, h, pool, "floor")
+	cleanupActionRecords(t, pool, floorID)
 
 	id := createReminderVia(t, h, pool, ownerUID, uniqueUID("floor"), "0 9 * * *")
 
@@ -769,7 +778,8 @@ func TestUpdateReminderRejectsATooFrequentRepeat(t *testing.T) {
 func TestListRemindersCarriesDestinations(t *testing.T) {
 	h, pool := liveReminderHarness(t)
 
-	ownerUID, _ := registeredCaller(t, h, pool, "list-dest")
+	ownerUID, listdestID := registeredCaller(t, h, pool, "list-dest")
+	cleanupActionRecords(t, pool, listdestID)
 
 	suffix := uniqueUID("ld")
 	id := createReminderVia(t, h, pool, ownerUID, suffix, "")
