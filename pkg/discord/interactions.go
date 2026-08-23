@@ -142,18 +142,16 @@ func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	case discordgo.InteractionApplicationCommand:
 		data := i.ApplicationCommandData()
 
-		cmd, ok := commandRegistry.Lookup(data.Name)
+		cmd, options, ok := resolveApplicationCommand(data)
 		if !ok {
-			// Unreachable while the Discord definitions are generated from the
-			// registry, but a stale command left over at Discord's end would land
-			// here. It must still be answered: an unanswered interaction shows
-			// the user "the application did not respond".
-			log.Z.Warn("unknown application command.", zap.String("command", data.Name))
+			// resolveApplicationCommand has already logged why. It must still be
+			// answered: an unanswered interaction shows the user "the application
+			// did not respond".
 			respondStale(s, i)
 			return
 		}
 
-		inv, err := invocationFromOptions(cmd, data.Options)
+		inv, err := invocationFromOptions(cmd, options)
 		if err != nil {
 			respondError(s, i, err)
 			return
@@ -189,6 +187,69 @@ func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 }
 
+// resolveApplicationCommand resolves a slash invocation to the registered
+// command and the options that carry ITS arguments.
+//
+// Discord flattens nothing: for /reminder add, data.Name is the GROUP and
+// data.Options[0] is a SubCommand-typed option named after the member, whose own
+// .Options are the arguments. So a grouped invocation lives one level deeper
+// than a top-level one, and reading data.Options directly would bind the
+// subcommand itself as an argument.
+//
+// ok is false for anything unroutable, always with a log line saying which
+// shape it was — the caller answers the interaction rather than returning
+// silently.
+func resolveApplicationCommand(data discordgo.ApplicationCommandInteractionData) (command.Command, []*discordgo.ApplicationCommandInteractionDataOption, bool) {
+	if cmd, found := commandRegistry.Lookup(data.Name); found {
+		return cmd, data.Options, true
+	}
+
+	if !isCommandGroup(data.Name) {
+		// Unreachable while the Discord definitions are generated from the
+		// registry, but a stale command left over at Discord's end lands here.
+		log.Z.Warn("unknown application command.", zap.String("command", data.Name))
+		return command.Command{}, nil, false
+	}
+
+	if len(data.Options) == 0 {
+		log.Z.Warn("group command carried no subcommand.", zap.String("command", data.Name))
+		return command.Command{}, nil, false
+	}
+
+	sub := data.Options[0]
+	if sub.Type != discordgo.ApplicationCommandOptionSubCommand {
+		log.Z.Warn("group command did not begin with a subcommand.",
+			zap.String("command", data.Name),
+			zap.String("option", sub.Name),
+			zap.Stringer("option_type", sub.Type))
+		return command.Command{}, nil, false
+	}
+
+	// ResolveChat resolves group + sub, which is exactly this lookup; the chat
+	// path and the slash path must not disagree about which handler /reminder add
+	// reaches.
+	cmd, _, found := commandRegistry.ResolveChat(data.Name, []string{sub.Name})
+	if !found {
+		log.Z.Warn("unknown subcommand.",
+			zap.String("command", data.Name), zap.String("subcommand", sub.Name))
+		return command.Command{}, nil, false
+	}
+
+	return cmd, sub.Options, true
+}
+
+// isCommandGroup reports whether a name is a registered group rather than a
+// command. Group names fold like every other name in the registry.
+func isCommandGroup(name string) bool {
+	for _, group := range commandRegistry.Groups() {
+		if strings.EqualFold(group, name) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // runInteraction executes a command and renders its response to an interaction.
 func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd command.Command, inv *command.Invocation) {
 	ctx, err := interactionContext(i)
@@ -218,14 +279,17 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	cmd, found := commandRegistry.Lookup(name)
+	// ResolveChat rather than Lookup, so ??reminder add reaches the same handler
+	// as ??remindme. It returns the arguments left after the command name — which
+	// for a group is one token shorter than raw.
+	cmd, args, found := commandRegistry.ResolveChat(name, raw)
 	if !found {
 		// Silent: a prefix is also used by other bots, and answering every typo
 		// would make the bot noisy.
 		return
 	}
 
-	inv, err := command.Bind(cmd, raw)
+	inv, err := command.Bind(cmd, args)
 	if err != nil {
 		respondChatError(s, m, err)
 		return

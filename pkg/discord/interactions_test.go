@@ -1,6 +1,8 @@
 package discord
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -257,6 +259,189 @@ func TestInvocationFromOptions(t *testing.T) {
 			}
 			if got := inv.Int("upper"); got != tt.wantUpper {
 				t.Errorf("upper = %d, want %d", got, tt.wantUpper)
+			}
+		})
+	}
+}
+
+// subCommandInteraction builds the interaction data Discord actually delivers
+// for /group sub: data.Name is the GROUP, and the single option is the
+// subcommand, whose own options carry the arguments.
+func subCommandInteraction(group, sub string, args ...*discordgo.ApplicationCommandInteractionDataOption) discordgo.ApplicationCommandInteractionData {
+	return discordgo.ApplicationCommandInteractionData{
+		Name: group,
+		Options: []*discordgo.ApplicationCommandInteractionDataOption{
+			{
+				Name:    sub,
+				Type:    discordgo.ApplicationCommandOptionSubCommand,
+				Options: args,
+			},
+		},
+	}
+}
+
+// TestResolveApplicationCommandDescendsIntoSubcommands: reading data.Options
+// directly for a group would bind the SUBCOMMAND as the first argument and lose
+// every real one, so the descent is what makes /reminder add work at all.
+func TestResolveApplicationCommandDescendsIntoSubcommands(t *testing.T) {
+	commandRegistry = newTestRegistry(t)
+
+	when := &discordgo.ApplicationCommandInteractionDataOption{
+		Name:  "when",
+		Type:  discordgo.ApplicationCommandOptionString,
+		Value: "in 2 hours",
+	}
+	message := &discordgo.ApplicationCommandInteractionDataOption{
+		Name:  "message",
+		Type:  discordgo.ApplicationCommandOptionString,
+		Value: "tea",
+	}
+
+	tests := []struct {
+		name        string
+		data        discordgo.ApplicationCommandInteractionData
+		wantCommand string
+		wantOptions []string
+	}{
+		{
+			name:        "grouped subcommand with arguments",
+			data:        subCommandInteraction(reminderGroup, reminderSubAdd, when, message),
+			wantCommand: "remind",
+			wantOptions: []string{"when", "message"},
+		},
+		{
+			name:        "grouped subcommand with no arguments",
+			data:        subCommandInteraction(reminderGroup, reminderSubList),
+			wantCommand: "reminders",
+		},
+		{
+			// Discord lowercases what it sends, but resolution folds anyway and
+			// asserting it here keeps the slash path aligned with the chat one.
+			name:        "subcommand name in a different case",
+			data:        subCommandInteraction(reminderGroup, strings.ToUpper(reminderSubAdd), when, message),
+			wantCommand: "remind",
+			wantOptions: []string{"when", "message"},
+		},
+		{
+			// A top-level command is unchanged: its own options are the
+			// arguments, with no level to descend.
+			name: "ungrouped command keeps its own options",
+			data: discordgo.ApplicationCommandInteractionData{
+				Name: "number",
+				Options: []*discordgo.ApplicationCommandInteractionDataOption{
+					{Name: "lower", Type: discordgo.ApplicationCommandOptionInteger, Value: float64(3)},
+				},
+			},
+			wantCommand: "number",
+			wantOptions: []string{"lower"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, options, ok := resolveApplicationCommand(tt.data)
+			if !ok {
+				t.Fatalf("resolveApplicationCommand(%+v) did not resolve", tt.data)
+			}
+			if cmd.Name != tt.wantCommand {
+				t.Errorf("resolved to %q, want %q", cmd.Name, tt.wantCommand)
+			}
+
+			got := make([]string, 0, len(options))
+			for _, option := range options {
+				got = append(got, option.Name)
+			}
+			if !slices.Equal(got, tt.wantOptions) {
+				t.Errorf("options = %q, want %q", got, tt.wantOptions)
+			}
+
+			// The returned options must bind against the resolved command, which
+			// is the whole point of returning them together.
+			if _, err := invocationFromOptions(cmd, options); err != nil {
+				t.Errorf("invocationFromOptions: %v", err)
+			}
+		})
+	}
+}
+
+// TestResolveApplicationCommandRefusesDegenerateShapes: every one of these must
+// report a miss so the caller answers the interaction. Returning silently is what
+// shows the user "the application did not respond", with nothing in the log to
+// explain it.
+func TestResolveApplicationCommandRefusesDegenerateShapes(t *testing.T) {
+	commandRegistry = newTestRegistry(t)
+
+	tests := []struct {
+		name string
+		data discordgo.ApplicationCommandInteractionData
+	}{
+		{
+			name: "unknown command",
+			data: discordgo.ApplicationCommandInteractionData{Name: "nosuchcommand"},
+		},
+		{
+			// A group is not invocable on its own; Discord should never send
+			// this, but a stale registration could.
+			name: "group with no options",
+			data: discordgo.ApplicationCommandInteractionData{Name: reminderGroup},
+		},
+		{
+			name: "group whose first option is not a subcommand",
+			data: discordgo.ApplicationCommandInteractionData{
+				Name: reminderGroup,
+				Options: []*discordgo.ApplicationCommandInteractionDataOption{
+					{Name: "when", Type: discordgo.ApplicationCommandOptionString, Value: "in 2h"},
+				},
+			},
+		},
+		{
+			name: "group with an unknown subcommand",
+			data: subCommandInteraction(reminderGroup, "nosuchsub"),
+		},
+		{
+			// The member's flat name is not its sub, so it must not resolve as
+			// one from the slash path either.
+			name: "group followed by a member's flat name",
+			data: subCommandInteraction(reminderGroup, "remind"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, options, ok := resolveApplicationCommand(tt.data)
+			if ok {
+				t.Fatalf("resolveApplicationCommand(%+v) resolved to %q, want a miss", tt.data, cmd.Name)
+			}
+			if cmd.Name != "" {
+				t.Errorf("Name = %q, want the zero Command on a miss", cmd.Name)
+			}
+			if len(options) != 0 {
+				t.Errorf("options = %v, want none on a miss", options)
+			}
+		})
+	}
+}
+
+func TestIsCommandGroup(t *testing.T) {
+	commandRegistry = newTestRegistry(t)
+
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{name: reminderGroup, want: true},
+		{name: strings.ToUpper(reminderGroup), want: true},
+		// A member's flat name is a command, not a group.
+		{name: "remind", want: false},
+		{name: "ping", want: false},
+		{name: "", want: false},
+		{name: "nosuchgroup", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCommandGroup(tt.name); got != tt.want {
+				t.Errorf("isCommandGroup(%q) = %v, want %v", tt.name, got, tt.want)
 			}
 		})
 	}
