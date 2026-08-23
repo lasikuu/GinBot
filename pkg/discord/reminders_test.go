@@ -54,44 +54,140 @@ func TestFormatReminderInfoRendersEveryRequiredField(t *testing.T) {
 	}
 }
 
-// TestFormatReminderInfoRendersTimestampsInTheReminderZone: every instant goes
-// through the same zone-aware helper as the list view, so a reminder reads
-// consistently in its own timezone rather than mixing UTC and local.
+// TestFormatReminderInfoRendersTimestampsAsDiscordTags replaces the assertion
+// that every instant was rendered in the reminder's own stored timezone.
 //
-// Europe/Helsinki is UTC+3 in August, so 15:00 UTC is 18:00 EEST.
-func TestFormatReminderInfoRendersTimestampsInTheReminderZone(t *testing.T) {
+// This is a deliberate behaviour change: a Discord timestamp tag is rendered by
+// the viewer's client, so a reminder now reads on the clock of whoever is looking
+// at it rather than on the clock it was created against. The reminder's fire time
+// is absolute plus relative; created and updated are relative alone, because an
+// audit line wants "10 minutes ago", not a stamp to subtract from now.
+func TestFormatReminderInfoRendersTimestampsAsDiscordTags(t *testing.T) {
 	r := reminderFor("chan-42")
 	got := formatReminderInfo(r)
 
-	// Computed independently, not copied from the implementation.
+	tests := []struct {
+		label string
+		want  string
+	}{
+		{label: "when", want: timestampWithRelative(r.GetDatetime().AsTime())},
+		{label: "created", want: timestampTag(r.GetCreatedAt().AsTime(), timestampRelative)},
+		{label: "updated", want: timestampTag(r.GetUpdatedAt().AsTime(), timestampRelative)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.label, func(t *testing.T) {
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("%s not rendered as the Discord tag %q:\n%s", tt.label, tt.want, got)
+			}
+		})
+	}
+}
+
+// TestFormatReminderInfoNoLongerRendersAWallClock is the other half of the
+// change above. The three instants used to be formatted here in the reminder's
+// stored zone; nothing may print one any more, or a viewer would see two
+// disagreeing times on the same line.
+//
+// Europe/Helsinki is UTC+3 in August, so the reminder's own zone renders
+// 15:00 UTC as 18:00 EEST — a string that must NOT appear.
+func TestFormatReminderInfoNoLongerRendersAWallClock(t *testing.T) {
+	r := reminderFor("chan-42")
+	got := formatReminderInfo(r)
+
 	loc, err := time.LoadLocation("Europe/Helsinki")
 	if err != nil {
 		t.Fatalf("load Europe/Helsinki: %v", err)
 	}
 	const layout = "2006-01-02 15:04 MST"
 
+	// Guard the premise: if this stopped being an offset zone the assertion
+	// below would be trivially satisfiable.
+	if stamp := r.GetDatetime().AsTime().In(loc).Format(layout); !strings.Contains(stamp, "EEST") {
+		t.Fatalf("test premise drifted: August in Helsinki rendered as %q, expected EEST", stamp)
+	}
+
+	for _, instant := range []time.Time{
+		r.GetDatetime().AsTime(),
+		r.GetCreatedAt().AsTime(),
+		r.GetUpdatedAt().AsTime(),
+	} {
+		for _, zone := range []*time.Location{loc, time.UTC} {
+			if stamp := instant.In(zone).Format(layout); strings.Contains(got, stamp) {
+				t.Errorf("a hard-coded wall clock %q is still rendered:\n%s", stamp, got)
+			}
+		}
+	}
+}
+
+// TestRenderReminderTimeIsAbsoluteAndRelative: the fire time answers both "when
+// exactly" and "how soon", which is the idiomatic Discord pairing for a
+// scheduled moment. The list view and the detail view share the helper, so they
+// cannot drift apart.
+func TestRenderReminderTimeIsAbsoluteAndRelative(t *testing.T) {
+	r := reminderFor("chan-42")
+	fireAt := r.GetDatetime().AsTime()
+
+	got := renderReminderTime(r)
+
+	for _, want := range []string{
+		timestampTag(fireAt, timestampLongDateTime),
+		timestampTag(fireAt, timestampRelative),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("renderReminderTime() = %q, missing %q", got, want)
+		}
+	}
+
+	// The list line embeds the same rendering, so a reminder reads identically
+	// in both views.
+	if line := renderReminderLine(r); !strings.Contains(line, got) {
+		t.Errorf("renderReminderLine() = %q, does not carry %q", line, got)
+	}
+}
+
+// TestRenderReminderStampAbsence: a created/updated instant the server did not
+// send must read as absent rather than as the Unix epoch, which <t:0:R> would
+// show as "56 years ago".
+func TestRenderReminderStampAbsence(t *testing.T) {
+	instant := time.Date(2026, 8, 1, 6, 0, 0, 0, time.UTC)
+
+	if got := renderReminderStamp(false, instant); got != "—" {
+		t.Errorf("renderReminderStamp(absent) = %q, want an em dash", got)
+	}
+	if got, want := renderReminderStamp(true, instant), timestampTag(instant, timestampRelative); got != want {
+		t.Errorf("renderReminderStamp(present) = %q, want %q", got, want)
+	}
+}
+
+// TestReminderCommandsAreGroupedUnderReminder pins the Group/Sub assignment. The
+// Discord parent and every subcommand name are derived from these two fields, and
+// the flat Name must be untouched so every legacy invocation keeps working.
+func TestReminderCommandsAreGroupedUnderReminder(t *testing.T) {
 	tests := []struct {
-		label   string
-		instant time.Time
+		wantName string
+		wantSub  string
+		cmd      command.Command
 	}{
-		{label: "when", instant: r.GetDatetime().AsTime()},
-		{label: "created", instant: r.GetCreatedAt().AsTime()},
-		{label: "updated", instant: r.GetUpdatedAt().AsTime()},
+		{wantName: "remind", wantSub: reminderSubAdd, cmd: remindCommand()},
+		{wantName: "reminders", wantSub: reminderSubList, cmd: remindersCommand()},
+		{wantName: "reminderdel", wantSub: reminderSubDel, cmd: reminderDelCommand()},
+		{wantName: "remindermod", wantSub: reminderSubMod, cmd: reminderModCommand()},
+		{wantName: "reminderinfo", wantSub: reminderSubInfo, cmd: reminderInfoCommand()},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.label, func(t *testing.T) {
-			want := tt.instant.In(loc).Format(layout)
-			if !strings.Contains(got, want) {
-				t.Errorf("%s not rendered as %q in the reminder's zone:\n%s", tt.label, want, got)
+		t.Run(tt.wantName, func(t *testing.T) {
+			if tt.cmd.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", tt.cmd.Name, tt.wantName)
+			}
+			if tt.cmd.Group != reminderGroup {
+				t.Errorf("Group = %q, want %q", tt.cmd.Group, reminderGroup)
+			}
+			if tt.cmd.Sub != tt.wantSub {
+				t.Errorf("Sub = %q, want %q", tt.cmd.Sub, tt.wantSub)
 			}
 		})
-	}
-
-	// Guard the premise: if this stopped being an offset zone the test would
-	// pass vacuously against a UTC render.
-	if want := r.GetDatetime().AsTime().In(loc).Format(layout); !strings.Contains(want, "EEST") {
-		t.Fatalf("test premise drifted: August in Helsinki rendered as %q, expected EEST", want)
 	}
 }
 

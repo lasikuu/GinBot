@@ -75,10 +75,18 @@ func NewDeliveryPayload(reminderID, message, destinationUID, ownerPlatformUID st
 // year-first date, 24-hour time and the zone abbreviation.
 const renderLayout = "2006-01-02 15:04 MST"
 
-// RenderInZone renders a stored UTC instant in a reminder's IANA timezone.
+// RenderInZone renders a stored UTC instant in a reminder's IANA timezone,
+// falling back to UTC when the zone is empty or unknown.
 //
-// It is the AC2/AC3 helper: list and info views show a reminder's time in its
-// own zone (AC2), falling back to UTC when the zone is empty or unknown (AC3).
+// It is the fallback for platforms with no native timestamp format of their own.
+// The Discord client no longer calls it: Discord has <t:UNIX:STYLE>, which each
+// viewer's client renders in their own zone, so rendering server-side there
+// would print one zone to an audience that does not share it. Matrix and
+// anything else without such a tag still need a formatted string, and the
+// reminder's stored timezone is what they must format in — which is why this
+// stays here rather than moving into pkg/discord. A wire format for one platform
+// does not belong in this package either way.
+//
 // It never errors — an unresolvable zone yields the UTC render rather than a
 // failure, so a display path can always produce a string.
 func RenderInZone(instant time.Time, timezone string) string {

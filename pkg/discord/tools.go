@@ -37,9 +37,6 @@ const unsetValue = "not set"
 // Reporting a default beats reporting nothing, and beats failing.
 const defaultTimezone = "UTC"
 
-// hoursPerDay is used to render an account age in whole days.
-const hoursPerDay = 24
-
 func pingCommand() command.Command {
 	return command.Command{
 		Name:        "ping",
@@ -192,6 +189,11 @@ func describeCommand(cmd command.Command) string {
 
 	fmt.Fprintf(&b, "**%s** — %s\n", cmd.Name, cmd.Description)
 	fmt.Fprintf(&b, "Usage: `%s`\n", usageLine(cmd))
+	// A grouped command is reachable both ways, and the slash surface exposes
+	// ONLY the grouped form, so listing just the flat one would hide it.
+	if grouped := groupedUsageLine(cmd); grouped != "" {
+		fmt.Fprintf(&b, "Also: `%s` (slash: `/%s %s`)\n", grouped, cmd.Group, cmd.Sub)
+	}
 
 	if len(cmd.Args) > 0 {
 		b.WriteString("\n**Arguments**\n")
@@ -220,8 +222,27 @@ func describeCommand(cmd command.Command) string {
 // usageLine renders the argument shape: angle brackets for required, square
 // for optional, which is the convention every CLI help uses.
 func usageLine(cmd command.Command) string {
+	return usageLineFor(cmd, cmd.Name)
+}
+
+// groupedUsageLine renders the grouped form, "reminder add <when> …", for a
+// command that has one. Help would otherwise advertise only the flat name while
+// the slash surface exposes only the grouped one, so half of what the bot
+// accepts would be undiscoverable from help.
+func groupedUsageLine(cmd command.Command) string {
+	if cmd.Group == "" {
+		return ""
+	}
+
+	return usageLineFor(cmd, cmd.Group+" "+cmd.Sub)
+}
+
+// usageLineFor renders the argument shape after a given invocation prefix:
+// angle brackets for required, square for optional, which is the convention
+// every CLI help uses.
+func usageLineFor(cmd command.Command, prefix string) string {
 	parts := make([]string, 0, 1+len(cmd.Args))
-	parts = append(parts, cmd.Name)
+	parts = append(parts, prefix)
 
 	for _, arg := range cmd.Args {
 		if arg.Required {
@@ -313,8 +334,17 @@ func userInfo(ctx context.Context, _ *command.Invocation) (*command.Response, er
 		return nil, err
 	}
 
-	user := resp.GetUser()
+	return &command.Response{Content: formatUserInfo(resp.GetUser()), Ephemeral: true}, nil
+}
 
+// formatUserInfo renders the /userinfo view. Pure so it can be unit-tested
+// without a gRPC client.
+//
+// The account line used to be a whole-day age computed here. It is now a
+// relative Discord timestamp tag on the creation instant, which is strictly more
+// informative — the client renders "3 months ago" and hovering shows the exact
+// date, in the viewer's own zone and locale, neither of which this process knows.
+func formatUserInfo(user *pb.User) string {
 	timezone := user.GetTimezone()
 	if timezone == "" {
 		timezone = defaultTimezone + " (default)"
@@ -325,27 +355,21 @@ func userInfo(ctx context.Context, _ *command.Invocation) (*command.Response, er
 		locale = unsetValue
 	}
 
-	content := fmt.Sprintf(
-		"**%s**\nClearance: %s\nLocale: %s\nTimezone: %s\nAccount age: %s",
+	// A missing created_at would otherwise render as <t:0:R>, i.e. "56 years
+	// ago", which reads as data rather than as absence.
+	created := unsetValue
+	if user.HasCreatedAt() {
+		created = timestampTag(user.GetCreatedAt().AsTime(), timestampRelative)
+	}
+
+	return fmt.Sprintf(
+		"**%s**\nClearance: %s\nLocale: %s\nTimezone: %s\nAccount created: %s",
 		user.GetUsername(),
 		clearanceName(user.GetClearance()),
 		locale,
 		timezone,
-		accountAge(user.GetCreatedAt().AsTime()),
+		created,
 	)
-
-	return &command.Response{Content: content, Ephemeral: true}, nil
-}
-
-// accountAge renders whole days, which is the resolution anyone cares about for
-// an account.
-func accountAge(createdAt time.Time) string {
-	days := int(time.Since(createdAt).Hours() / hoursPerDay)
-	if days == 1 {
-		return "1 day"
-	}
-
-	return fmt.Sprintf("%d days", days)
 }
 
 func localeCommand() command.Command {

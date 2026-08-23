@@ -18,6 +18,25 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// reminderGroup nests the five reminder commands under one Discord parent, so
+// they appear as /reminder add, /reminder list and so on instead of five
+// unrelated top-level commands.
+//
+// The flat Name of each member is unchanged, so ??remindme and ??reminderdel
+// keep working; ??reminder add reaches the same handler via
+// Registry.ResolveChat.
+const reminderGroup = "reminder"
+
+// Sub names within reminderGroup. They are short because Discord shows them as
+// the second word of /reminder <sub>, where the group already says "reminder".
+const (
+	reminderSubAdd  = "add"
+	reminderSubList = "list"
+	reminderSubDel  = "del"
+	reminderSubMod  = "mod"
+	reminderSubInfo = "info"
+)
+
 // reminderListLimit caps how many reminders the list command renders, so a user
 // with many reminders gets a readable reply rather than one truncated mid-line.
 // The server lists soonest-first, so this shows the reminders about to fire.
@@ -41,8 +60,13 @@ func remindCommand() command.Command {
 		Name: "remind",
 		// remindme was the old bot's name for this, so it is the one people have
 		// in muscle memory. reminderadd matches the reminderdel/mod/info family.
-		Aliases:     []string{"remindme", "reminderadd"},
-		Description: "Set a reminder, e.g. remind \"in 2 hours\" \"stretch\"",
+		Aliases: []string{"remindme", "reminderadd"},
+		// No command name in the example: this text is shown both as the flat
+		// command's description and as the /reminder add subcommand's, so naming
+		// either form would read wrong in the other.
+		Description: "Set a reminder, e.g. \"in 2 hours\" \"stretch\"",
+		Group:       reminderGroup,
+		Sub:         reminderSubAdd,
 		Args: []command.Arg{
 			{
 				// The time phrase is a single argument. In chat it must therefore
@@ -109,7 +133,7 @@ func remind(ctx context.Context, inv *command.Invocation) (*command.Response, er
 		return nil, err
 	}
 
-	content := fmt.Sprintf("Reminder set for %s.", renderTime(fireAt, loc))
+	content := fmt.Sprintf("Reminder set for %s.", timestampWithRelative(fireAt))
 	if b.RepeatCron != nil {
 		content += fmt.Sprintf(" Repeats: `%s`.", *b.RepeatCron)
 	}
@@ -121,6 +145,8 @@ func remindersCommand() command.Command {
 	return command.Command{
 		Name:        "reminders",
 		Description: "List your reminders",
+		Group:       reminderGroup,
+		Sub:         reminderSubList,
 		Clearance:   pb.Clearance_CLEARANCE_REGISTERED,
 		Handler:     listReminders,
 	}
@@ -159,6 +185,8 @@ func reminderInfoCommand() command.Command {
 		// reminderdetails was the old bot's name for this.
 		Aliases:     []string{"reminderdetails"},
 		Description: "Show one of your reminders",
+		Group:       reminderGroup,
+		Sub:         reminderSubInfo,
 		Args: []command.Arg{
 			{
 				Name:        "id",
@@ -192,9 +220,8 @@ func reminderInfo(ctx context.Context, inv *command.Invocation) (*command.Respon
 // message, repeat, created, updated and destination.
 //
 // It is a pure function of the protobuf so it can be unit-tested without a
-// Discord session or a gRPC client. Every timestamp goes through the same
-// zone-aware helper as the list view, so a reminder is shown in its own timezone
-// throughout and one place decides the UTC fallback.
+// Discord session or a gRPC client. Every timestamp is a Discord timestamp tag,
+// so the whole view reads on the viewer's own clock rather than mixing zones.
 func formatReminderInfo(r *pb.Reminder) string {
 	var b strings.Builder
 
@@ -204,8 +231,8 @@ func formatReminderInfo(r *pb.Reminder) string {
 	fmt.Fprintf(&b, "Message: %s\n", emptyDash(r.GetMessage()))
 	fmt.Fprintf(&b, "Repeat: %s\n", repeatOrNone(r.GetRepeatCron()))
 	fmt.Fprintf(&b, "Destination: %s\n", destinationMention(r.GetDestination()))
-	fmt.Fprintf(&b, "Created: %s\n", renderReminderStamp(r, r.HasCreatedAt(), r.GetCreatedAt().AsTime()))
-	fmt.Fprintf(&b, "Updated: %s", renderReminderStamp(r, r.HasUpdatedAt(), r.GetUpdatedAt().AsTime()))
+	fmt.Fprintf(&b, "Created: %s\n", renderReminderStamp(r.HasCreatedAt(), r.GetCreatedAt().AsTime()))
+	fmt.Fprintf(&b, "Updated: %s", renderReminderStamp(r.HasUpdatedAt(), r.GetUpdatedAt().AsTime()))
 
 	return b.String()
 }
@@ -241,20 +268,31 @@ func destinationMention(destination *pb.ReminderDestination) string {
 	return "<#" + value.GetStringValue() + ">"
 }
 
-// renderReminderStamp renders a created/updated instant in the reminder's own
-// timezone, or an em dash when the server did not send one.
-func renderReminderStamp(r *pb.Reminder, present bool, instant time.Time) string {
+// renderReminderStamp renders a created/updated instant as a RELATIVE Discord
+// timestamp tag, or an em dash when the server did not send one.
+//
+// Relative alone, unlike the fire time: what a reader wants from an audit line
+// is "edited 10 minutes ago", not a wall-clock stamp they have to compare
+// against now. The exact instant is one hover away in every Discord client, so
+// nothing is actually lost.
+//
+// Like the fire time, this no longer uses the reminder's stored timezone — the
+// tag renders in the viewer's. See renderReminderTime for why that column is
+// still load-bearing.
+func renderReminderStamp(present bool, instant time.Time) string {
 	if !present {
 		return emptyDash("")
 	}
 
-	return reminder.RenderInZone(instant, r.GetTimezone())
+	return timestampTag(instant, timestampRelative)
 }
 
 func reminderDelCommand() command.Command {
 	return command.Command{
 		Name:        "reminderdel",
 		Description: "Delete one or more of your reminders by id",
+		Group:       reminderGroup,
+		Sub:         reminderSubDel,
 		Args: []command.Arg{
 			{
 				Name:        "ids",
@@ -302,6 +340,8 @@ func reminderModCommand() command.Command {
 	return command.Command{
 		Name:        "remindermod",
 		Description: "Change a reminder's time, message and repeat",
+		Group:       reminderGroup,
+		Sub:         reminderSubMod,
 		Args: []command.Arg{
 			{
 				Name:        "id",
@@ -384,7 +424,7 @@ func modifyReminder(ctx context.Context, inv *command.Invocation) (*command.Resp
 	}
 
 	return &command.Response{
-		Content:   fmt.Sprintf("Reminder updated for %s.%s", renderTime(fireAt, loc), repeatNote),
+		Content:   fmt.Sprintf("Reminder updated for %s.%s", timestampWithRelative(fireAt), repeatNote),
 		Ephemeral: true,
 	}, nil
 }
@@ -392,6 +432,13 @@ func modifyReminder(ctx context.Context, inv *command.Invocation) (*command.Resp
 // callerLocation resolves the caller's timezone by asking the server for their
 // user row. It falls back to UTC when the user has no timezone set or the lookup
 // fails, so a reminder can always be created — just interpreted in UTC.
+//
+// Both return values are still load-bearing even though Discord now renders
+// times as viewer-local tags. loc is what "in 2 hours" and "next tuesday at 9"
+// are resolved against, and the returned name is STORED on the reminder: the
+// server's NextOccurrence advances a repeat in that zone, which is what keeps a
+// @daily reminder at 09:00 local across a DST change, and it is what clients
+// with no native timestamp format render with. Do not stop sending it.
 func callerLocation(ctx context.Context) (*time.Location, string) {
 	resp, err := client.UserServiceClient.GetUser(ctx, pb.GetUserReq_builder{}.Build())
 	if err != nil {
@@ -433,7 +480,7 @@ func currentDestination(ctx context.Context) (*pb.ReminderDestination, error) {
 	}.Build(), nil
 }
 
-// renderReminderLine renders one reminder for the list, in its own timezone.
+// renderReminderLine renders one reminder for the list.
 func renderReminderLine(r *pb.Reminder) string {
 	repeat := ""
 	if r.GetRepeatCron() != "" {
@@ -448,19 +495,21 @@ func renderReminderLine(r *pb.Reminder) string {
 	)
 }
 
-// renderReminderTime renders a reminder's fire time IN THE REMINDER'S OWN
-// timezone (AC2), falling back to UTC when it is unset or unknown (AC3). Both
-// behaviours live in reminder.RenderInZone so they cannot drift.
+// renderReminderTime renders a reminder's fire time as a Discord timestamp tag,
+// absolute plus relative.
+//
+// THIS IS A DELIBERATE BEHAVIOUR CHANGE. The time used to be rendered in the
+// reminder's OWN stored timezone via reminder.RenderInZone; a Discord tag is
+// rendered by each viewer's client, so it now shows in the VIEWER's zone and
+// locale instead. For a reminder posted into a shared channel that is strictly
+// better: everyone reads it on their own clock.
+//
+// The stored timezone is NOT dead as a result. It is still what the server's
+// NextOccurrence uses to advance a repeating reminder correctly across DST, and
+// it is still what a client without native timestamps renders with — Matrix, or
+// anything else, via reminder.RenderInZone. Do not remove the column.
 func renderReminderTime(r *pb.Reminder) string {
-	return reminder.RenderInZone(r.GetDatetime().AsTime(), r.GetTimezone())
-}
-
-// renderTime formats a create/update confirmation in the caller's zone.
-func renderTime(t time.Time, loc *time.Location) string {
-	if loc == nil {
-		loc = time.UTC
-	}
-	return t.In(loc).Format("2006-01-02 15:04 MST")
+	return timestampWithRelative(r.GetDatetime().AsTime())
 }
 
 // reminderStatusName turns REMINDER_STATUS_PENDING into "pending".

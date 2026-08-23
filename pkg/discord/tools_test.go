@@ -7,6 +7,7 @@ import (
 
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestUsageLine covers the shape shown for AC 1 ("a named command shows its
@@ -105,6 +106,46 @@ func TestDescribeCommandOmitsAbsentSections(t *testing.T) {
 	}
 }
 
+// TestGroupedUsageLine covers help advertising the grouped form. The slash
+// surface exposes ONLY /reminder add, so help that listed just the flat name
+// would hide half of what the bot accepts.
+func TestGroupedUsageLine(t *testing.T) {
+	grouped := command.Command{
+		Name: "remind", Group: "reminder", Sub: "add",
+		Args: []command.Arg{
+			{Name: "when", Required: true},
+			{Name: "repeat"},
+		},
+	}
+
+	if got, want := groupedUsageLine(grouped), "reminder add <when> [repeat]"; got != want {
+		t.Errorf("groupedUsageLine() = %q, want %q", got, want)
+	}
+	// The flat form must still render, since chat accepts both.
+	if got, want := usageLine(grouped), "remind <when> [repeat]"; got != want {
+		t.Errorf("usageLine() = %q, want %q", got, want)
+	}
+	// An ungrouped command has no second form to advertise.
+	if got := groupedUsageLine(command.Command{Name: "ping"}); got != "" {
+		t.Errorf("groupedUsageLine(ungrouped) = %q, want empty", got)
+	}
+}
+
+// TestDescribeCommandShowsBothForms ties the above to what a user actually sees.
+func TestDescribeCommandShowsBothForms(t *testing.T) {
+	got := describeCommand(command.Command{
+		Name: "remind", Group: "reminder", Sub: "add",
+		Description: "Set a reminder",
+		Args:        []command.Arg{{Name: "when", Description: "when", Required: true}},
+	})
+
+	for _, want := range []string{"remind <when>", "reminder add <when>", "/reminder add"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("describeCommand() missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
 func TestArgTypeName(t *testing.T) {
 	tests := []struct {
 		arg  command.ArgType
@@ -150,36 +191,85 @@ func TestClearanceName(t *testing.T) {
 	}
 }
 
-// TestAccountAge covers the age shown by userinfo (AC 5). The singular "1 day"
-// is a special case, and a future timestamp must not render a negative age
-// oddly.
-func TestAccountAge(t *testing.T) {
-	now := time.Now()
+// TestFormatUserInfoRendersEveryField covers the /userinfo view (AC 5).
+//
+// The account line used to be a whole-day age computed in this process; it is
+// now a relative Discord timestamp tag, which the viewer's own client renders.
+// The assertion is still "the account's age is shown"; the expected form changed.
+func TestFormatUserInfoRendersEveryField(t *testing.T) {
+	createdAt := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 
-	tests := []struct {
-		name      string
-		createdAt time.Time
-		want      string
-	}{
-		{name: "brand new", createdAt: now, want: "0 days"},
-		{name: "under a day", createdAt: now.Add(-5 * time.Hour), want: "0 days"},
-		{name: "exactly one day", createdAt: now.Add(-24 * time.Hour), want: "1 day"},
-		{name: "two days", createdAt: now.Add(-48 * time.Hour), want: "2 days"},
-		{name: "about a year", createdAt: now.Add(-365 * 24 * time.Hour), want: "365 days"},
+	username := "kohana"
+	locale := "fi"
+	timezone := "Europe/Helsinki"
+	clearance := pb.Clearance_CLEARANCE_MODERATOR
+
+	user := pb.User_builder{
+		Username:  &username,
+		Locale:    &locale,
+		Timezone:  &timezone,
+		Clearance: &clearance,
+		CreatedAt: timestamppb.New(createdAt),
+	}.Build()
+
+	got := formatUserInfo(user)
+
+	for _, want := range []string{
+		"kohana",
+		"moderator",
+		"fi",
+		"Europe/Helsinki",
+		timestampTag(createdAt, timestampRelative),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatUserInfo() missing %q\n---\n%s", want, got)
+		}
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := accountAge(tt.createdAt); got != tt.want {
-				t.Errorf("accountAge() = %q, want %q", got, tt.want)
-			}
-		})
+// TestFormatUserInfoUsesARelativeTagForTheAccountAge: the whole point of the tag
+// is that the client renders it, so the rendering must not contain a wall-clock
+// stamp or a day count computed here.
+func TestFormatUserInfoUsesARelativeTagForTheAccountAge(t *testing.T) {
+	createdAt := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+
+	username := "kohana"
+	user := pb.User_builder{
+		Username:  &username,
+		CreatedAt: timestamppb.New(createdAt),
+	}.Build()
+
+	got := formatUserInfo(user)
+
+	if want := timestampTag(createdAt, timestampRelative); !strings.Contains(got, want) {
+		t.Errorf("formatUserInfo() does not carry the relative tag %q\n---\n%s", want, got)
 	}
+	for _, absent := range []string{"days", "2026-02-03", "04:05"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("formatUserInfo() still renders %q itself instead of leaving it to Discord\n---\n%s",
+				absent, got)
+		}
+	}
+}
 
-	// A createdAt in the future yields a non-positive day count; it must not
-	// render the singular "1 day" nor panic.
-	if got := accountAge(now.Add(24 * time.Hour)); got == "1 day" {
-		t.Errorf("a future timestamp rendered as %q", got)
+// TestFormatUserInfoWithoutOptionalFields: an unset locale, timezone or
+// created_at must read as absent. A missing created_at would otherwise render as
+// <t:0:R>, which Discord shows as "56 years ago" — data, not absence.
+func TestFormatUserInfoWithoutOptionalFields(t *testing.T) {
+	username := "kohana"
+	got := formatUserInfo(pb.User_builder{Username: &username}.Build())
+
+	for _, want := range []string{
+		"Locale: " + unsetValue,
+		"Timezone: " + defaultTimezone + " (default)",
+		"Account created: " + unsetValue,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatUserInfo() missing %q\n---\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<t:0:") {
+		t.Errorf("an absent created_at rendered as the Unix epoch\n---\n%s", got)
 	}
 }
 
