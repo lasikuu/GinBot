@@ -1,0 +1,105 @@
+# Required variable (core stack): POSTGRES_PASSWORD.
+# Needed only when the discord profile is on: DISCORD_OWNER_ID,
+#   DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID.
+# Needed only when the matrix profile is on: MATRIX_HOMESERVER_URL,
+#   MATRIX_ACCESS_TOKEN, MATRIX_USER_ID.
+# The psql + ginbot-server core always starts. The Discord and Matrix clients
+# are optional, gated behind Compose profiles. Enable them by setting
+# COMPOSE_PROFILES in .env (comma-separated), e.g.:
+#   COMPOSE_PROFILES=discord          # server + discord
+#   COMPOSE_PROFILES=discord,matrix   # server + both clients
+#   (unset)                           # server only
+# or per-command with `--profile discord --profile matrix`.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Each binary is its own image (ginbot-server / -discord / -matrix), built from
+# a dedicated stage in the Dockerfile. A client's secrets are only needed when
+# its profile is active; unset vars fall back to empty and the client itself
+# fails fast on missing config.
+
+x-ginbot-env: &ginbot-env
+  GINBOT_ENV: production
+  GINBOT_LOG_LEVEL: info
+  GINBOT_GRPC_HOST: ginbot-server
+  GINBOT_GRPC_PORT: "50051"
+  # Flip to true only once certs are mounted at /app/cert on every service.
+  GINBOT_GRPC_TLS: "false"
+  GINBOT_DB_HOST: psql
+  GINBOT_DB_PORT: "5432"
+  GINBOT_DB_NAME: ginbot
+  GINBOT_DB_USERNAME: ginbot
+  GINBOT_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+
+services:
+  psql:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: ginbot
+      POSTGRES_DB: ginbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - ginbot_prod_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ginbot -d ginbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published to the host by default; only the bot services on the
+    # compose network reach it. Add a `ports:` mapping if you need external access.
+
+  ginbot-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    image: ginbot-server:latest
+    restart: unless-stopped
+    environment: *ginbot-env
+    depends_on:
+      psql:
+        condition: service_healthy
+
+  ginbot-discord:
+    # Optional: only started when the `discord` profile is active
+    # (COMPOSE_PROFILES=discord in .env, or `--profile discord`).
+    profiles: ["discord"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: discord
+    image: ginbot-discord:latest
+    restart: unless-stopped
+    environment:
+      <<: *ginbot-env
+      DISCORD_OWNER_ID: ${DISCORD_OWNER_ID:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_COMMAND_PREFIXES: ${DISCORD_COMMAND_PREFIXES:-}
+      DISCORD_REMOVE_COMMANDS: ${DISCORD_REMOVE_COMMANDS:-false}
+    depends_on:
+      - ginbot-server
+
+  ginbot-matrix:
+    # Optional: only started when the `matrix` profile is active
+    # (COMPOSE_PROFILES=matrix in .env, or `--profile matrix`).
+    profiles: ["matrix"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: matrix
+    image: ginbot-matrix:latest
+    restart: unless-stopped
+    environment:
+      <<: *ginbot-env
+      MATRIX_HOMESERVER_URL: ${MATRIX_HOMESERVER_URL:-}
+      MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
+      MATRIX_USER_ID: ${MATRIX_USER_ID:-}
+    depends_on:
+      - ginbot-server
+
+volumes:
+  ginbot_prod_pgdata:

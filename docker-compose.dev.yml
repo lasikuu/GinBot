@@ -9,3 +9,9 @@ services:
     environment:
       - POSTGRES_PASSWORD=gin123
       - POSTGRES_USER=ginbot
+    volumes:
+      # Named volume so dev data survives `docker compose down` and image updates.
+      - ginbot_dev_pgdata:/var/lib/postgresql/data
+
+volumes:
+  ginbot_dev_pgdata:
