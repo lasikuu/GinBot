@@ -39,6 +39,12 @@ func RecoverUnaryInterceptor(
 
 // RecoverStreamInterceptor is the streaming equivalent. A panic raised while a
 // reverse action stream is being served would otherwise be just as fatal.
+//
+// It covers the goroutine running handler(srv, stream), and only that one. The
+// qualification is not pedantry: OpenClientActionStream runs its stream.Recv()
+// on a goroutine of its own, which no frame here unwinds, so that goroutine
+// carries its own recover. Anything else a stream handler spawns has to do the
+// same.
 func RecoverStreamInterceptor(
 	srv any,
 	stream grpc.ServerStream,

@@ -44,6 +44,7 @@ func requireDatabase(t *testing.T) *pgxpool.Pool {
 	databaseOnce.Do(func() {
 		config.LoadEnv()
 		log.InitializeLogger(config.AppEnvironment, config.LogLevel)
+		preserveObservedLogs()
 		config.SetEnv()
 
 		db.InitDB()

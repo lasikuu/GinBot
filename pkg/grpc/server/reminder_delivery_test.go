@@ -45,7 +45,7 @@ func notificationFor(t *testing.T, platform pb.Platform, reminderID, message str
 // and message is what lets the client confirm the right reminder.
 func TestReminderNotificationReachesClientWithIDAndMessage(t *testing.T) {
 	s := NewReverseServer()
-	stream := newFakeStream()
+	stream := newFakeStream(t)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -83,6 +83,6 @@ func TestReminderNotificationReachesClientWithIDAndMessage(t *testing.T) {
 		t.Errorf("notification message = %q, want %q", gotMsg, message)
 	}
 
-	close(stream.recv)
+	stream.closeRecv()
 	wg.Wait()
 }
