@@ -16,9 +16,8 @@ import (
 var productionRequirements = DefaultRequirements()
 
 // servedDescriptors are the services cmd/ginbot-server actually registers.
-// Requirements coverage is asserted only over these: TriggerService and
-// DiscordService have generated stubs but no server implementation, so whether
-// they are declared yet is not something this test should dictate.
+// Requirements coverage is asserted only over these, because a service the
+// server never registers cannot be reached and so cannot be left unguarded.
 func servedDescriptors() []grpc.ServiceDesc {
 	return []grpc.ServiceDesc{
 		pb.UserService_ServiceDesc,
@@ -29,14 +28,31 @@ func servedDescriptors() []grpc.ServiceDesc {
 		pb.EntertainmentService_ServiceDesc,
 		pb.ReverseService_ServiceDesc,
 		pb.RepostService_ServiceDesc,
+		// Registered by pb.RegisterTriggerServiceServer in cmd/ginbot-server,
+		// with all nine of its handlers live. It sat in knownDescriptors for a
+		// while under a comment claiming it had no server implementation, which
+		// exempted nine reachable RPCs from the coverage assertion below on a
+		// false premise.
+		//
+		// Cited by symbol rather than by line. This comment previously pointed at
+		// main.go:103, and the very change that added it inserted lines above
+		// there, so it ended up naming RegisterReverseServiceServer instead —
+		// which is the whole argument against line references in comments.
+		pb.TriggerService_ServiceDesc,
 	}
 }
 
-// knownDescriptors are every generated service, used to catch typos in map keys
-// without also demanding that the unwired services be declared.
+// knownDescriptors adds the services that exist in the schema but are NOT
+// registered on the server, so a typo in a map key is still caught without this
+// test also demanding that an unreachable service be declared.
+//
+// DiscordService is the only one left: it has generated stubs and no
+// pb.RegisterDiscordServiceServer call anywhere, so nothing can call it and its
+// declared floor is a placeholder for when it is wired up. That is the whole
+// distinction between the two lists — reachable versus not — and it is why
+// TriggerService no longer belongs here.
 func knownDescriptors() []grpc.ServiceDesc {
 	return append(servedDescriptors(),
-		pb.TriggerService_ServiceDesc,
 		pb.DiscordService_ServiceDesc,
 	)
 }
