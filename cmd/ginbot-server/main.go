@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	// Embeds the IANA zone database in the binary so that SetTimezone can
@@ -106,12 +107,30 @@ func main() {
 	// Cancelled on SIGINT or SIGTERM. Serve() is run in a goroutine so the signal
 	// can be acted on: without this, main blocked in Serve() until log.Z.Fatal
 	// called os.Exit, which skips every deferred call — so log.Sync, db.CloseDB
-	// and the cron cancellation above could never actually run.
+	// and the cron cancellation below could never actually run.
 	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+	// Parallel cron jobs. Cron jobs run INLINE on this goroutine and issue
+	// database queries, so the loop has to be finished before db.CloseDB and
+	// log.Sync run — otherwise a job mid-query hits a closed pool.
+	//
+	// The two defers below are registered in this order on purpose, because
+	// defers run LIFO:
+	//
+	//   - stopSignals runs FIRST. It cancels shutdownCtx, which is what makes
+	//     RunCronJobs return at all. Without it the serveErr branch, where no
+	//     signal ever arrived, would wait below forever.
+	//   - cronWait.Wait runs SECOND, and both run before the db.CloseDB and
+	//     log.Sync defers registered at the top of main.
+	var cronWait sync.WaitGroup
+	cronWait.Add(1)
+	defer cronWait.Wait()
 	defer stopSignals()
 
-	// Parallel cron jobs
-	go cron.RunCronJobs(shutdownCtx)
+	go func() {
+		defer cronWait.Done()
+		cron.RunCronJobs(shutdownCtx)
+	}()
 
 	if config.AppEnvironment == enum.DEVELOPMENT {
 		// Register reflection service on gRPC server.
@@ -130,8 +149,22 @@ func main() {
 		}
 	case <-shutdownCtx.Done():
 		log.Z.Info("shutdown signal received, draining connections.")
-		grpcServer.GracefulStop()
 	}
+
+	// Both branches, not just the signal one. Serve returning an error does not
+	// unwind the handlers already dispatched, so skipping the drain there let an
+	// in-flight unary handler reach the pool that the db.CloseDB defer is about
+	// to close — the same failure the cron WaitGroup exists to prevent, one
+	// branch over. Serve has returned either way by this point, so draining
+	// costs nothing.
+	//
+	// Shutdown runs strictly before GracefulStop, which waits for every handler
+	// to return before it closes transports. A reverse-stream handler is parked
+	// waiting for a client message that may never come, so it never returns on
+	// its own — GracefulStop first would hang until SIGKILL. Shutdown releases
+	// those handlers so GracefulStop has something to wait for that finishes.
+	service.ReverseServer.Shutdown()
+	grpcServer.GracefulStop()
 
 	log.Z.Info("gracefully shutting down.")
 }
