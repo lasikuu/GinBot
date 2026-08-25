@@ -21,13 +21,27 @@ import (
 	"go.uber.org/zap"
 )
 
+// matrixClient is written once by InitializeMatrix and then read from several
+// goroutines (mautrix's sync dispatch, and the reverse action stream). Nothing
+// synchronises it, so it must be assigned BEFORE any of those readers is
+// started — see startActionStream.
 var matrixClient *mautrix.Client
 
-func InitializeMatrix() {
+// InitializeMatrix brings up the Matrix client and blocks until the process is
+// signalled to stop.
+//
+// ctx bounds the reverse action stream, which is started from here rather than
+// alongside the gRPC clients precisely because its handlers may read
+// matrixClient.
+func InitializeMatrix(ctx context.Context) {
 	var err error
 	if matrixClient, err = mautrix.NewClient(config.Options.Matrix.HomeServerURL, id.UserID(config.Options.Matrix.UserID), config.Options.Matrix.AccessToken); err != nil {
 		log.Z.Fatal("cannot create a new session.", zap.Error(err))
 	}
+
+	// Only now: matrixClient is assigned, so an action arriving on the first tick
+	// has a client to post through.
+	startActionStream(ctx)
 
 	selfID := id.UserID(config.Options.Matrix.UserID)
 
