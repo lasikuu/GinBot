@@ -22,11 +22,12 @@ func NewAnalyticsServer() *AnalyticsServer {
 
 // CreateActionRecord persists one analytics action attributed to the CALLER.
 //
-// The request's actor_id is deliberately ignored. Identity comes from metadata
-// and never from a request field, which is the project-wide rule: trusting
-// actor_id let any CLEARANCE_REGISTERED caller attribute any action type to any
-// user_account UUID, and — since actor_id carries no uuid constraint — turn
-// arbitrary text into a codes.Internal from a failed Postgres cast.
+// The request cannot name an actor: identity comes from metadata and never from
+// a request field, which is the project-wide rule. The field that used to be
+// there (reserved 3 in analytics.proto) let any CLEARANCE_REGISTERED caller
+// attribute any action type to any user_account UUID, and — since it carried no
+// uuid constraint — turn arbitrary text into a codes.Internal from a failed
+// Postgres cast.
 //
 // The server's own reminder paths (REMINDER_CREATED, REMINDER_DELIVERED) go
 // straight to db.CreateActionRecord in-process rather than through this RPC, so

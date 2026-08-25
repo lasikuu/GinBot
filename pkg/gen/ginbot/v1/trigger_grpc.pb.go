@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -40,8 +39,8 @@ type TriggerServiceClient interface {
 	GetTrigger(ctx context.Context, in *GetTriggerReq, opts ...grpc.CallOption) (*GetTriggerResp, error)
 	ListTriggers(ctx context.Context, in *ListTriggersReq, opts ...grpc.CallOption) (*ListTriggersResp, error)
 	CreateTrigger(ctx context.Context, in *CreateTriggerReq, opts ...grpc.CallOption) (*CreateTriggerResp, error)
-	UpdateTrigger(ctx context.Context, in *UpdateTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	UpdateTrigger(ctx context.Context, in *UpdateTriggerReq, opts ...grpc.CallOption) (*UpdateTriggerResp, error)
+	DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*DeleteTriggerResp, error)
 	GetTriggerStats(ctx context.Context, in *GetTriggerStatsReq, opts ...grpc.CallOption) (*GetTriggerStatsResp, error)
 	GetFile(ctx context.Context, in *GetFileReq, opts ...grpc.CallOption) (*GetFileResp, error)
 }
@@ -104,9 +103,9 @@ func (c *triggerServiceClient) CreateTrigger(ctx context.Context, in *CreateTrig
 	return out, nil
 }
 
-func (c *triggerServiceClient) UpdateTrigger(ctx context.Context, in *UpdateTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *triggerServiceClient) UpdateTrigger(ctx context.Context, in *UpdateTriggerReq, opts ...grpc.CallOption) (*UpdateTriggerResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(UpdateTriggerResp)
 	err := c.cc.Invoke(ctx, TriggerService_UpdateTrigger_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -114,9 +113,9 @@ func (c *triggerServiceClient) UpdateTrigger(ctx context.Context, in *UpdateTrig
 	return out, nil
 }
 
-func (c *triggerServiceClient) DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *triggerServiceClient) DeleteTrigger(ctx context.Context, in *DeleteTriggerReq, opts ...grpc.CallOption) (*DeleteTriggerResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(DeleteTriggerResp)
 	err := c.cc.Invoke(ctx, TriggerService_DeleteTrigger_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -153,8 +152,8 @@ type TriggerServiceServer interface {
 	GetTrigger(context.Context, *GetTriggerReq) (*GetTriggerResp, error)
 	ListTriggers(context.Context, *ListTriggersReq) (*ListTriggersResp, error)
 	CreateTrigger(context.Context, *CreateTriggerReq) (*CreateTriggerResp, error)
-	UpdateTrigger(context.Context, *UpdateTriggerReq) (*emptypb.Empty, error)
-	DeleteTrigger(context.Context, *DeleteTriggerReq) (*emptypb.Empty, error)
+	UpdateTrigger(context.Context, *UpdateTriggerReq) (*UpdateTriggerResp, error)
+	DeleteTrigger(context.Context, *DeleteTriggerReq) (*DeleteTriggerResp, error)
 	GetTriggerStats(context.Context, *GetTriggerStatsReq) (*GetTriggerStatsResp, error)
 	GetFile(context.Context, *GetFileReq) (*GetFileResp, error)
 	mustEmbedUnimplementedTriggerServiceServer()
@@ -182,10 +181,10 @@ func (UnimplementedTriggerServiceServer) ListTriggers(context.Context, *ListTrig
 func (UnimplementedTriggerServiceServer) CreateTrigger(context.Context, *CreateTriggerReq) (*CreateTriggerResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateTrigger not implemented")
 }
-func (UnimplementedTriggerServiceServer) UpdateTrigger(context.Context, *UpdateTriggerReq) (*emptypb.Empty, error) {
+func (UnimplementedTriggerServiceServer) UpdateTrigger(context.Context, *UpdateTriggerReq) (*UpdateTriggerResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateTrigger not implemented")
 }
-func (UnimplementedTriggerServiceServer) DeleteTrigger(context.Context, *DeleteTriggerReq) (*emptypb.Empty, error) {
+func (UnimplementedTriggerServiceServer) DeleteTrigger(context.Context, *DeleteTriggerReq) (*DeleteTriggerResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteTrigger not implemented")
 }
 func (UnimplementedTriggerServiceServer) GetTriggerStats(context.Context, *GetTriggerStatsReq) (*GetTriggerStatsResp, error) {

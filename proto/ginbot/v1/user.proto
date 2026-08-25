@@ -6,7 +6,6 @@ option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1";
 
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
-import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/go_features.proto";
 
@@ -24,9 +23,9 @@ enum Clearance {
 service UserService {
   rpc GetUser(GetUserReq) returns (GetUserResp);
   rpc Register(RegisterReq) returns (RegisterResp);
-  rpc GetCongratulableBirthdays(google.protobuf.Empty) returns (GetCongratulableBirthdaysResp);
-  rpc SetLocale(SetLocaleReq) returns (google.protobuf.Empty);
-  rpc SetTimezone(SetTimezoneReq) returns (google.protobuf.Empty);
+  rpc GetCongratulableBirthdays(GetCongratulableBirthdaysReq) returns (GetCongratulableBirthdaysResp);
+  rpc SetLocale(SetLocaleReq) returns (SetLocaleResp);
+  rpc SetTimezone(SetTimezoneReq) returns (SetTimezoneResp);
 }
 
 // Message representing a User
@@ -96,6 +95,12 @@ message RegisterResp {
   string user_id = 1;
 }
 
+// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
+// shared well-known type: an RPC using it can never gain a field without
+// changing its signature, and sharing one message across RPCs violates buf's
+// RPC_REQUEST_RESPONSE_UNIQUE.
+message GetCongratulableBirthdaysReq {}
+
 message GetCongratulableBirthdaysResp {
   repeated User users = 1;
 }
@@ -111,6 +116,9 @@ message SetLocaleReq {
   ];
 }
 
+// Empty on purpose; see GetCongratulableBirthdaysReq.
+message SetLocaleResp {}
+
 // Carries no user id on purpose: the caller is identified from gRPC metadata
 // (platform_enum, user_id), which is the pattern every identity-bearing RPC in
 // this project follows. Do not add a user_id field — taking the subject from
@@ -121,3 +129,6 @@ message SetTimezoneReq {
     (buf.validate.field).string.min_len = 1
   ];
 }
+
+// Empty on purpose; see GetCongratulableBirthdaysReq.
+message SetTimezoneResp {}

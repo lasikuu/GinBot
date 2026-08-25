@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -35,13 +34,13 @@ const (
 // request, so a server-side Help could only ever be a worse copy of what the
 // client already has.
 type UtilityServiceClient interface {
-	HealthCheck(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthCheckResp, error)
-	// Takes no request and returns no timestamp on purpose. Round-trip latency is
-	// measured entirely client-side (stamp before the call, diff after the
-	// response), which needs no clock synchronisation between the two processes.
-	// Diffing a client-supplied timestamp on the server would silently report
-	// clock skew as latency.
-	Ping(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PingResp, error)
+	HealthCheck(ctx context.Context, in *HealthCheckReq, opts ...grpc.CallOption) (*HealthCheckResp, error)
+	// Carries no request fields and returns no timestamp on purpose. Round-trip
+	// latency is measured entirely client-side (stamp before the call, diff after
+	// the response), which needs no clock synchronisation between the two
+	// processes. Diffing a client-supplied timestamp on the server would silently
+	// report clock skew as latency.
+	Ping(ctx context.Context, in *PingReq, opts ...grpc.CallOption) (*PingResp, error)
 }
 
 type utilityServiceClient struct {
@@ -52,7 +51,7 @@ func NewUtilityServiceClient(cc grpc.ClientConnInterface) UtilityServiceClient {
 	return &utilityServiceClient{cc}
 }
 
-func (c *utilityServiceClient) HealthCheck(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthCheckResp, error) {
+func (c *utilityServiceClient) HealthCheck(ctx context.Context, in *HealthCheckReq, opts ...grpc.CallOption) (*HealthCheckResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HealthCheckResp)
 	err := c.cc.Invoke(ctx, UtilityService_HealthCheck_FullMethodName, in, out, cOpts...)
@@ -62,7 +61,7 @@ func (c *utilityServiceClient) HealthCheck(ctx context.Context, in *emptypb.Empt
 	return out, nil
 }
 
-func (c *utilityServiceClient) Ping(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PingResp, error) {
+func (c *utilityServiceClient) Ping(ctx context.Context, in *PingReq, opts ...grpc.CallOption) (*PingResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PingResp)
 	err := c.cc.Invoke(ctx, UtilityService_Ping_FullMethodName, in, out, cOpts...)
@@ -83,13 +82,13 @@ func (c *utilityServiceClient) Ping(ctx context.Context, in *emptypb.Empty, opts
 // request, so a server-side Help could only ever be a worse copy of what the
 // client already has.
 type UtilityServiceServer interface {
-	HealthCheck(context.Context, *emptypb.Empty) (*HealthCheckResp, error)
-	// Takes no request and returns no timestamp on purpose. Round-trip latency is
-	// measured entirely client-side (stamp before the call, diff after the
-	// response), which needs no clock synchronisation between the two processes.
-	// Diffing a client-supplied timestamp on the server would silently report
-	// clock skew as latency.
-	Ping(context.Context, *emptypb.Empty) (*PingResp, error)
+	HealthCheck(context.Context, *HealthCheckReq) (*HealthCheckResp, error)
+	// Carries no request fields and returns no timestamp on purpose. Round-trip
+	// latency is measured entirely client-side (stamp before the call, diff after
+	// the response), which needs no clock synchronisation between the two
+	// processes. Diffing a client-supplied timestamp on the server would silently
+	// report clock skew as latency.
+	Ping(context.Context, *PingReq) (*PingResp, error)
 	mustEmbedUnimplementedUtilityServiceServer()
 }
 
@@ -100,10 +99,10 @@ type UtilityServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedUtilityServiceServer struct{}
 
-func (UnimplementedUtilityServiceServer) HealthCheck(context.Context, *emptypb.Empty) (*HealthCheckResp, error) {
+func (UnimplementedUtilityServiceServer) HealthCheck(context.Context, *HealthCheckReq) (*HealthCheckResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HealthCheck not implemented")
 }
-func (UnimplementedUtilityServiceServer) Ping(context.Context, *emptypb.Empty) (*PingResp, error) {
+func (UnimplementedUtilityServiceServer) Ping(context.Context, *PingReq) (*PingResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Ping not implemented")
 }
 func (UnimplementedUtilityServiceServer) mustEmbedUnimplementedUtilityServiceServer() {}
@@ -128,7 +127,7 @@ func RegisterUtilityServiceServer(s grpc.ServiceRegistrar, srv UtilityServiceSer
 }
 
 func _UtilityService_HealthCheck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(HealthCheckReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -140,13 +139,13 @@ func _UtilityService_HealthCheck_Handler(srv interface{}, ctx context.Context, d
 		FullMethod: UtilityService_HealthCheck_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UtilityServiceServer).HealthCheck(ctx, req.(*emptypb.Empty))
+		return srv.(UtilityServiceServer).HealthCheck(ctx, req.(*HealthCheckReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
 func _UtilityService_Ping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(PingReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -158,7 +157,7 @@ func _UtilityService_Ping_Handler(srv interface{}, ctx context.Context, dec func
 		FullMethod: UtilityService_Ping_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UtilityServiceServer).Ping(ctx, req.(*emptypb.Empty))
+		return srv.(UtilityServiceServer).Ping(ctx, req.(*PingReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }

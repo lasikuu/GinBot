@@ -4,7 +4,6 @@ import (
 	"context"
 
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // pongMessage is what Ping answers with. The value is not the measurement: the
@@ -23,7 +22,7 @@ func NewUtilityServer() *UtilityServer {
 	return s
 }
 
-func (s *UtilityServer) HealthCheck(context.Context, *emptypb.Empty) (*pb.HealthCheckResp, error) {
+func (s *UtilityServer) HealthCheck(context.Context, *pb.HealthCheckReq) (*pb.HealthCheckResp, error) {
 	// TODO: Implement health check for Discord, DB, and other services and return accordingly.
 	status := pb.HealthStatus_HEALTH_STATUS_OK
 
@@ -34,7 +33,7 @@ func (s *UtilityServer) HealthCheck(context.Context, *emptypb.Empty) (*pb.Health
 
 // Ping answers as cheaply as it can, so that what the client measures is the
 // round trip rather than any work done here.
-func (s *UtilityServer) Ping(context.Context, *emptypb.Empty) (*pb.PingResp, error) {
+func (s *UtilityServer) Ping(context.Context, *pb.PingReq) (*pb.PingResp, error) {
 	message := pongMessage
 
 	return pb.PingResp_builder{

@@ -520,10 +520,10 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 	// spoiler stripping are the server's to define (ADR-0019).
 	phrase := m.Content
 
-	// No user_id: the server reads the caller from metadata and rejects any
-	// other. No client-side forced-fire limiter either — trigger.ForcedLimiter
-	// already bounds it to once per author per interval, server-side, where it
-	// cannot be bypassed by a second client.
+	// No caller identity in the request: it travels as metadata, which is the
+	// only channel the server reads it from. No client-side forced-fire limiter
+	// either — trigger.ForcedLimiter already bounds it to once per author per
+	// interval, server-side, where it cannot be bypassed by a second client.
 	req := pb.TryTriggerReq_builder{
 		Instance: instance,
 		Phrase:   &phrase,

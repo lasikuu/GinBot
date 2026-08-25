@@ -6,7 +6,6 @@ import (
 
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // Identities the in-memory directory hands out. The ids are UUIDs because
@@ -32,7 +31,10 @@ func TestPublicMethodsNeedNoMetadata(t *testing.T) {
 	h, dir := registeredHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
 	t.Run("HealthCheck", func(t *testing.T) {
-		resp, err := h.Utility.HealthCheck(anonymousCtx(), &emptypb.Empty{})
+		// Built rather than passed as a bare zero value: the opaque API gives an
+		// empty message no usable literal, so a request message with no fields
+		// still has to come from its builder.
+		resp, err := h.Utility.HealthCheck(anonymousCtx(), pb.HealthCheckReq_builder{}.Build())
 		if err != nil {
 			t.Fatalf("HealthCheck rejected an anonymous caller: %v", err)
 		}
@@ -62,12 +64,12 @@ func TestPublicMethodsNeedNoMetadata(t *testing.T) {
 	}
 }
 
-// Ping is declared public and takes no request; the client measures latency
-// around it, so it has to answer without an account.
+// Ping is declared public and its request carries no fields; the client
+// measures latency around it, so it has to answer without an account.
 func TestPingIsPublicAndAnswers(t *testing.T) {
 	h, dir := registeredHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
-	resp, err := h.Utility.Ping(anonymousCtx(), &emptypb.Empty{})
+	resp, err := h.Utility.Ping(anonymousCtx(), pb.PingReq_builder{}.Build())
 	if err != nil {
 		t.Fatalf("Ping rejected an anonymous caller: %v", err)
 	}

@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -34,8 +33,8 @@ type InstanceServiceClient interface {
 	GetInstance(ctx context.Context, in *GetInstanceReq, opts ...grpc.CallOption) (*GetInstanceResp, error)
 	ListInstances(ctx context.Context, in *ListInstancesReq, opts ...grpc.CallOption) (*ListInstancesResp, error)
 	CreateInstance(ctx context.Context, in *CreateInstanceReq, opts ...grpc.CallOption) (*CreateInstanceResp, error)
-	UpdateInstance(ctx context.Context, in *UpdateInstanceReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	DeleteInstance(ctx context.Context, in *DeleteInstanceReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	UpdateInstance(ctx context.Context, in *UpdateInstanceReq, opts ...grpc.CallOption) (*UpdateInstanceResp, error)
+	DeleteInstance(ctx context.Context, in *DeleteInstanceReq, opts ...grpc.CallOption) (*DeleteInstanceResp, error)
 }
 
 type instanceServiceClient struct {
@@ -76,9 +75,9 @@ func (c *instanceServiceClient) CreateInstance(ctx context.Context, in *CreateIn
 	return out, nil
 }
 
-func (c *instanceServiceClient) UpdateInstance(ctx context.Context, in *UpdateInstanceReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *instanceServiceClient) UpdateInstance(ctx context.Context, in *UpdateInstanceReq, opts ...grpc.CallOption) (*UpdateInstanceResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(UpdateInstanceResp)
 	err := c.cc.Invoke(ctx, InstanceService_UpdateInstance_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -86,9 +85,9 @@ func (c *instanceServiceClient) UpdateInstance(ctx context.Context, in *UpdateIn
 	return out, nil
 }
 
-func (c *instanceServiceClient) DeleteInstance(ctx context.Context, in *DeleteInstanceReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *instanceServiceClient) DeleteInstance(ctx context.Context, in *DeleteInstanceReq, opts ...grpc.CallOption) (*DeleteInstanceResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(DeleteInstanceResp)
 	err := c.cc.Invoke(ctx, InstanceService_DeleteInstance_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -103,8 +102,8 @@ type InstanceServiceServer interface {
 	GetInstance(context.Context, *GetInstanceReq) (*GetInstanceResp, error)
 	ListInstances(context.Context, *ListInstancesReq) (*ListInstancesResp, error)
 	CreateInstance(context.Context, *CreateInstanceReq) (*CreateInstanceResp, error)
-	UpdateInstance(context.Context, *UpdateInstanceReq) (*emptypb.Empty, error)
-	DeleteInstance(context.Context, *DeleteInstanceReq) (*emptypb.Empty, error)
+	UpdateInstance(context.Context, *UpdateInstanceReq) (*UpdateInstanceResp, error)
+	DeleteInstance(context.Context, *DeleteInstanceReq) (*DeleteInstanceResp, error)
 	mustEmbedUnimplementedInstanceServiceServer()
 }
 
@@ -124,10 +123,10 @@ func (UnimplementedInstanceServiceServer) ListInstances(context.Context, *ListIn
 func (UnimplementedInstanceServiceServer) CreateInstance(context.Context, *CreateInstanceReq) (*CreateInstanceResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateInstance not implemented")
 }
-func (UnimplementedInstanceServiceServer) UpdateInstance(context.Context, *UpdateInstanceReq) (*emptypb.Empty, error) {
+func (UnimplementedInstanceServiceServer) UpdateInstance(context.Context, *UpdateInstanceReq) (*UpdateInstanceResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateInstance not implemented")
 }
-func (UnimplementedInstanceServiceServer) DeleteInstance(context.Context, *DeleteInstanceReq) (*emptypb.Empty, error) {
+func (UnimplementedInstanceServiceServer) DeleteInstance(context.Context, *DeleteInstanceReq) (*DeleteInstanceResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteInstance not implemented")
 }
 func (UnimplementedInstanceServiceServer) mustEmbedUnimplementedInstanceServiceServer() {}

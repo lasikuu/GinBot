@@ -18,7 +18,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // regexClearanceFloor is the minimum clearance required to create or update a
@@ -545,30 +544,31 @@ func (s *TriggerServer) GetTrigger(ctx context.Context, req *pb.GetTriggerReq) (
 	}.Build(), nil
 }
 
-// ListTriggers is scoped to the caller's own call origin instance, and — when
-// user_id is set — must name the caller themselves: listing by an arbitrary
-// user id is an enumeration surface.
+// ListTriggers is scoped to the caller's own call origin instance, and narrows
+// further to the caller's own triggers when `mine` is set. There is no way to
+// ask for another user's: the owner predicate can only ever be filled from the
+// resolved caller, which is why the request carries a boolean rather than a user
+// id.
 //
 // A call with no resolvable origin instance, such as a direct message, falls
 // back to the caller's own triggers. It must not fall through unscoped: an
 // unset instance and an unset user id together would make db.ListTriggers skip
 // both predicates and return every trigger in the database, across every guild.
+// The else branch below is what prevents that, and it does not depend on `mine`.
 func (s *TriggerServer) ListTriggers(ctx context.Context, req *pb.ListTriggersReq) (*pb.ListTriggersResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	if req.HasUserId() && req.GetUserId() != caller.ID {
-		return nil, status.Errorf(codes.PermissionDenied, "cannot list another user's triggers")
-	}
-
 	filter := db.ListTriggersFilter{
-		UserID:       req.GetUserId(),
 		PhraseSearch: req.GetPhrase(),
 		ReplySearch:  req.GetReply(),
 		Limit:        req.GetLimit(),
 		Offset:       req.GetOffset(),
+	}
+	if req.GetMine() {
+		filter.UserID = caller.ID
 	}
 	if req.HasMode() {
 		modeValue := int32(req.GetMode().Number())
@@ -701,7 +701,7 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, req *pb.CreateTrigger
 // be checked against the combination that will actually be stored, not an
 // assumed default that could let a broken regex-mode phrase through
 // unvalidated.
-func (s *TriggerServer) UpdateTrigger(ctx context.Context, req *pb.UpdateTriggerReq) (*emptypb.Empty, error) {
+func (s *TriggerServer) UpdateTrigger(ctx context.Context, req *pb.UpdateTriggerReq) (*pb.UpdateTriggerResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -819,11 +819,11 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, req *pb.UpdateTrigger
 		s.cache.Invalidate(instanceID)
 	}
 
-	return &emptypb.Empty{}, nil
+	return pb.UpdateTriggerResp_builder{}.Build(), nil
 }
 
 // DeleteTrigger soft-deletes the caller's own trigger.
-func (s *TriggerServer) DeleteTrigger(ctx context.Context, req *pb.DeleteTriggerReq) (*emptypb.Empty, error) {
+func (s *TriggerServer) DeleteTrigger(ctx context.Context, req *pb.DeleteTriggerReq) (*pb.DeleteTriggerResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -854,7 +854,7 @@ func (s *TriggerServer) DeleteTrigger(ctx context.Context, req *pb.DeleteTrigger
 		s.cache.Invalidate(instanceID)
 	}
 
-	return &emptypb.Empty{}, nil
+	return pb.DeleteTriggerResp_builder{}.Build(), nil
 }
 
 // GetTriggerStats returns a leaderboard derived from action_record, scoped to

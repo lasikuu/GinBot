@@ -596,15 +596,25 @@ func TestCreateTriggerNamingOwnOriginInstanceExplicitlySucceeds(t *testing.T) {
 }
 
 // TestListTriggersWithNoOriginDoesNotLeakOtherUsersTriggers is the regression
-// test for the worst finding: with no resolvable origin and no user_id,
-// db.ListTriggers used to skip both predicates and return every trigger in
-// the database. A caller with no origin (e.g. a direct message) must now fall
-// back to seeing only their own triggers.
+// test for the worst finding: with no resolvable origin instance and no owner
+// predicate, db.ListTriggers skips BOTH and returns every trigger in the
+// database, across every guild.
+//
+// `mine` did not change this and must not have: the owner predicate it sets is
+// opt-in, so it cannot be what rescues the no-origin case. The handler's else
+// branch is, and it runs regardless of `mine` — which is exactly the thing that
+// would be easy to delete while refactoring `mine` in, since with an origin
+// present the branch looks redundant.
+//
+// Both spellings of the request are driven for that reason. Asserting that
+// every returned row belongs to the caller, rather than only that one specific
+// victim row is absent, is what makes this a test of "scoped" instead of a test
+// of "does not contain this one id".
 func TestListTriggersWithNoOriginDoesNotLeakOtherUsersTriggers(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
 	victimUID, _ := registeredCaller(t, h, pool, "trig-leak-victim")
-	strangerUID, _ := registeredCaller(t, h, pool, "trig-leak-stranger")
+	strangerUID, strangerID := registeredCaller(t, h, pool, "trig-leak-stranger")
 	suffix := uniqueUID("leak")
 
 	origin := callermeta.Origin{InstanceUID: "leak-instance-" + suffix, DestinationUID: "leak-dest-" + suffix}
@@ -615,20 +625,130 @@ func TestListTriggersWithNoOriginDoesNotLeakOtherUsersTriggers(t *testing.T) {
 	reply := "leak-reply"
 	victimTriggerID := createTriggerVia(t, h, pool, victimCtx, phrase, reply, 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
 
+	// The stranger owns one trigger of their own, on the same instance, so the
+	// listing below is provably non-empty for the right reason. Without it a
+	// handler that returned nothing at all would satisfy every assertion here.
+	strangerOwnCtx := triggerCtx(strangerUID, origin)
+	strangerTriggerID := createTriggerVia(t, h, pool, strangerOwnCtx,
+		"leak-own-phrase-"+suffix, "leak-own-reply", 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
+
 	// Caller identity only, no NewOutgoingOrigin: this is what a direct
 	// message looks like.
 	strangerCtx := callerCtx(pb.Platform_PLATFORM_DISCORD, strangerUID)
 
-	resp, err := h.Trigger.ListTriggers(strangerCtx, pb.ListTriggersReq_builder{}.Build())
-	if err != nil {
-		t.Fatalf("ListTriggers with no origin: %v", err)
+	mine := true
+	for _, tt := range []struct {
+		name string
+		req  *pb.ListTriggersReq
+	}{
+		{"mine unset", pb.ListTriggersReq_builder{}.Build()},
+		{"mine set", pb.ListTriggersReq_builder{Mine: &mine}.Build()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := h.Trigger.ListTriggers(strangerCtx, tt.req)
+			if err != nil {
+				t.Fatalf("ListTriggers with no origin: %v", err)
+			}
+
+			sawOwn := false
+			for _, trig := range resp.GetTriggers() {
+				if trig.GetId() == victimTriggerID {
+					t.Errorf("ListTriggers with no origin leaked another user's trigger %s", victimTriggerID)
+				}
+				if trig.GetId() == strangerTriggerID {
+					sawOwn = true
+				}
+				// The general form of the same claim: an unscoped fallthrough
+				// returns rows owned by everybody, so any row that is not the
+				// caller's is the bug regardless of who created it.
+				if owner := trig.GetUserId(); owner != strangerID {
+					t.Errorf("ListTriggers with no origin returned trigger %s owned by %q, want only the caller's (%q); "+
+						"the listing fell through unscoped",
+						trig.GetId(), owner, strangerID)
+				}
+			}
+
+			if !sawOwn {
+				t.Errorf("the caller's own trigger %s is missing, so the assertions above proved nothing; "+
+					"a no-origin listing must fall back to the caller's own triggers, not to nothing",
+					strangerTriggerID)
+			}
+		})
+	}
+}
+
+// TestListTriggersMineNarrowsToTheCallerWithinTheInstance is the `mine` half of
+// the same rule, and the one behavioural change in this commit.
+//
+// Without `mine`, /trigger list is the INSTANCE's triggers, including ones the
+// caller did not create — that is what the command is for, and
+// TestListTriggersScopesToTheOriginInstanceRatherThanTheCaller pins it. With
+// `mine`, the same call must narrow to the caller's own and drop the rest.
+//
+// Both directions are asserted from one fixture, because the interesting
+// failure is not "mine returned nothing" but "mine returned the same thing as
+// no mine" — a handler that accepted the field and ignored it would pass a test
+// that only checked the caller's own trigger was present.
+func TestListTriggersMineNarrowsToTheCallerWithinTheInstance(t *testing.T) {
+	h, pool := liveTriggerHarness(t)
+
+	callerUID, callerID := registeredCaller(t, h, pool, "mine-caller")
+	otherUID, _ := registeredCaller(t, h, pool, "mine-other")
+	suffix := uniqueUID("mine")
+
+	origin := callermeta.Origin{InstanceUID: "mine-instance-" + suffix, DestinationUID: "mine-dest-" + suffix}
+	cleanupInstanceRows(t, pool, origin.InstanceMeta())
+
+	callerListCtx := triggerCtx(callerUID, origin)
+	otherListCtx := triggerCtx(otherUID, origin)
+
+	ownID := createTriggerVia(t, h, pool, callerListCtx,
+		"mine-own-phrase-"+suffix, "own", 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
+	// Same instance, different owner: this is the row `mine` has to drop and
+	// that an unset `mine` has to keep.
+	foreignID := createTriggerVia(t, h, pool, otherListCtx,
+		"mine-foreign-phrase-"+suffix, "foreign", 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
+
+	ids := func(t *testing.T, req *pb.ListTriggersReq) map[string]string {
+		t.Helper()
+		resp, err := h.Trigger.ListTriggers(callerListCtx, req)
+		if err != nil {
+			t.Fatalf("ListTriggers: %v", err)
+		}
+		out := make(map[string]string, len(resp.GetTriggers()))
+		for _, trig := range resp.GetTriggers() {
+			out[trig.GetId()] = trig.GetUserId()
+		}
+		return out
 	}
 
-	for _, trig := range resp.GetTriggers() {
-		if trig.GetId() == victimTriggerID {
-			t.Fatalf("ListTriggers with no origin leaked another user's trigger %s", victimTriggerID)
+	t.Run("mine unset keeps the instance's other triggers", func(t *testing.T) {
+		got := ids(t, pb.ListTriggersReq_builder{}.Build())
+		if _, ok := got[ownID]; !ok {
+			t.Errorf("the caller's own trigger %s is missing from an unnarrowed listing", ownID)
 		}
-	}
+		if _, ok := got[foreignID]; !ok {
+			t.Errorf("another user's trigger %s on the same instance is missing from an unnarrowed listing; "+
+				"without `mine` the listing is the instance's, not the caller's", foreignID)
+		}
+	})
+
+	t.Run("mine drops them", func(t *testing.T) {
+		mine := true
+		got := ids(t, pb.ListTriggersReq_builder{Mine: &mine}.Build())
+
+		if _, ok := got[ownID]; !ok {
+			t.Errorf("the caller's own trigger %s is missing from a `mine` listing", ownID)
+		}
+		if _, ok := got[foreignID]; ok {
+			t.Errorf("another user's trigger %s came back from a `mine` listing; the field was accepted and ignored", foreignID)
+		}
+		for id, owner := range got {
+			if owner != callerID {
+				t.Errorf("`mine` returned trigger %s owned by %q, want only the caller's (%q)", id, owner, callerID)
+			}
+		}
+	})
 }
 
 // TestCreateTriggerInvalidatesTheInstanceCache is AC17's create half: a

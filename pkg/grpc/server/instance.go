@@ -10,7 +10,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type InstanceServer struct {
@@ -66,10 +65,10 @@ func (s *InstanceServer) ListInstances(_ context.Context, _ *pb.ListInstancesReq
 	return nil, status.Error(codes.Unimplemented, "ListInstances is not implemented yet")
 }
 
-func (s *InstanceServer) UpdateInstance(_ context.Context, _ *pb.UpdateInstanceReq) (*emptypb.Empty, error) {
+func (s *InstanceServer) UpdateInstance(_ context.Context, _ *pb.UpdateInstanceReq) (*pb.UpdateInstanceResp, error) {
 	return nil, status.Error(codes.Unimplemented, "UpdateInstance is not implemented yet")
 }
 
-func (s *InstanceServer) DeleteInstance(_ context.Context, _ *pb.DeleteInstanceReq) (*emptypb.Empty, error) {
+func (s *InstanceServer) DeleteInstance(_ context.Context, _ *pb.DeleteInstanceReq) (*pb.DeleteInstanceResp, error) {
 	return nil, status.Error(codes.Unimplemented, "DeleteInstance is not implemented yet")
 }

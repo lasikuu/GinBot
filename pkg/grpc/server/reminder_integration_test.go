@@ -813,29 +813,31 @@ func TestListRemindersCarriesDestinations(t *testing.T) {
 	t.Fatalf("reminder %s missing from the listing", id)
 }
 
-// TestCreateActionRecordAttributesTheCallerNotTheRequest: identity comes from
-// metadata, never from a request field.
+// TestCreateActionRecordAttributesTheCallerAndNobodyElse: the record lands on
+// the caller resolved from metadata, and on no other account.
 //
-// The handler used to trust actor_id, so any REGISTERED caller could attribute
-// any action type to any user_account UUID — and since actor_id carries no uuid
-// constraint, arbitrary text surfaced as codes.Internal from a failed Postgres
-// cast rather than InvalidArgument.
-func TestCreateActionRecordAttributesTheCallerNotTheRequest(t *testing.T) {
+// CreateActionRecordReq.actor_id is deleted and reserved, so asking for someone
+// else is now unrepresentable and the assertion that such a request was
+// IGNORED has no subject left. What is asserted instead is not the same claim
+// and is still falsifiable: the handler passes caller.ID to
+// db.CreateActionRecord, so a bystander account must come out with nothing.
+// That is the only way the old hole could reappear now that the field cannot.
+//
+// Two registered users and a count on each, because a single-user fixture
+// cannot tell "attributed to the caller" apart from "attributed to whichever
+// account the handler happened to reach for".
+func TestCreateActionRecordAttributesTheCallerAndNobodyElse(t *testing.T) {
 	h, pool := liveReminderHarness(t)
 
 	callerPlatformUID, callerID := registeredCaller(t, h, pool, "ar-caller")
-	_, victimID := registeredCaller(t, h, pool, "ar-victim")
+	_, bystanderID := registeredCaller(t, h, pool, "ar-bystander")
 	cleanupActionRecords(t, pool, callerID)
-	cleanupActionRecords(t, pool, victimID)
+	cleanupActionRecords(t, pool, bystanderID)
 
 	actionType := pb.ActionType_ACTION_TYPE_TRIGGER_OCCURRED
 	if _, err := h.Analytics.CreateActionRecord(
 		callerCtx(pb.Platform_PLATFORM_DISCORD, callerPlatformUID),
-		pb.CreateActionRecordReq_builder{
-			ActionType: &actionType,
-			// Claiming to be someone else must be ignored, not honoured.
-			ActorId: &victimID,
-		}.Build(),
+		pb.CreateActionRecordReq_builder{ActionType: &actionType}.Build(),
 	); err != nil {
 		t.Fatalf("CreateActionRecord: %v", err)
 	}
@@ -843,30 +845,7 @@ func TestCreateActionRecordAttributesTheCallerNotTheRequest(t *testing.T) {
 	if got := countActionRecords(t, pool, callerID, actionType); got != 1 {
 		t.Errorf("records attributed to the caller = %d, want 1", got)
 	}
-	if got := countActionRecords(t, pool, victimID, actionType); got != 0 {
-		t.Errorf("records attributed to the impersonated user = %d, want 0", got)
-	}
-}
-
-// TestCreateActionRecordIgnoresAGarbageActorId: a non-uuid actor_id used to
-// reach Postgres and come back as codes.Internal. The field is ignored now, so
-// the call simply succeeds and is attributed to the caller.
-func TestCreateActionRecordIgnoresAGarbageActorId(t *testing.T) {
-	h, pool := liveReminderHarness(t)
-
-	callerPlatformUID, callerID := registeredCaller(t, h, pool, "ar-garbage")
-	cleanupActionRecords(t, pool, callerID)
-
-	actionType := pb.ActionType_ACTION_TYPE_TRIGGER_CALLED
-	garbage := "not-a-uuid'; DROP TABLE action_record; --"
-	if _, err := h.Analytics.CreateActionRecord(
-		callerCtx(pb.Platform_PLATFORM_DISCORD, callerPlatformUID),
-		pb.CreateActionRecordReq_builder{ActionType: &actionType, ActorId: &garbage}.Build(),
-	); err != nil {
-		t.Fatalf("CreateActionRecord with a garbage actor_id: %v", err)
-	}
-
-	if got := countActionRecords(t, pool, callerID, actionType); got != 1 {
-		t.Errorf("records attributed to the caller = %d, want 1", got)
+	if got := countActionRecords(t, pool, bystanderID, actionType); got != 0 {
+		t.Errorf("records attributed to the bystander = %d, want 0; the write is not scoped to the caller", got)
 	}
 }

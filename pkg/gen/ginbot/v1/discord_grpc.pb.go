@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -27,7 +26,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type DiscordServiceClient interface {
-	SetDiscordActivityType(ctx context.Context, in *SetDiscordActivityTypeReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	SetDiscordActivityType(ctx context.Context, in *SetDiscordActivityTypeReq, opts ...grpc.CallOption) (*SetDiscordActivityTypeResp, error)
 }
 
 type discordServiceClient struct {
@@ -38,9 +37,9 @@ func NewDiscordServiceClient(cc grpc.ClientConnInterface) DiscordServiceClient {
 	return &discordServiceClient{cc}
 }
 
-func (c *discordServiceClient) SetDiscordActivityType(ctx context.Context, in *SetDiscordActivityTypeReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *discordServiceClient) SetDiscordActivityType(ctx context.Context, in *SetDiscordActivityTypeReq, opts ...grpc.CallOption) (*SetDiscordActivityTypeResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(SetDiscordActivityTypeResp)
 	err := c.cc.Invoke(ctx, DiscordService_SetDiscordActivityType_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -52,7 +51,7 @@ func (c *discordServiceClient) SetDiscordActivityType(ctx context.Context, in *S
 // All implementations must embed UnimplementedDiscordServiceServer
 // for forward compatibility.
 type DiscordServiceServer interface {
-	SetDiscordActivityType(context.Context, *SetDiscordActivityTypeReq) (*emptypb.Empty, error)
+	SetDiscordActivityType(context.Context, *SetDiscordActivityTypeReq) (*SetDiscordActivityTypeResp, error)
 	mustEmbedUnimplementedDiscordServiceServer()
 }
 
@@ -63,7 +62,7 @@ type DiscordServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedDiscordServiceServer struct{}
 
-func (UnimplementedDiscordServiceServer) SetDiscordActivityType(context.Context, *SetDiscordActivityTypeReq) (*emptypb.Empty, error) {
+func (UnimplementedDiscordServiceServer) SetDiscordActivityType(context.Context, *SetDiscordActivityTypeReq) (*SetDiscordActivityTypeResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetDiscordActivityType not implemented")
 }
 func (UnimplementedDiscordServiceServer) mustEmbedUnimplementedDiscordServiceServer() {}

@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -35,8 +34,8 @@ type ReminderServiceClient interface {
 	GetReminder(ctx context.Context, in *GetReminderReq, opts ...grpc.CallOption) (*GetReminderResp, error)
 	ListReminders(ctx context.Context, in *ListRemindersReq, opts ...grpc.CallOption) (*ListRemindersResp, error)
 	CreateReminder(ctx context.Context, in *CreateReminderReq, opts ...grpc.CallOption) (*CreateReminderResp, error)
-	UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*UpdateReminderResp, error)
+	DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*DeleteReminderResp, error)
 	// ConfirmDelivery reports the outcome of a pushed reminder notification.
 	//
 	// Delivery is otherwise fire-and-forget: SendAction drops on a full client
@@ -44,7 +43,7 @@ type ReminderServiceClient interface {
 	// and only advances it to DELIVERED (or reschedules a repeat) when the client
 	// confirms here. A reminder never confirmed is reclaimed and retried, so it is
 	// not silently lost.
-	ConfirmDelivery(ctx context.Context, in *ConfirmDeliveryReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	ConfirmDelivery(ctx context.Context, in *ConfirmDeliveryReq, opts ...grpc.CallOption) (*ConfirmDeliveryResp, error)
 }
 
 type reminderServiceClient struct {
@@ -85,9 +84,9 @@ func (c *reminderServiceClient) CreateReminder(ctx context.Context, in *CreateRe
 	return out, nil
 }
 
-func (c *reminderServiceClient) UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *reminderServiceClient) UpdateReminder(ctx context.Context, in *UpdateReminderReq, opts ...grpc.CallOption) (*UpdateReminderResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(UpdateReminderResp)
 	err := c.cc.Invoke(ctx, ReminderService_UpdateReminder_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -95,9 +94,9 @@ func (c *reminderServiceClient) UpdateReminder(ctx context.Context, in *UpdateRe
 	return out, nil
 }
 
-func (c *reminderServiceClient) DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *reminderServiceClient) DeleteReminder(ctx context.Context, in *DeleteReminderReq, opts ...grpc.CallOption) (*DeleteReminderResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(DeleteReminderResp)
 	err := c.cc.Invoke(ctx, ReminderService_DeleteReminder_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -105,9 +104,9 @@ func (c *reminderServiceClient) DeleteReminder(ctx context.Context, in *DeleteRe
 	return out, nil
 }
 
-func (c *reminderServiceClient) ConfirmDelivery(ctx context.Context, in *ConfirmDeliveryReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *reminderServiceClient) ConfirmDelivery(ctx context.Context, in *ConfirmDeliveryReq, opts ...grpc.CallOption) (*ConfirmDeliveryResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(ConfirmDeliveryResp)
 	err := c.cc.Invoke(ctx, ReminderService_ConfirmDelivery_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -122,8 +121,8 @@ type ReminderServiceServer interface {
 	GetReminder(context.Context, *GetReminderReq) (*GetReminderResp, error)
 	ListReminders(context.Context, *ListRemindersReq) (*ListRemindersResp, error)
 	CreateReminder(context.Context, *CreateReminderReq) (*CreateReminderResp, error)
-	UpdateReminder(context.Context, *UpdateReminderReq) (*emptypb.Empty, error)
-	DeleteReminder(context.Context, *DeleteReminderReq) (*emptypb.Empty, error)
+	UpdateReminder(context.Context, *UpdateReminderReq) (*UpdateReminderResp, error)
+	DeleteReminder(context.Context, *DeleteReminderReq) (*DeleteReminderResp, error)
 	// ConfirmDelivery reports the outcome of a pushed reminder notification.
 	//
 	// Delivery is otherwise fire-and-forget: SendAction drops on a full client
@@ -131,7 +130,7 @@ type ReminderServiceServer interface {
 	// and only advances it to DELIVERED (or reschedules a repeat) when the client
 	// confirms here. A reminder never confirmed is reclaimed and retried, so it is
 	// not silently lost.
-	ConfirmDelivery(context.Context, *ConfirmDeliveryReq) (*emptypb.Empty, error)
+	ConfirmDelivery(context.Context, *ConfirmDeliveryReq) (*ConfirmDeliveryResp, error)
 	mustEmbedUnimplementedReminderServiceServer()
 }
 
@@ -151,13 +150,13 @@ func (UnimplementedReminderServiceServer) ListReminders(context.Context, *ListRe
 func (UnimplementedReminderServiceServer) CreateReminder(context.Context, *CreateReminderReq) (*CreateReminderResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateReminder not implemented")
 }
-func (UnimplementedReminderServiceServer) UpdateReminder(context.Context, *UpdateReminderReq) (*emptypb.Empty, error) {
+func (UnimplementedReminderServiceServer) UpdateReminder(context.Context, *UpdateReminderReq) (*UpdateReminderResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateReminder not implemented")
 }
-func (UnimplementedReminderServiceServer) DeleteReminder(context.Context, *DeleteReminderReq) (*emptypb.Empty, error) {
+func (UnimplementedReminderServiceServer) DeleteReminder(context.Context, *DeleteReminderReq) (*DeleteReminderResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteReminder not implemented")
 }
-func (UnimplementedReminderServiceServer) ConfirmDelivery(context.Context, *ConfirmDeliveryReq) (*emptypb.Empty, error) {
+func (UnimplementedReminderServiceServer) ConfirmDelivery(context.Context, *ConfirmDeliveryReq) (*ConfirmDeliveryResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ConfirmDelivery not implemented")
 }
 func (UnimplementedReminderServiceServer) mustEmbedUnimplementedReminderServiceServer() {}

@@ -45,8 +45,19 @@ message CreateActionRecordReq {
   ActionType action_type = 1;
   // Time taken to perform the Action in milliseconds
   int64 action_time = 2;
-  // User UUIDv7 of the actor
-  string actor_id = 3;
+
+  // Field 3 previously named the actor. The handler always ignored it and
+  // attributes the record to the caller from gRPC metadata instead: trusting it
+  // let any registered caller pin any action type on any user_account UUID, and
+  // — since it carried no uuid constraint — turn arbitrary text into a
+  // codes.Internal from a failed Postgres cast.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning.
+  reserved 3;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved actor_id;
+
   // UUIDv7 of the subject the action was performed on, e.g. the trigger that fired
   string subject_id = 4;
 }
@@ -63,8 +74,19 @@ message ListActionRecordsReq {
   int64 offset = 2;
   // Type of the action to search for
   ActionType action_type = 3;
-  // User UUIDv7 of the actor
-  string actor_id = 4;
+
+  // Field 4 previously narrowed the listing to one actor, which no handler ever
+  // read. Listing by an arbitrary user id is an enumeration surface; if a
+  // caller-scoped listing is wanted later it belongs here as a boolean, the way
+  // ListTriggersReq.mine does it, since the caller is already known from
+  // metadata.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning.
+  reserved 4;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved actor_id;
+
   // Search for recorded actions starting from this date
   google.protobuf.Timestamp period_start = 5;
   // Search for recorded actions ending at this date

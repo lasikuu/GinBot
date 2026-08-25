@@ -40,8 +40,17 @@ message GetRandomNumberResp {
 }
 
 message SetBirthdayReq {
-  // User UUIDv7 to set the birthday for
-  string user_id = 1;
+  // Field 1 previously named the subject whose birthday was being set. The
+  // subject is the caller, identified from gRPC metadata like every other
+  // identity-bearing RPC here, so naming one in the request body could only
+  // ever have let a client write to someone else's account.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning.
+  reserved 1;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved user_id;
+
   // Birthday to set
   google.protobuf.Timestamp birthday = 2;
 }

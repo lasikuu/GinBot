@@ -343,14 +343,20 @@ func TestGetTriggerIsVisibleToItsOwnerAndToTheInstanceItIsScopedTo(t *testing.T)
 //
 // The no-origin fallback already has a regression test, which pins that a
 // caller cannot see EVERYTHING. This is the other direction and it is a real
-// behaviour, not an implementation detail: with an origin, the listing is the
-// INSTANCE's triggers, including ones the caller did not create — that is what
-// /trigger list is for — while triggers belonging to the same caller on a
-// different instance must not appear.
+// behaviour, not an implementation detail: with an origin and `mine` unset, the
+// listing is the INSTANCE's triggers, including ones the caller did not create
+// — that is what /trigger list is for — while triggers belonging to the same
+// caller on a different instance must not appear.
 //
 // Getting this wrong in the obvious way (filter by caller.ID whenever it is
 // known) would silently turn /trigger list into "your triggers", and nobody
 // would notice until a moderator asked why they could not see the guild's.
+// That is now precisely what `mine` asks for, opt-in, which makes the mistake
+// easier to make by accident: leaking the owner predicate out of the `mine`
+// branch is invisible to every other test.
+//
+// The instance predicate under test is deliberately the only scoping here, so
+// the request leaves `mine` unset.
 func TestListTriggersScopesToTheOriginInstanceRatherThanTheCaller(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 

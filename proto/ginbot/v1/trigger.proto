@@ -8,7 +8,6 @@ import "ginbot/v1/analytics.proto";
 import "ginbot/v1/platform.proto";
 
 import "google/protobuf/timestamp.proto";
-import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/go_features.proto";
 
@@ -20,8 +19,8 @@ service TriggerService {
   rpc GetTrigger(GetTriggerReq) returns (GetTriggerResp);
   rpc ListTriggers(ListTriggersReq) returns (ListTriggersResp);
   rpc CreateTrigger(CreateTriggerReq) returns (CreateTriggerResp);
-  rpc UpdateTrigger(UpdateTriggerReq) returns (google.protobuf.Empty);
-  rpc DeleteTrigger(DeleteTriggerReq) returns (google.protobuf.Empty);
+  rpc UpdateTrigger(UpdateTriggerReq) returns (UpdateTriggerResp);
+  rpc DeleteTrigger(DeleteTriggerReq) returns (DeleteTriggerResp);
   rpc GetTriggerStats(GetTriggerStatsReq) returns (GetTriggerStatsResp);
   rpc GetFile(GetFileReq) returns (GetFileResp);
 }
@@ -88,8 +87,18 @@ message TryTriggerReq {
   TriggerInstance instance = 1;
   // The full message text to match against
   string phrase = 2;
-  // User UUIDv7 of the triggerer
-  string user_id = 3;
+
+  // Field 3 previously named the triggerer. The handler always ignored it and
+  // attributes the fire to the caller from gRPC metadata, which is also what the
+  // per-author rate limit on forced fires is keyed by — a caller-supplied id
+  // would have let anyone spend someone else's budget.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning.
+  reserved 3;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved user_id;
+
   // Forced fires bypass the chance roll and record TRIGGER_CALLED instead of
   // TRIGGER_OCCURRED. Set when the bot was mentioned. Rate limited per author.
   bool forced = 4;
@@ -131,8 +140,15 @@ message ListTriggersReq {
   string phrase = 3;
   // Search field for trigger replies
   string reply = 4;
-  // User UUIDv7 of the creator
-  string user_id = 5;
+
+  // Field 5 previously named whose triggers to list, superseded by `mine` below.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning.
+  reserved 5;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved user_id;
+
   // Platforms to trigger the response on
   repeated TriggerInstance instances = 6;
   // Search for triggers starting from this date
@@ -141,6 +157,13 @@ message ListTriggersReq {
   google.protobuf.Timestamp period_end = 8;
   // Search for triggers with this matching mode
   TriggerMode mode = 9;
+  // Narrow the listing to the caller's own triggers.
+  //
+  // A boolean rather than a user id: the server already knows who the caller is
+  // from metadata, and the previous user_id field could only ever legitimately
+  // hold that same value -- the handler rejected anything else -- so it cost the
+  // client a GetUser round trip to learn its own id and echo it back.
+  bool mine = 10;
 }
 
 message ListTriggersResp {
@@ -154,8 +177,18 @@ message CreateTriggerReq {
   string reply = 2;
   // File to send in response to the trigger
   string filename = 3;
-  // User UUIDv7 of the creator
-  string user_id = 4;
+
+  // Field 4 previously named the creator. The handler always ignored it and
+  // records the caller from gRPC metadata as the owner: ownership is what every
+  // later update and delete is checked against, so letting the request body
+  // choose it would have handed away those checks at creation time.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning.
+  reserved 4;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved user_id;
+
   // Platforms to trigger the response on
   repeated TriggerInstance instances = 5;
   // Chance of the trigger to be triggered
@@ -181,8 +214,18 @@ message UpdateTriggerReq {
   string reply = 3;
   // File to send in response to the trigger
   string filename = 4;
-  // User UUIDv7 of the creator
-  string user_id = 5;
+
+  // Field 5 previously named the creator. The handler always ignored it and
+  // resolves ownership from gRPC metadata, then refuses any trigger that is not
+  // the caller's own; a caller-supplied owner in a patch request could only ever
+  // have contradicted that check.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning.
+  reserved 5;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved user_id;
+
   // Platforms to trigger the response on
   repeated TriggerInstance instances = 6;
   // Chance of the trigger to be triggered
@@ -193,10 +236,19 @@ message UpdateTriggerReq {
   string file_url = 9;
 }
 
+// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
+// shared well-known type: an RPC using it can never gain a field without
+// changing its signature, and sharing one message across RPCs violates buf's
+// RPC_REQUEST_RESPONSE_UNIQUE.
+message UpdateTriggerResp {}
+
 message DeleteTriggerReq {
   // Trigger UUIDv7
   string id = 1;
 }
+
+// Empty on purpose; see UpdateTriggerResp.
+message DeleteTriggerResp {}
 
 message GetTriggerStatsReq {
   // Instance to scope the leaderboard to

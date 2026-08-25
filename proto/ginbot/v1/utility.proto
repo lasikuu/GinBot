@@ -4,7 +4,6 @@ package ginbot.v1;
 
 option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1";
 
-import "google/protobuf/empty.proto";
 import "google/protobuf/go_features.proto";
 
 option features.(pb.go).api_level = API_OPAQUE;
@@ -22,14 +21,23 @@ enum HealthStatus {
 // request, so a server-side Help could only ever be a worse copy of what the
 // client already has.
 service UtilityService {
-  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResp);
-  // Takes no request and returns no timestamp on purpose. Round-trip latency is
-  // measured entirely client-side (stamp before the call, diff after the
-  // response), which needs no clock synchronisation between the two processes.
-  // Diffing a client-supplied timestamp on the server would silently report
-  // clock skew as latency.
-  rpc Ping(google.protobuf.Empty) returns (PingResp);
+  rpc HealthCheck(HealthCheckReq) returns (HealthCheckResp);
+  // Carries no request fields and returns no timestamp on purpose. Round-trip
+  // latency is measured entirely client-side (stamp before the call, diff after
+  // the response), which needs no clock synchronisation between the two
+  // processes. Diffing a client-supplied timestamp on the server would silently
+  // report clock skew as latency.
+  rpc Ping(PingReq) returns (PingResp);
 }
+
+// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
+// shared well-known type: an RPC using it can never gain a field without
+// changing its signature, and sharing one message across RPCs violates buf's
+// RPC_REQUEST_RESPONSE_UNIQUE.
+message HealthCheckReq {}
+
+// Empty on purpose; see HealthCheckReq.
+message PingReq {}
 
 message HealthCheckResp {
   // Status of the service

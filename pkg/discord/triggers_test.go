@@ -19,7 +19,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -1087,16 +1086,22 @@ type fakeTriggerClient struct {
 	list   *pb.ListTriggersReq
 	stats  *pb.GetTriggerStatsReq
 
+	// listCalls counts ListTriggers invocations. It exists for
+	// TestListTriggersWithMineMakesExactlyOneRPC: the payoff of deleting
+	// ListTriggersReq.user_id is a round trip that no longer happens, and a
+	// count is the only thing that can observe a round trip's absence.
+	listCalls int
+
 	err error
 }
 
-func (f *fakeTriggerClient) UpdateTrigger(_ context.Context, in *pb.UpdateTriggerReq, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+func (f *fakeTriggerClient) UpdateTrigger(_ context.Context, in *pb.UpdateTriggerReq, _ ...grpc.CallOption) (*pb.UpdateTriggerResp, error) {
 	f.update = in
 	if f.err != nil {
 		return nil, f.err
 	}
 
-	return &emptypb.Empty{}, nil
+	return pb.UpdateTriggerResp_builder{}.Build(), nil
 }
 
 func (f *fakeTriggerClient) CreateTrigger(_ context.Context, in *pb.CreateTriggerReq, _ ...grpc.CallOption) (*pb.CreateTriggerResp, error) {
@@ -1112,6 +1117,7 @@ func (f *fakeTriggerClient) CreateTrigger(_ context.Context, in *pb.CreateTrigge
 
 func (f *fakeTriggerClient) ListTriggers(_ context.Context, in *pb.ListTriggersReq, _ ...grpc.CallOption) (*pb.ListTriggersResp, error) {
 	f.list = in
+	f.listCalls++
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -1456,27 +1462,134 @@ func TestTriggerListMaxLimitFitsOneMessage(t *testing.T) {
 	}
 }
 
-// mine narrows the list to the caller's own triggers. The client does not know
-// its own UUID, so it has to resolve one — and it must not send an empty id,
-// which the server compares against the caller and refuses as PermissionDenied.
-func TestListTriggersOnlySendsAUserIdWhenNarrowing(t *testing.T) {
+// mine narrows the list to the caller's own triggers, and is only sent when it
+// was asked for.
+//
+// It replaced a user_id the client had to go and fetch. Sending it
+// unconditionally would be worse than useless: an always-set `mine` silently
+// turns /trigger list into "your triggers", which is the same regression
+// TestListTriggersScopesToTheOriginInstanceRatherThanTheCaller guards from the
+// server side, and it looks correct from the client because the caller's own
+// triggers are still in the answer.
+func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
+	t.Run("omitted", func(t *testing.T) {
+		fake := &fakeTriggerClient{}
+		withFakeTriggerClient(t, fake)
+
+		if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{}); err != nil {
+			t.Fatalf("handler returned %v", err)
+		}
+		if fake.list == nil {
+			t.Fatal("no ListTriggers request was sent")
+		}
+		if fake.list.GetMine() {
+			t.Error("GetMine() = true without the mine flag")
+		}
+		if fake.list.GetLimit() != triggerListDefaultLimit {
+			t.Errorf("GetLimit() = %d, want %d", fake.list.GetLimit(), triggerListDefaultLimit)
+		}
+		if fake.list.HasPhrase() {
+			t.Error("HasPhrase() = true without a search")
+		}
+	})
+
+	// The negative above only means something if the positive is reachable:
+	// without this, a handler that never set the field would pass.
+	t.Run("supplied", func(t *testing.T) {
+		fake := &fakeTriggerClient{}
+		withFakeTriggerClient(t, fake)
+
+		if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{"mine": true}); err != nil {
+			t.Fatalf("handler returned %v", err)
+		}
+		if fake.list == nil {
+			t.Fatal("no ListTriggers request was sent")
+		}
+		if !fake.list.GetMine() {
+			t.Error("GetMine() = false with the mine flag set")
+		}
+	})
+
+	// An explicit false is the same as omitting it: the server treats the field
+	// as a plain bool, so sending mine=false must not narrow anything. Pinned
+	// because `--mine=false` is spellable in Discord's UI.
+	t.Run("explicitly false", func(t *testing.T) {
+		fake := &fakeTriggerClient{}
+		withFakeTriggerClient(t, fake)
+
+		if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{"mine": false}); err != nil {
+			t.Fatalf("handler returned %v", err)
+		}
+		if fake.list == nil {
+			t.Fatal("no ListTriggers request was sent")
+		}
+		if fake.list.GetMine() {
+			t.Error("GetMine() = true for an explicit --mine=false")
+		}
+	})
+}
+
+// countingUserClient counts GetUser calls so that a round trip which no longer
+// happens can be asserted to not happen.
+//
+// A nil client.UserServiceClient would also catch a regression, by panicking,
+// but as an unrelated-looking crash rather than a named failure — and only for
+// as long as nothing else in the package installs one.
+type countingUserClient struct {
+	pb.UserServiceClient
+
+	getUserCalls int
+}
+
+func (c *countingUserClient) GetUser(_ context.Context, _ *pb.GetUserReq, _ ...grpc.CallOption) (*pb.GetUserResp, error) {
+	c.getUserCalls++
+
+	id := "0192f000-0000-7000-8000-0000000000aa"
+	return pb.GetUserResp_builder{User: pb.User_builder{Id: &id}.Build()}.Build(), nil
+}
+
+// TestListTriggersWithMineMakesExactlyOneRPC is the user-visible payoff of
+// deleting ListTriggersReq.user_id, and the only thing that will ever notice if
+// it regresses.
+//
+// `--mine` used to cost two RPCs: a UserService.GetUser purely to learn the
+// caller's own UUID, then ListTriggers carrying it back. The server resolves the
+// caller from metadata on every call, so the first round trip was asking the
+// server to tell the client something the server already knew — and it doubled
+// the latency of the command as well as failing it outright whenever GetUser
+// failed.
+//
+// Nothing about the RESULT changes if that round trip comes back, which is why
+// this is asserted by counting calls rather than by inspecting the request: a
+// reintroduced GetUser would produce exactly the same listing.
+func TestListTriggersWithMineMakesExactlyOneRPC(t *testing.T) {
 	fake := &fakeTriggerClient{}
 	withFakeTriggerClient(t, fake)
 
-	if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{}); err != nil {
+	users := &countingUserClient{}
+	previous := client.UserServiceClient
+	client.UserServiceClient = users
+	t.Cleanup(func() { client.UserServiceClient = previous })
+
+	if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{"mine": true}); err != nil {
 		t.Fatalf("handler returned %v", err)
 	}
+
+	if fake.listCalls != 1 {
+		t.Errorf("ListTriggers called %d times, want exactly 1", fake.listCalls)
+	}
+	if users.getUserCalls != 0 {
+		t.Errorf("GetUser called %d times for a --mine listing, want 0; "+
+			"the caller's own id is resolved from metadata server-side, so fetching it first is a round trip for nothing",
+			users.getUserCalls)
+	}
+	// The request still has to ASK for the narrowing, or "one RPC" was achieved
+	// by dropping the feature rather than by dropping the lookup.
 	if fake.list == nil {
 		t.Fatal("no ListTriggers request was sent")
 	}
-	if fake.list.HasUserId() {
-		t.Errorf("HasUserId() = true (%q) without mine", fake.list.GetUserId())
-	}
-	if fake.list.GetLimit() != triggerListDefaultLimit {
-		t.Errorf("GetLimit() = %d, want %d", fake.list.GetLimit(), triggerListDefaultLimit)
-	}
-	if fake.list.HasPhrase() {
-		t.Error("HasPhrase() = true without a search")
+	if !fake.list.GetMine() {
+		t.Error("GetMine() = false; the single RPC did not carry the narrowing")
 	}
 }
 

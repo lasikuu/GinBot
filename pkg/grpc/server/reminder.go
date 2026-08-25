@@ -13,7 +13,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // maxActiveRemindersPerUser caps how many pending reminders one user may hold.
@@ -69,10 +68,10 @@ func (s *ReminderServer) GetReminder(ctx context.Context, req *pb.GetReminderReq
 	}.Build(), nil
 }
 
-// ListReminders is caller-scoped: only the caller's own reminders are returned,
-// whatever the request asks for. The optional filters (limit, offset, status,
-// period, message search) narrow within that scope; there is no way to widen it
-// to another user.
+// ListReminders is caller-scoped: only the caller's own reminders are returned.
+// The optional filters (limit, offset, status, period, message search) narrow
+// within that scope, and the request has no field that could widen it to another
+// user.
 func (s *ReminderServer) ListReminders(ctx context.Context, req *pb.ListRemindersReq) (*pb.ListRemindersResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
@@ -177,7 +176,7 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 	}.Build(), nil
 }
 
-func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteReminderReq) (*emptypb.Empty, error) {
+func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteReminderReq) (*pb.DeleteReminderResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -198,10 +197,10 @@ func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteRemin
 		return nil, status.Errorf(codes.Internal, "failed to delete reminder")
 	}
 
-	return &emptypb.Empty{}, nil
+	return pb.DeleteReminderResp_builder{}.Build(), nil
 }
 
-func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateReminderReq) (*emptypb.Empty, error) {
+func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateReminderReq) (*pb.UpdateReminderResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -268,7 +267,7 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateRemin
 		return nil, status.Errorf(codes.Internal, "failed to update reminder")
 	}
 
-	return &emptypb.Empty{}, nil
+	return pb.UpdateReminderResp_builder{}.Build(), nil
 }
 
 // ConfirmDelivery records the outcome of a pushed notification.
@@ -286,7 +285,7 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateRemin
 //   - delivered=true, one-shot        -> DELIVERED (kept, not deleted)
 //   - delivered=true, repeating       -> datetime advanced to the next
 //     occurrence in the reminder's timezone, status back to PENDING
-func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDeliveryReq) (*emptypb.Empty, error) {
+func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDeliveryReq) (*pb.ConfirmDeliveryResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -327,7 +326,7 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDel
 		if !failed {
 			logConfirmNoOp(req.GetId())
 		}
-		return &emptypb.Empty{}, nil
+		return pb.ConfirmDeliveryResp_builder{}.Build(), nil
 	}
 
 	// A repeating reminder reschedules; a one-shot is marked delivered. The
@@ -373,7 +372,7 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDel
 	// than deliveries, unbounded per reminder.
 	if !advanced {
 		logConfirmNoOp(req.GetId())
-		return &emptypb.Empty{}, nil
+		return pb.ConfirmDeliveryResp_builder{}.Build(), nil
 	}
 
 	// Analytics: record the delivery against the reminder's owner. Best-effort.
@@ -381,7 +380,7 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDel
 		log.Z.Error("failed to record reminder delivery", zap.Error(err))
 	}
 
-	return &emptypb.Empty{}, nil
+	return pb.ConfirmDeliveryResp_builder{}.Build(), nil
 }
 
 // logConfirmNoOp records a confirmation that changed nothing. Debug, not warn:

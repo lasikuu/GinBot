@@ -15,7 +15,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // startedAt approximates the process start. Package variables are initialised
@@ -63,7 +62,7 @@ func pingCommand() command.Command {
 func ping(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
 	start := time.Now()
 
-	resp, err := client.UtilityServiceClient.Ping(ctx, &emptypb.Empty{})
+	resp, err := client.UtilityServiceClient.Ping(ctx, pb.PingReq_builder{}.Build())
 	if err != nil {
 		log.Z.Error("failed to call Ping.", zap.Error(err))
 		return nil, err

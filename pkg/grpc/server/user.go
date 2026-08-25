@@ -12,7 +12,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // localTimezone is the one name time.LoadLocation accepts that means nothing to
@@ -106,7 +105,7 @@ func (s *UserServer) GetUser(ctx context.Context, req *pb.GetUserReq) (*pb.GetUs
 	}.Build(), nil
 }
 
-func (s *UserServer) SetLocale(ctx context.Context, req *pb.SetLocaleReq) (*emptypb.Empty, error) {
+func (s *UserServer) SetLocale(ctx context.Context, req *pb.SetLocaleReq) (*pb.SetLocaleResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -128,10 +127,10 @@ func (s *UserServer) SetLocale(ctx context.Context, req *pb.SetLocaleReq) (*empt
 		return nil, status.Errorf(codes.Internal, "failed to set locale")
 	}
 
-	return &emptypb.Empty{}, nil
+	return pb.SetLocaleResp_builder{}.Build(), nil
 }
 
-func (s *UserServer) SetTimezone(ctx context.Context, req *pb.SetTimezoneReq) (*emptypb.Empty, error) {
+func (s *UserServer) SetTimezone(ctx context.Context, req *pb.SetTimezoneReq) (*pb.SetTimezoneResp, error) {
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -165,9 +164,9 @@ func (s *UserServer) SetTimezone(ctx context.Context, req *pb.SetTimezoneReq) (*
 		return nil, status.Errorf(codes.Internal, "failed to set timezone")
 	}
 
-	return &emptypb.Empty{}, nil
+	return pb.SetTimezoneResp_builder{}.Build(), nil
 }
 
-func (s *UserServer) GetCongratulableBirthdays(_ context.Context, _ *emptypb.Empty) (*pb.GetCongratulableBirthdaysResp, error) {
+func (s *UserServer) GetCongratulableBirthdays(_ context.Context, _ *pb.GetCongratulableBirthdaysReq) (*pb.GetCongratulableBirthdaysResp, error) {
 	return nil, status.Error(codes.Unimplemented, "GetCongratulableBirthdays is not implemented yet")
 }

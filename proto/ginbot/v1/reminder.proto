@@ -8,7 +8,6 @@ import "ginbot/v1/platform.proto";
 
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
-import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/go_features.proto";
 
@@ -26,8 +25,8 @@ service ReminderService {
   rpc GetReminder(GetReminderReq) returns (GetReminderResp);
   rpc ListReminders(ListRemindersReq) returns (ListRemindersResp);
   rpc CreateReminder(CreateReminderReq) returns (CreateReminderResp);
-  rpc UpdateReminder(UpdateReminderReq) returns (google.protobuf.Empty);
-  rpc DeleteReminder(DeleteReminderReq) returns (google.protobuf.Empty);
+  rpc UpdateReminder(UpdateReminderReq) returns (UpdateReminderResp);
+  rpc DeleteReminder(DeleteReminderReq) returns (DeleteReminderResp);
   // ConfirmDelivery reports the outcome of a pushed reminder notification.
   //
   // Delivery is otherwise fire-and-forget: SendAction drops on a full client
@@ -35,7 +34,7 @@ service ReminderService {
   // and only advances it to DELIVERED (or reschedules a repeat) when the client
   // confirms here. A reminder never confirmed is reclaimed and retried, so it is
   // not silently lost.
-  rpc ConfirmDelivery(ConfirmDeliveryReq) returns (google.protobuf.Empty);
+  rpc ConfirmDelivery(ConfirmDeliveryReq) returns (ConfirmDeliveryResp);
 }
 
 // Message representing a Reminder
@@ -98,8 +97,18 @@ message ListRemindersReq {
   int64 offset = 2;
   // Search field for reminders
   string message = 3;
-  // User UUIDv7 of the creator
-  string user_id = 4;
+
+  // Field 4 previously named whose reminders to list. The handler always ignored
+  // it and scopes the listing to the caller from gRPC metadata: reminders are
+  // private to their creator, so the field had no legal value other than the
+  // caller's own and reading it would have been an enumeration surface.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning.
+  reserved 4;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved user_id;
+
   // Search for reminders starting from this date
   google.protobuf.Timestamp period_start = 5;
   // Search for reminders ending at this date
@@ -183,12 +192,21 @@ message UpdateReminderReq {
   ];
 }
 
+// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
+// shared well-known type: an RPC using it can never gain a field without
+// changing its signature, and sharing one message across RPCs violates buf's
+// RPC_REQUEST_RESPONSE_UNIQUE.
+message UpdateReminderResp {}
+
 message DeleteReminderReq {
   string id = 1 [
     (buf.validate.field).required = true,
     (buf.validate.field).string.uuid = true
   ];
 }
+
+// Empty on purpose; see UpdateReminderResp.
+message DeleteReminderResp {}
 
 message ConfirmDeliveryReq {
   // Reminder UUIDv7 that was delivered.
@@ -201,3 +219,7 @@ message ConfirmDeliveryReq {
   // bot) lets the server record the failure rather than retry forever.
   bool delivered = 2;
 }
+
+// Empty on purpose; see UpdateReminderResp. The outcome the client reports is in
+// the request; there is nothing for the server to report back.
+message ConfirmDeliveryResp {}

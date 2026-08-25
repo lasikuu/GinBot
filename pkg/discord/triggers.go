@@ -550,16 +550,12 @@ func listTriggers(ctx context.Context, inv *command.Invocation) (*command.Respon
 		req.Phrase = &search
 	}
 
-	if inv.Bool("mine") {
-		// The client does not know its own user UUID — identity travels as a
-		// platform id in metadata — and the server refuses a user_id that is not
-		// the caller's, so it has to be asked for. Only when it is needed: this
-		// is an extra round trip.
-		userID, err := callerUserID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		req.UserId = &userID
+	if mine := inv.Bool("mine"); mine {
+		// A flag rather than the caller's user id, which the client does not
+		// know: identity travels as a platform id in metadata, so asking for
+		// "mine" by id meant a GetUser round trip first, purely to tell the
+		// server something it resolves itself on every call.
+		req.Mine = &mine
 	}
 
 	callCtx, cancel := boundedCall(ctx)
@@ -932,34 +928,6 @@ func currentTriggerInstance(ctx context.Context) (*pb.TriggerInstance, error) {
 		PlatformEnum: &platform,
 		InstanceMeta: meta.InstanceMeta(),
 	}.Build(), nil
-}
-
-// callerUserID resolves the caller's own user UUID.
-//
-// A failure is surfaced rather than swallowed: the only caller uses it to narrow
-// a list to "mine", and quietly listing everyone's triggers instead would be a
-// worse answer than none.
-func callerUserID(ctx context.Context) (string, error) {
-	callCtx, cancel := boundedCall(ctx)
-	defer cancel()
-
-	resp, err := client.UserServiceClient.GetUser(callCtx, pb.GetUserReq_builder{}.Build())
-	if err != nil {
-		log.Z.Error("failed to resolve the caller's user id.", zap.Error(err))
-		return "", err
-	}
-
-	// Guarded rather than passed on. An empty id still satisfies HasUserId() on
-	// the wire, and the server then compares it against the caller and answers
-	// PermissionDenied — "You are not allowed to do that." for a filter the
-	// caller is perfectly entitled to.
-	id := resp.GetUser().GetId()
-	if id == "" {
-		log.Z.Error("the server returned no user id for the caller.")
-		return "", status.Errorf(codes.Internal, "could not work out who you are")
-	}
-
-	return id, nil
 }
 
 // triggerChance validates a supplied chance and returns it as a builder field,

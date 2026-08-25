@@ -8,7 +8,6 @@ import (
 	"sync"
 	"syscall"
 
-	"google.golang.org/protobuf/types/known/emptypb"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -63,7 +62,7 @@ func InitializeMatrix(ctx context.Context) {
 			// carries no gRPC metadata, so any RPC requiring it would fail.
 			rpcCtx := callermeta.NewOutgoingContext(ctx, pb.Platform_PLATFORM_MATRIX_PROTOCOL, evt.Sender.String())
 
-			resp, err := client.UtilityServiceClient.HealthCheck(rpcCtx, &emptypb.Empty{})
+			resp, err := client.UtilityServiceClient.HealthCheck(rpcCtx, pb.HealthCheckReq_builder{}.Build())
 			if err != nil {
 				log.Z.Error("failed to call HealthCheck", zap.Error(err))
 				return

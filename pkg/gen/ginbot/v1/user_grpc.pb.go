@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -33,9 +32,9 @@ const (
 type UserServiceClient interface {
 	GetUser(ctx context.Context, in *GetUserReq, opts ...grpc.CallOption) (*GetUserResp, error)
 	Register(ctx context.Context, in *RegisterReq, opts ...grpc.CallOption) (*RegisterResp, error)
-	GetCongratulableBirthdays(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetCongratulableBirthdaysResp, error)
-	SetLocale(ctx context.Context, in *SetLocaleReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	SetTimezone(ctx context.Context, in *SetTimezoneReq, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	GetCongratulableBirthdays(ctx context.Context, in *GetCongratulableBirthdaysReq, opts ...grpc.CallOption) (*GetCongratulableBirthdaysResp, error)
+	SetLocale(ctx context.Context, in *SetLocaleReq, opts ...grpc.CallOption) (*SetLocaleResp, error)
+	SetTimezone(ctx context.Context, in *SetTimezoneReq, opts ...grpc.CallOption) (*SetTimezoneResp, error)
 }
 
 type userServiceClient struct {
@@ -66,7 +65,7 @@ func (c *userServiceClient) Register(ctx context.Context, in *RegisterReq, opts 
 	return out, nil
 }
 
-func (c *userServiceClient) GetCongratulableBirthdays(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetCongratulableBirthdaysResp, error) {
+func (c *userServiceClient) GetCongratulableBirthdays(ctx context.Context, in *GetCongratulableBirthdaysReq, opts ...grpc.CallOption) (*GetCongratulableBirthdaysResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetCongratulableBirthdaysResp)
 	err := c.cc.Invoke(ctx, UserService_GetCongratulableBirthdays_FullMethodName, in, out, cOpts...)
@@ -76,9 +75,9 @@ func (c *userServiceClient) GetCongratulableBirthdays(ctx context.Context, in *e
 	return out, nil
 }
 
-func (c *userServiceClient) SetLocale(ctx context.Context, in *SetLocaleReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *userServiceClient) SetLocale(ctx context.Context, in *SetLocaleReq, opts ...grpc.CallOption) (*SetLocaleResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(SetLocaleResp)
 	err := c.cc.Invoke(ctx, UserService_SetLocale_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -86,9 +85,9 @@ func (c *userServiceClient) SetLocale(ctx context.Context, in *SetLocaleReq, opt
 	return out, nil
 }
 
-func (c *userServiceClient) SetTimezone(ctx context.Context, in *SetTimezoneReq, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *userServiceClient) SetTimezone(ctx context.Context, in *SetTimezoneReq, opts ...grpc.CallOption) (*SetTimezoneResp, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(SetTimezoneResp)
 	err := c.cc.Invoke(ctx, UserService_SetTimezone_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -102,9 +101,9 @@ func (c *userServiceClient) SetTimezone(ctx context.Context, in *SetTimezoneReq,
 type UserServiceServer interface {
 	GetUser(context.Context, *GetUserReq) (*GetUserResp, error)
 	Register(context.Context, *RegisterReq) (*RegisterResp, error)
-	GetCongratulableBirthdays(context.Context, *emptypb.Empty) (*GetCongratulableBirthdaysResp, error)
-	SetLocale(context.Context, *SetLocaleReq) (*emptypb.Empty, error)
-	SetTimezone(context.Context, *SetTimezoneReq) (*emptypb.Empty, error)
+	GetCongratulableBirthdays(context.Context, *GetCongratulableBirthdaysReq) (*GetCongratulableBirthdaysResp, error)
+	SetLocale(context.Context, *SetLocaleReq) (*SetLocaleResp, error)
+	SetTimezone(context.Context, *SetTimezoneReq) (*SetTimezoneResp, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -121,13 +120,13 @@ func (UnimplementedUserServiceServer) GetUser(context.Context, *GetUserReq) (*Ge
 func (UnimplementedUserServiceServer) Register(context.Context, *RegisterReq) (*RegisterResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Register not implemented")
 }
-func (UnimplementedUserServiceServer) GetCongratulableBirthdays(context.Context, *emptypb.Empty) (*GetCongratulableBirthdaysResp, error) {
+func (UnimplementedUserServiceServer) GetCongratulableBirthdays(context.Context, *GetCongratulableBirthdaysReq) (*GetCongratulableBirthdaysResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCongratulableBirthdays not implemented")
 }
-func (UnimplementedUserServiceServer) SetLocale(context.Context, *SetLocaleReq) (*emptypb.Empty, error) {
+func (UnimplementedUserServiceServer) SetLocale(context.Context, *SetLocaleReq) (*SetLocaleResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetLocale not implemented")
 }
-func (UnimplementedUserServiceServer) SetTimezone(context.Context, *SetTimezoneReq) (*emptypb.Empty, error) {
+func (UnimplementedUserServiceServer) SetTimezone(context.Context, *SetTimezoneReq) (*SetTimezoneResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetTimezone not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
@@ -188,7 +187,7 @@ func _UserService_Register_Handler(srv interface{}, ctx context.Context, dec fun
 }
 
 func _UserService_GetCongratulableBirthdays_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(GetCongratulableBirthdaysReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -200,7 +199,7 @@ func _UserService_GetCongratulableBirthdays_Handler(srv interface{}, ctx context
 		FullMethod: UserService_GetCongratulableBirthdays_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UserServiceServer).GetCongratulableBirthdays(ctx, req.(*emptypb.Empty))
+		return srv.(UserServiceServer).GetCongratulableBirthdays(ctx, req.(*GetCongratulableBirthdaysReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }

@@ -190,18 +190,12 @@ func TestGetFileRequiresFileID(t *testing.T) {
 	requireCode(t, err, codes.InvalidArgument)
 }
 
-// TestListTriggersRefusesAnotherUsersID: listing by an arbitrary user id is an
-// enumeration surface.
-func TestListTriggersRefusesAnotherUsersID(t *testing.T) {
-	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
-
-	someoneElse := "018f0000-0000-7000-8000-0000000000f1"
-	_, err := h.Trigger.ListTriggers(
-		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
-		pb.ListTriggersReq_builder{UserId: &someoneElse}.Build(),
-	)
-	requireCode(t, err, codes.PermissionDenied)
-}
+// ListTriggers has no test here for refusing another user's id, and cannot
+// have one: ListTriggersReq.user_id is deleted and reserved, so the request has
+// no way to name a subject and the handler's PermissionDenied branch for it is
+// gone with it. What replaced it — `mine`, which can only ever mean the
+// resolved caller — is a database-shaped property and is covered in
+// trigger_integration_test.go, since asserting WHICH rows come back needs rows.
 
 // TestAllTriggerRPCsRefuseAnAnonymousCaller: every trigger RPC must reject a
 // call carrying no caller identity at all. The exact code produced by the
