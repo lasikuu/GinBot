@@ -82,10 +82,14 @@ func InitializeDiscord(ctx context.Context) {
 		registeredCommands[i] = cmd
 	}
 
+	// Error, not Fatal: this is the last thing to run on the shutdown path, and
+	// Fatal's os.Exit(1) would skip every defer still outstanding in the
+	// caller — including cmd/ginbot-discord's log.Sync, which is what flushes
+	// this very line to the log.
 	defer func(discordSession *discordgo.Session) {
 		err := discordSession.Close()
 		if err != nil {
-			log.Z.Fatal("could not close the session gracefully.", zap.Error(err))
+			log.Z.Error("could not close the session gracefully.", zap.Error(err))
 		}
 	}(discordSession)
 
@@ -97,10 +101,14 @@ func InitializeDiscord(ctx context.Context) {
 	if config.Options.Discord.EraseCommands {
 		log.Z.Info("removing commands.")
 
+		// Error, not Fatal: one command that refuses to erase must not abandon
+		// the rest of them, nor skip the deferred session Close above, nor
+		// os.Exit past the caller's log.Sync. The loop continues and shutdown
+		// completes; the failed erase is reported per command.
 		for _, v := range registeredCommands {
 			err := discordSession.ApplicationCommandDelete(discordSession.State.User.ID, "", v.ID)
 			if err != nil {
-				log.Z.Fatal("cannot delete command.", zap.String("command", v.Name), zap.Error(err))
+				log.Z.Error("cannot delete command.", zap.String("command", v.Name), zap.Error(err))
 			}
 		}
 	}

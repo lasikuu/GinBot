@@ -57,9 +57,11 @@ type notification struct {
 // on every reclaim. Every other field is optional and defaults to empty.
 //
 // It must never panic. discordgo dispatches handlers as bare goroutines with no
-// recover(), and pkg/grpc/client.dispatch calls them inline with no recover
-// either, so a nil deref here takes the whole process down — hence a nil Struct
-// and a nil field value are both handled rather than assumed away.
+// recover(), so a nil deref here still takes the whole process down on that
+// path — hence a nil Struct and a nil field value are both handled rather than
+// assumed away. pkg/grpc/client.dispatch does now recover around the handlers it
+// calls inline, but that is belt to this function's braces: it downgrades a
+// panic to one lost delivery, it does not make one acceptable.
 func parseNotification(content *structpb.Struct) (notification, bool) {
 	if content == nil {
 		return notification{}, false

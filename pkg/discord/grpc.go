@@ -39,9 +39,16 @@ func NewDiscordClient(_ context.Context) {
 // wrong. Action handlers run on the stream's own goroutine and a notification
 // handler uses discordSession, so the stream must not start until that variable
 // has been assigned: starting it first is both a data race on the package
-// variable and a nil dereference inside a handler that runs inline with no
-// recover(), which kills the process. Launching the goroutine after the
-// assignment gives the read a happens-before edge on the write.
+// variable and a nil dereference in the handler that reads it. Launching the
+// goroutine after the assignment gives the read a happens-before edge on the
+// write.
+//
+// The hazard here is live, not prophylactic — unlike the Matrix equivalent,
+// handleSendNotification reads discordSession today, so getting the order wrong
+// breaks the first reminder that arrives rather than some future one. What it
+// costs is now bounded: pkg/grpc/client.dispatch recovers around the inline
+// handler call, so the deref loses that one delivery instead of killing the
+// process. Bounded is not acceptable, which is why the seam stays.
 //
 // It requires NewDiscordClient to have run, for ReverseServiceClient.
 func startActionStream(ctx context.Context) {
