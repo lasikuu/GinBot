@@ -21,7 +21,7 @@ import (
 	"os/exec"
 
 	"github.com/corona10/goimagehash"
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/repost"
 )
 

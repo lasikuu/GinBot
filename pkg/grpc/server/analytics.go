@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/lasikuu/GinBot/pkg/db"
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"

@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"testing"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // fixedRoller always returns n, clamped into [0, upperExclusive) by the

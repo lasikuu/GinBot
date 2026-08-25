@@ -19,7 +19,7 @@ package callermeta
 import (
 	"context"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"

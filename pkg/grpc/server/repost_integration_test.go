@@ -29,7 +29,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lasikuu/GinBot/pkg/db"
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/repost"
 	"github.com/lasikuu/GinBot/pkg/repost/fingerprint"

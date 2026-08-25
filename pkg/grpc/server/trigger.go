@@ -10,7 +10,7 @@ import (
 
 	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"github.com/lasikuu/GinBot/pkg/storage"

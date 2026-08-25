@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 func TestRegisterAndLookup(t *testing.T) {

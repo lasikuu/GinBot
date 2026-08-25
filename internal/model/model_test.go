@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // The column lists and the ScanTargets slices are maintained by hand and must

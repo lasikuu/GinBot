@@ -3,7 +3,7 @@ package interceptor
 import (
 	"testing"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"google.golang.org/grpc"
 )
 

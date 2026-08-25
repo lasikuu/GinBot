@@ -1,7 +1,7 @@
 package trigger
 
 import (
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // EffectiveChance resolves a stored chance into the percentage a trigger fires

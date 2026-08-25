@@ -1,0 +1,42 @@
+edition = "2023";
+
+package ginbot.v1;
+
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/go_features.proto";
+
+option features.(pb.go).api_level = API_OPAQUE;
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_OK = 1;
+  HEALTH_STATUS_ERROR = 2;
+}
+
+// There is deliberately no Help RPC here. Help is rendered client-side from the
+// command registry in pkg/command, which is the single source of command names,
+// aliases, descriptions and argument specs and lives in the client process. The
+// server holds no registry and would have to be shipped one to answer a help
+// request, so a server-side Help could only ever be a worse copy of what the
+// client already has.
+service UtilityService {
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResp);
+  // Takes no request and returns no timestamp on purpose. Round-trip latency is
+  // measured entirely client-side (stamp before the call, diff after the
+  // response), which needs no clock synchronisation between the two processes.
+  // Diffing a client-supplied timestamp on the server would silently report
+  // clock skew as latency.
+  rpc Ping(google.protobuf.Empty) returns (PingResp);
+}
+
+message HealthCheckResp {
+  // Status of the service
+  HealthStatus status = 1;
+}
+
+message PingResp {
+  // Pong message
+  string message = 1;
+}

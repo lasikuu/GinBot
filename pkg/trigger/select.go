@@ -3,7 +3,7 @@ package trigger
 import (
 	"regexp"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // Roller returns a pseudo-random integer in [0,n). It is injected so that

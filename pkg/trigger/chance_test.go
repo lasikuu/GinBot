@@ -3,7 +3,7 @@ package trigger
 import (
 	"testing"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // TestEffectiveChance pins every worked example from spec §7.3 verbatim.

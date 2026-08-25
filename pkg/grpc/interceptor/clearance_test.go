@@ -9,7 +9,7 @@ import (
 
 	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
@@ -323,7 +323,7 @@ func TestPublicMethodWithMetadataStillSucceeds(t *testing.T) {
 func TestUnknownMethodIsTreatedAsPublic(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
-	got := call(context.Background(), "/ginbot.proto.NoSuchService/NoSuchMethod", testRequirements(), resolver.resolve)
+	got := call(context.Background(), "/ginbot.v1.NoSuchService/NoSuchMethod", testRequirements(), resolver.resolve)
 
 	if got.err != nil {
 		t.Fatalf("unknown method rejected: %v", got.err)

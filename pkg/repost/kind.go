@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // Kind classifies a sniffed MIME type, both for repost_entry.kind and for

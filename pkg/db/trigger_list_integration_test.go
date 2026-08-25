@@ -21,7 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lasikuu/GinBot/internal/model"
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // createWithReply is createOn plus an explicit reply, for tests that need to

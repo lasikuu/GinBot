@@ -8,7 +8,7 @@ package repost
 import (
 	"math/bits"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // MaxDistance is the widest Hamming distance the 8-chunk pigeonhole guarantee

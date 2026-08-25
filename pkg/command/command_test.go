@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // These assertions exist to fail at compile time if the exported surface drifts

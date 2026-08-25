@@ -1,0 +1,19 @@
+edition = "2023";
+
+package ginbot.v1;
+
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1";
+
+import "google/protobuf/go_features.proto";
+
+option features.(pb.go).api_level = API_OPAQUE;
+
+enum Platform {
+  PLATFORM_UNSPECIFIED = 0;
+  PLATFORM_DISCORD = 1;
+  PLATFORM_MATRIX_PROTOCOL = 2;
+  PLATFORM_TELEGRAM = 3;
+  PLATFORM_LINE = 4;
+  PLATFORM_EMAIL = 5;
+  PLATFORM_SNAIL_MAIL = 6;
+}

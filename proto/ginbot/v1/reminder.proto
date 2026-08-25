@@ -1,0 +1,203 @@
+edition = "2023";
+
+package ginbot.v1;
+
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1";
+
+import "ginbot/v1/platform.proto";
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/go_features.proto";
+
+option features.(pb.go).api_level = API_OPAQUE;
+
+enum ReminderStatus {
+  REMINDER_STATUS_UNSPECIFIED = 0;
+  REMINDER_STATUS_PENDING = 1;
+  REMINDER_STATUS_SENT = 2;
+  REMINDER_STATUS_DELIVERED = 3;
+  REMINDER_STATUS_FAILED = 4;
+}
+
+service ReminderService {
+  rpc GetReminder(GetReminderReq) returns (GetReminderResp);
+  rpc ListReminders(ListRemindersReq) returns (ListRemindersResp);
+  rpc CreateReminder(CreateReminderReq) returns (CreateReminderResp);
+  rpc UpdateReminder(UpdateReminderReq) returns (google.protobuf.Empty);
+  rpc DeleteReminder(DeleteReminderReq) returns (google.protobuf.Empty);
+  // ConfirmDelivery reports the outcome of a pushed reminder notification.
+  //
+  // Delivery is otherwise fire-and-forget: SendAction drops on a full client
+  // buffer and returns nothing. The server marks a reminder SENT when it pushes,
+  // and only advances it to DELIVERED (or reschedules a repeat) when the client
+  // confirms here. A reminder never confirmed is reclaimed and retried, so it is
+  // not silently lost.
+  rpc ConfirmDelivery(ConfirmDeliveryReq) returns (google.protobuf.Empty);
+}
+
+// Message representing a Reminder
+message Reminder {
+  // Reminder UUIDv7
+  string id = 1;
+  // Date and time of the Reminder (UTC+0)
+  google.protobuf.Timestamp datetime = 2;
+  // Timezone of the Reminder
+  string timezone = 3;
+  // Repeat in cron format
+  string repeat_cron = 4;
+  // Destinations to send the reminder to
+  ReminderDestination destination = 5;
+  // Status of the Reminder
+  ReminderStatus status = 6;
+  // User UUIDv7 of the creator
+  string user_id = 7;
+  // Reminder message
+  string message = 8;
+  // Parent reminder UUIDv7
+  string parent_id = 9;
+  // Created at
+  google.protobuf.Timestamp created_at = 10;
+  // Updated at
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+// Destination to send the reminder to
+message ReminderDestination {
+  // Platform to send the reminder to
+  Platform platform_enum = 1 [
+    (buf.validate.field).required = true
+  ];
+  // Platform meta information such as Server ID etc.
+  google.protobuf.Struct instance_meta = 2 [
+    (buf.validate.field).required = true
+  ];
+  // Meta information such as Channel ID etc.
+  google.protobuf.Struct destination_meta = 3 [
+    (buf.validate.field).required = true
+  ];
+}
+
+message GetReminderReq {
+  // Reminder UUIDv7
+  string id = 1 [
+    (buf.validate.field).string.uuid = true
+  ];
+}
+
+message GetReminderResp {
+  Reminder reminder = 1;
+}
+
+message ListRemindersReq {
+  // Limit the number of reminders returned
+  int64 limit = 1;
+  // Offset the reminders returned
+  int64 offset = 2;
+  // Search field for reminders
+  string message = 3;
+  // User UUIDv7 of the creator
+  string user_id = 4;
+  // Search for reminders starting from this date
+  google.protobuf.Timestamp period_start = 5;
+  // Search for reminders ending at this date
+  google.protobuf.Timestamp period_end = 6;
+  // Search for reminders with this status
+  ReminderStatus status = 7;
+}
+
+message ListRemindersResp {
+  repeated Reminder reminders = 1;
+}
+
+message CreateReminderReq {
+  // Date and time of the Reminder (UTC+0)
+  google.protobuf.Timestamp datetime = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).timestamp.gt_now = true
+  ];
+  // Timezone of the Reminder
+  string timezone = 2;
+  // Reminder message
+  string message = 3;
+  // Destinations to send the reminder to
+  ReminderDestination destination = 4;
+  // Repeat in cron format.
+  //
+  // The pattern is a shape check, not a semantic one: it accepts @descriptors,
+  // @every durations, and 5-6 whitespace-separated fields using *, numbers,
+  // three-letter month/day names, ranges, lists and steps. It deliberately does
+  // NOT range-check field values, so "99 99 99 99 99" passes here and is
+  // rejected later by the real cron parser. Erring toward acceptance is
+  // intentional: a false rejection blocks a legitimate reminder, a false
+  // acceptance is caught at scheduling time.
+  string repeat_cron = 5 [
+    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|midnight|hourly|reboot)|@every[ \\t]+(\\d+(ns|us|µs|ms|s|m|h))+|(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*([ \\t]+(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*){4,5})$"
+  ];
+  // Parent reminder UUIDv7
+  string parent_id = 6 [
+    (buf.validate.field).string.uuid = true
+  ];
+}
+
+message CreateReminderResp {
+  // Reminder UUIDv7
+  string id = 1;
+}
+
+message UpdateReminderReq {
+  // Reminder UUIDv7
+  string id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
+  // Date and time of the Reminder (UTC+0)
+  google.protobuf.Timestamp datetime = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).timestamp.gt_now = true
+  ];
+  // Timezone of the Reminder
+  string timezone = 3;
+  // Reminder message
+  string message = 4;
+  // Destinations to send the reminder to
+  ReminderDestination destination = 5;
+  // Repeat in cron format.
+  //
+  // This field is PATCH-SHAPED, unlike the rest of the message: leaving it
+  // unset leaves the stored schedule untouched, so a client that only wants to
+  // change the message or the time cannot silently destroy an existing repeat.
+  //
+  // Setting it to the EMPTY STRING is the explicit "clear the repeat" sentinel —
+  // hence the trailing `?` on the pattern, which the create-side pattern does not
+  // have (there is nothing to clear at create time). Any other value must be a
+  // syntactically plausible schedule, checked semantically by the handler.
+  string repeat_cron = 6 [
+    (buf.validate.field).string.pattern = "^(@(annually|yearly|monthly|weekly|daily|midnight|hourly|reboot)|@every[ \\t]+(\\d+(ns|us|µs|ms|s|m|h))+|(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*([ \\t]+(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?)(,(\\*(/\\d+)?|(\\d+|[A-Za-z]{3})(-(\\d+|[A-Za-z]{3}))?(/\\d+)?))*){4,5})?$"
+  ];
+  // Parent reminder UUIDv7
+  string parent_id = 7 [
+    (buf.validate.field).string.uuid = true
+  ];
+}
+
+message DeleteReminderReq {
+  string id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
+}
+
+message ConfirmDeliveryReq {
+  // Reminder UUIDv7 that was delivered.
+  string id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
+  // Whether the client managed to post the reminder. A false outcome (the
+  // channel is gone and the DM fallback also failed, or the user blocked the
+  // bot) lets the server record the failure rather than retry forever.
+  bool delivered = 2;
+}

@@ -1,7 +1,7 @@
 package interceptor
 
 import (
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // DefaultRequirements is the minimum clearance for every guarded RPC.

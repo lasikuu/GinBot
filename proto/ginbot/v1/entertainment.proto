@@ -1,0 +1,54 @@
+edition = "2023";
+
+package ginbot.v1;
+
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/go_features.proto";
+
+option features.(pb.go).api_level = API_OPAQUE;
+
+service EntertainmentService {
+  rpc GetRandomNumber(GetRandomNumberReq) returns (GetRandomNumberResp);
+  rpc SetBirthday(SetBirthdayReq) returns (SetBirthdayResp);
+}
+
+message GetRandomNumberReq {
+  enum REQUEST {
+    DOUBLES = 0;
+    INTERVAL = 1;
+    ANY = 2;
+  };
+
+  // Reserved defensively: the numbering starts at 3 and skips 4, so these were
+  // most likely used before the file was first committed. Nothing in the history
+  // confirms that, but reserving costs nothing and reusing them would break any
+  // client built against an earlier private revision.
+  reserved 1, 2, 4;
+
+  REQUEST type = 3;
+  string msg_id = 5;
+
+  int32 digits = 6;
+  int64 lower = 7;
+  int64 upper = 8;
+}
+
+message GetRandomNumberResp {
+  string number = 1;
+}
+
+message SetBirthdayReq {
+  // User UUIDv7 to set the birthday for
+  string user_id = 1;
+  // Birthday to set
+  google.protobuf.Timestamp birthday = 2;
+}
+
+message SetBirthdayResp {
+  // User UUIDv7 of the user with the set birthday
+  string user_id = 1;
+  // Birthday of the user
+  google.protobuf.Timestamp birthday = 2;
+}

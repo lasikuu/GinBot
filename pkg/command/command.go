@@ -16,7 +16,7 @@ import (
 	"slices"
 	"strings"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // ArgType is the type of a command argument.

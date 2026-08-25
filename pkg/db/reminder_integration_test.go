@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // BuildPattern returns the regular expression source matching phrase in mode.

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/proto"
+	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
 // ── Assumed symbols from pkg/repost (spec §3.2) ───────────────────────────────
