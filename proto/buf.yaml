@@ -1,4 +1,11 @@
 version: v2
+# protovalidate's schema is fetched from the BSR and pinned in buf.lock rather
+# than vendored into this tree. Keep the pinned commit in step with the
+# buf.build/gen/go/bufbuild/protovalidate/... requirement in go.mod: the
+# extension descriptors the generated code registers and the ones the runtime
+# validator resolves have to come from the same schema.
+deps:
+  - buf.build/bufbuild/protovalidate
 lint:
   use:
     - BASIC

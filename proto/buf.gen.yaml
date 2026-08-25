@@ -1,0 +1,19 @@
+version: v2
+
+# Managed mode is off. It would rewrite go_package across the tree, and the
+# committed output under pkg/gen depends on the values declared in the .proto
+# files themselves.
+managed:
+  enabled: false
+
+# `local` deliberately, not `remote`: the plugin versions that decide whether
+# this repository passes CI stay pinned by the `go install` lines in
+# .github/workflows/ci.yml and docs/SETUP.md, not by a BSR plugin's own release
+# cadence. Both must be on PATH.
+plugins:
+  - local: protoc-gen-go
+    out: ../pkg/gen
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: ../pkg/gen
+    opt: paths=source_relative
