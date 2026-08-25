@@ -7,5 +7,16 @@
 /cert/*.pem
 /cert/*.srl
 
+# The Ruby bot's live export, staged locally for the one-shot migration. Holds
+# real user data, a full SQL dump and rin/auth.yml. Never version this.
+/rin
+
+# Trigger blobs written by the server at runtime.
+/storage
+
 # Build output
 coverage.out
+/ginbot-server
+/ginbot-discord
+/ginbot-matrix
+/ginbot-migrate
