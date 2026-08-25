@@ -5,7 +5,9 @@ package ginbot.v1;
 option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1";
 
 import "ginbot/v1/platform.proto";
-import "google/protobuf/struct.proto";
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
 import "google/protobuf/go_features.proto";
 
 option features.(pb.go).api_level = API_OPAQUE;
@@ -22,8 +24,75 @@ service ReverseService {
 }
 
 message OpenClientActionStreamReq {
-  // Platform of the Connection
-  Platform platform_enum = 1;
+  // Platform of the Connection.
+  //
+  // This is the only message the stream validation interceptor ever sees on
+  // this RPC, and it previously carried no constraints at all — so the
+  // interceptor was validating a message that could not fail.
+  //
+  // All THREE rules are needed, and the reason is not obvious:
+  //
+  //   - required rejects the field being absent. It is a PRESENCE check, not a
+  //     non-zero check. This field has explicit presence, so a client that
+  //     explicitly sets PLATFORM_UNSPECIFIED satisfies required.
+  //   - enum.defined_only rejects a number the enum does not declare, e.g. 99.
+  //     It does NOT reject 0, because 0 is declared: it is
+  //     PLATFORM_UNSPECIFIED.
+  //   - enum.not_in = 0 is therefore what actually refuses an unspecified
+  //     platform, which is the registration the server has to reject — there is
+  //     no platform to route actions to. not_in is a REPEATED rule, so it takes
+  //     a repeated scalar assignment; `= [0]` is an array expression and does
+  //     not parse here.
+  //
+  // Verified against protovalidate rather than assumed: with only the first two
+  // rules, an explicit PLATFORM_UNSPECIFIED passed validation cleanly.
+  Platform platform_enum = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).enum.defined_only = true,
+    (buf.validate.field).enum.not_in = 0
+  ];
+}
+
+// One reminder to post, pushed to the platform client that owns its destination.
+//
+// Every value here is a platform-level string the client can act on directly.
+// The client never sees the reminder row: it posts the message, then reports the
+// outcome with ConfirmDelivery.
+message ReminderDelivery {
+  // Reminder UUIDv7, passed straight back as ConfirmDeliveryReq.id.
+  //
+  // The one value here that is never legitimately empty. Without it the client
+  // cannot confirm, so the server's reclaim returns the reminder to PENDING and
+  // pushes it again every grace period until it fails out — the user is notified
+  // repeatedly for a delivery that can never be acknowledged. A delivery missing
+  // it is dropped by the client rather than posted.
+  string reminder_id = 1;
+  // The reminder text to post. Legitimately EMPTY: a reminder with no message is
+  // still a reminder, and the client substitutes its own minimal body.
+  string message = 2;
+  // The platform's identifier for the channel or room to post in, taken from the
+  // destination's destination_meta. Legitimately EMPTY when the reminder has no
+  // resolvable channel, in which case the client falls back to a direct message.
+  string destination_uid = 3;
+  // The platform's identifier for the reminder's owner — a platform snowflake,
+  // never the GinBot user_account UUID, hence _uid like MessageRef.author_uid.
+  // It is both the direct-message target and the caller identity attached to the
+  // outgoing ConfirmDelivery. Legitimately EMPTY when the owner has no
+  // resolvable platform identity, which costs the DM fallback and makes the
+  // confirmation be rejected — survivable, and bounded by the reclaim's attempt
+  // limit.
+  string owner_uid = 4;
+}
+
+// Development-only heartbeat. Cron emits it once a minute when
+// AppEnvironment == DEVELOPMENT and never in production, so nothing may depend
+// on receiving it: it exists solely to show that the server-to-client push path
+// is alive.
+message TestAction {
+  // When the server emitted the heartbeat. The only thing worth carrying: the
+  // client already knows the action, so the arrival time compared against this
+  // is all the heartbeat can actually tell an operator.
+  google.protobuf.Timestamp emitted_at = 1;
 }
 
 message OpenClientActionStreamResp {
@@ -31,6 +100,26 @@ message OpenClientActionStreamResp {
   Platform platform_enum = 1;
   // Action to be taken by the client
   ClientAction client_action = 2;
-  // Content to be sent processed by the client
-  google.protobuf.Struct content = 3;
+
+  // Field 3 previously carried the payload as an untyped google.protobuf.Struct,
+  // which the two ends agreed on only by convention: a set of shared string-key
+  // constants, a single writer, and nil-guarded reads on the client that existed
+  // purely to survive a payload of the wrong shape. The oneof below replaces
+  // that convention with a compiler guarantee.
+  //
+  // The number and the name stay reserved so they can never be silently reused
+  // with a different meaning — a Struct and a message are not interchangeable on
+  // the wire, and a field number never changes type.
+  reserved 3;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved content;
+
+  // The payload for client_action. Set arms and actions correspond, but the
+  // pairing is not enforceable in the schema, so a client must still check which
+  // arm it actually got: an unset arm and an arm it does not recognise are both
+  // ordinary inputs, not bugs, and neither may be assumed away.
+  oneof payload {
+    ReminderDelivery reminder_delivery = 4;
+    TestAction test = 5;
+  }
 }

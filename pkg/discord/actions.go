@@ -9,9 +9,7 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
-	"github.com/lasikuu/GinBot/pkg/reminder"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // confirmDeliveryTimeout bounds the outgoing ConfirmDelivery call.
@@ -38,44 +36,49 @@ func actionHandlers() client.ActionHandlers {
 }
 
 // handleSendTest logs a development-only heartbeat pushed by cron.
+//
+// The emission time is logged rather than the whole message: the action itself
+// says nothing an operator does not already know, so the only information in a
+// heartbeat is how stale it is by the time it lands here.
 func handleSendTest(_ context.Context, in *pb.OpenClientActionStreamResp) {
-	log.Z.Debug("received test action", zap.Any("content", in.GetContent().AsMap()))
-}
-
-// notification is the validated content of a SEND_NOTIFICATION action.
-type notification struct {
-	ReminderID string
-	Message    string
-	ChannelID  string
-	OwnerUID   string
-}
-
-// parseNotification reads a notification out of the untyped action content.
-//
-// ok is false when the payload carries no reminder id: without one the delivery
-// cannot be confirmed, so posting it would notify the user and then loop forever
-// on every reclaim. Every other field is optional and defaults to empty.
-//
-// It must never panic. discordgo dispatches handlers as bare goroutines with no
-// recover(), so a nil deref here still takes the whole process down on that
-// path — hence a nil Struct and a nil field value are both handled rather than
-// assumed away. pkg/grpc/client.dispatch does now recover around the handlers it
-// calls inline, but that is belt to this function's braces: it downgrades a
-// panic to one lost delivery, it does not make one acceptable.
-func parseNotification(content *structpb.Struct) (notification, bool) {
-	if content == nil {
-		return notification{}, false
+	if !in.HasTest() {
+		// Not a defect on either end: SEND_TEST carries no payload from a
+		// server built before TestAction existed, and the heartbeat is still a
+		// heartbeat without one.
+		log.Z.Debug("received test action with no test payload")
+		return
 	}
 
-	fields := content.GetFields()
-	n := notification{
-		ReminderID: structString(fields, reminder.PayloadKeyReminderID),
-		Message:    structString(fields, reminder.PayloadKeyMessage),
-		ChannelID:  structString(fields, reminder.PayloadKeyDestinationUID),
-		OwnerUID:   structString(fields, reminder.PayloadKeyUserID),
-	}
+	log.Z.Debug("received test action",
+		zap.Time("emitted_at", in.GetTest().GetEmittedAt().AsTime()))
+}
 
-	return n, n.ReminderID != ""
+// reminderDelivery returns the ReminderDelivery the action carries, or nil when
+// it carries something else or nothing at all.
+//
+// The action and the payload arm are set by the same producer but the schema
+// cannot tie them together, so SEND_NOTIFICATION arriving with a different arm
+// — or with none — is an input this client has to handle, not an invariant it
+// may assume. Returning nil rather than panicking matters because
+// pkg/grpc/client.dispatch runs handlers inline on the receive loop: its
+// recover() downgrades a panic to one lost delivery, it does not make one
+// acceptable.
+func reminderDelivery(in *pb.OpenClientActionStreamResp) *pb.ReminderDelivery {
+	switch in.WhichPayload() {
+	case pb.OpenClientActionStreamResp_ReminderDelivery_case:
+		return in.GetReminderDelivery()
+	case pb.OpenClientActionStreamResp_Test_case,
+		pb.OpenClientActionStreamResp_Payload_not_set_case:
+		return nil
+	default:
+		// An arm added to the schema after this switch was written. An arm this
+		// BUILD does not know about does not reach here — protobuf keeps an
+		// unrecognised field in unknownFields and WhichPayload reports not-set
+		// — so this branch is the guard against a future arm being silently
+		// treated as a reminder, and must stay even though it is unreachable
+		// against the schema this file is compiled with.
+		return nil
+	}
 }
 
 // routeKind is how one delivery attempt reaches the user.
@@ -169,35 +172,45 @@ func mentionOwnerOnly(ownerUID string) *discordgo.MessageAllowedMentions {
 // and the send fail; that is treated as a non-fatal failed delivery
 // (delivered=false), not a crash and not a wedged receive loop.
 func handleSendNotification(ctx context.Context, in *pb.OpenClientActionStreamResp) {
-	n, ok := parseNotification(in.GetContent())
-	if !ok {
-		log.Z.Warn("notification action carried no reminder id; dropping it")
+	// GetReminderId is nil-safe, so an absent payload and a payload with an
+	// empty id fail the same check. Both are refused for the same reason:
+	// without an id the delivery cannot be confirmed, so posting it would
+	// notify the user and then loop forever on every reclaim. Dropping it
+	// unconfirmed lets the server's attempt limit fail the reminder out
+	// instead.
+	delivery := reminderDelivery(in)
+	if delivery.GetReminderId() == "" {
+		log.Z.Warn("notification action carried no reminder id; dropping it",
+			zap.String("payload", in.WhichPayload().String()))
 		return
 	}
 
-	delivered := postNotification(n)
+	delivered := postNotification(delivery)
 
-	confirmDelivery(ctx, n.ReminderID, n.OwnerUID, delivered)
+	confirmDelivery(ctx, delivery.GetReminderId(), delivery.GetOwnerUid(), delivered)
 }
 
 // postNotification walks the delivery plan and reports whether the reminder
 // reached the user by any route.
-func postNotification(n notification) bool {
-	plan := deliveryPlan(n.ChannelID, n.OwnerUID)
+func postNotification(d *pb.ReminderDelivery) bool {
+	ownerUID := d.GetOwnerUid()
+	message := d.GetMessage()
+
+	plan := deliveryPlan(d.GetDestinationUid(), ownerUID)
 	if len(plan) == 0 {
 		log.Z.Warn("reminder has neither a channel nor an owner to notify",
-			zap.String("reminder_id", n.ReminderID))
+			zap.String("reminder_id", d.GetReminderId()))
 		return false
 	}
 
 	for _, route := range plan {
 		if route.Kind == routeChannel {
-			if sendChannelMessage(route.Target, channelNotification(n.Message, n.OwnerUID), mentionOwnerOnly(n.OwnerUID)) {
+			if sendChannelMessage(route.Target, channelNotification(message, ownerUID), mentionOwnerOnly(ownerUID)) {
 				return true
 			}
 			continue
 		}
-		if sendDirectMessage(route.Target, directMessageNotification(n.Message)) {
+		if sendDirectMessage(route.Target, directMessageNotification(message)) {
 			return true
 		}
 	}
@@ -278,16 +291,4 @@ func confirmDelivery(ctx context.Context, reminderID string, ownerUID string, de
 			zap.Bool("delivered", delivered),
 			zap.Error(err))
 	}
-}
-
-// structString reads a string field from an untyped payload, returning "" for a
-// missing or non-string field. It guards against every nil the opaque Struct
-// accessors would otherwise deref.
-func structString(fields map[string]*structpb.Value, key string) string {
-	value, ok := fields[key]
-	if !ok || value == nil {
-		return ""
-	}
-
-	return value.GetStringValue()
 }

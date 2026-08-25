@@ -23,7 +23,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestMain(m *testing.M) {
@@ -33,16 +32,40 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
+// actionReminderID is the id every action built by action() carries, so a
+// dispatch test can assert the payload the handler received is the one that was
+// sent rather than merely non-nil.
+const actionReminderID = "0192f000-0000-7000-8000-000000000001"
+
+// action builds a server-pushed action carrying a populated reminder_delivery
+// arm.
+//
+// The arm is set rather than left empty because dispatch's job is to hand the
+// WHOLE message to the handler untouched: with no payload at all, a dispatch
+// that passed a freshly built message instead of the received one would still
+// satisfy every assertion here.
 func action(t *testing.T, clientAction pb.ClientAction) *pb.OpenClientActionStreamResp {
 	t.Helper()
-	content, err := structpb.NewStruct(map[string]any{"key": "value"})
-	if err != nil {
-		t.Fatalf("build struct: %v", err)
-	}
+
+	reminderID := actionReminderID
+
 	return pb.OpenClientActionStreamResp_builder{
 		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
 		ClientAction: &clientAction,
-		Content:      content,
+		ReminderDelivery: pb.ReminderDelivery_builder{
+			ReminderId: &reminderID,
+		}.Build(),
+	}.Build()
+}
+
+// actionWithoutPayload builds an action whose oneof arm is UNSET, which is a
+// representable message and therefore an input dispatch has to carry.
+func actionWithoutPayload(t *testing.T, clientAction pb.ClientAction) *pb.OpenClientActionStreamResp {
+	t.Helper()
+
+	return pb.OpenClientActionStreamResp_builder{
+		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
+		ClientAction: &clientAction,
 	}.Build()
 }
 
@@ -232,8 +255,59 @@ func TestDispatchInvokesRegisteredHandler(t *testing.T) {
 	if got == nil {
 		t.Fatal("handler received a nil action")
 	}
-	if got.GetContent().AsMap()["key"] != "value" {
-		t.Errorf("handler received content %v, want key=value", got.GetContent().AsMap())
+	// The arm AND its contents. dispatch routes on client_action alone and never
+	// looks inside the payload, so what is asserted here is that it hands the
+	// message through intact — the handler is the only thing entitled to decide
+	// what the arm means.
+	if !got.HasReminderDelivery() {
+		t.Fatalf("handler received payload arm %v, want reminder_delivery", got.WhichPayload())
+	}
+	if id := got.GetReminderDelivery().GetReminderId(); id != actionReminderID {
+		t.Errorf("handler received reminder id %q, want %q", id, actionReminderID)
+	}
+}
+
+// TestDispatchDeliversAnActionWithNoPayloadArm.
+//
+// A oneof can be unset, so this is a well-formed message rather than a corrupt
+// one, and dispatch has to deliver it like any other: it is the HANDLER's job to
+// decide that an unset arm is unusable, and it cannot do that for an action
+// dispatch dropped or panicked on.
+//
+// dispatch's own recover() does not make this test redundant. A recovered panic
+// is still a lost delivery and a stack trace in the log, and the point here is
+// that there is nothing to recover from.
+func TestDispatchDeliversAnActionWithNoPayloadArm(t *testing.T) {
+	var got *pb.OpenClientActionStreamResp
+	calls := 0
+
+	handlers := ActionHandlers{
+		pb.ClientAction_CLIENT_ACTION_SEND_NOTIFICATION: func(_ context.Context, in *pb.OpenClientActionStreamResp) {
+			calls++
+			got = in
+		},
+	}
+
+	in := actionWithoutPayload(t, pb.ClientAction_CLIENT_ACTION_SEND_NOTIFICATION)
+	if in.HasPayload() {
+		t.Fatal("the fixture set a payload arm; this test is about an action with none")
+	}
+
+	// No recover() installed: a panic escaping dispatch fails the test here, and
+	// takes the whole client process down in production.
+	dispatch(context.Background(), in, handlers)
+
+	if calls != 1 {
+		t.Fatalf("handler called %d times for an action with no payload arm, want 1", calls)
+	}
+	if got == nil {
+		t.Fatal("handler received a nil action")
+	}
+	if got.WhichPayload() != pb.OpenClientActionStreamResp_Payload_not_set_case {
+		t.Errorf("handler received payload arm %v, want it still unset", got.WhichPayload())
+	}
+	if got.GetReminderDelivery() != nil {
+		t.Error("an unset arm produced a non-nil reminder_delivery")
 	}
 }
 

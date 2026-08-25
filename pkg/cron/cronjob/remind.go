@@ -8,7 +8,6 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/service"
 	"github.com/lasikuu/GinBot/pkg/log"
-	"github.com/lasikuu/GinBot/pkg/reminder"
 	"go.uber.org/zap"
 )
 
@@ -51,12 +50,28 @@ func Remind(ctx context.Context) {
 		action := pb.ClientAction_CLIENT_ACTION_SEND_NOTIFICATION
 		platform := pb.Platform(c.PlatformEnum)
 
+		// Locals rather than &c.ID and friends: the builder keeps the pointers
+		// it is handed instead of copying through them, so what they point at
+		// must not be anything a later iteration can write.
+		//
+		// The three nullable columns flatten to empty strings rather than being
+		// left unset. Each is legitimately absent, and the client treats unset
+		// and empty identically — carrying the distinction would give it a
+		// second spelling of one condition to get wrong.
+		reminderID := c.ID
+		message := deref(c.Message)
+		destinationUID := deref(c.DestinationUID)
+		ownerUID := deref(c.OwnerPlatformUID)
+
 		resp := pb.OpenClientActionStreamResp_builder{
 			PlatformEnum: &platform,
 			ClientAction: &action,
-			Content: reminder.NewDeliveryPayload(
-				c.ID, deref(c.Message), deref(c.DestinationUID), deref(c.OwnerPlatformUID),
-			),
+			ReminderDelivery: pb.ReminderDelivery_builder{
+				ReminderId:     &reminderID,
+				Message:        &message,
+				DestinationUid: &destinationUID,
+				OwnerUid:       &ownerUID,
+			}.Build(),
 		}.Build()
 
 		service.ReverseServer.SendAction(resp)

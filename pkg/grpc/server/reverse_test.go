@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // logs records everything this package logs at warn level or above.
@@ -375,13 +375,18 @@ func requireRecvGoroutineReleased(t *testing.T, stream *fakeStream) {
 	waitFor(t, func() bool { return stream.recvParked() == 0 })
 }
 
+// testAction is the development-only heartbeat, used throughout this file as an
+// action whose CONTENT is irrelevant: every test below is about routing,
+// fan-out, buffering or teardown, none of which reads the payload.
+//
+// The reminder delivery that does carry a payload worth asserting lives in
+// reminder_delivery_test.go.
 func testAction(platform pb.Platform) *pb.OpenClientActionStreamResp {
 	action := pb.ClientAction_CLIENT_ACTION_SEND_TEST
-	content, _ := structpb.NewStruct(map[string]any{"k": "v"})
 	return pb.OpenClientActionStreamResp_builder{
 		PlatformEnum: platform.Enum(),
 		ClientAction: &action,
-		Content:      content,
+		Test:         pb.TestAction_builder{EmittedAt: timestamppb.Now()}.Build(),
 	}.Build()
 }
 
@@ -530,6 +535,19 @@ func TestSendActionWithNoClientsIsANoop(t *testing.T) {
 	}
 }
 
+// TestUnspecifiedPlatformDoesNotRegister covers the HANDLER's own check, and
+// only that.
+//
+// It calls OpenClientActionStream directly over a fakeStream, so no interceptor
+// runs: whatever the stream validation interceptor does or does not reject, this
+// registration reaches the handler and the handler is what refuses it. That is
+// the point — the check is defence in depth, and defence in depth is only worth
+// having if something proves it holds on its own.
+//
+// The other line of defence, the validation interceptor, is covered over the
+// bufconn harness in reverse_validation_test.go. The two are deliberately
+// separate tests: one asserts the schema is enforced before the handler is
+// reached, this one asserts the handler is safe when it is not.
 func TestUnspecifiedPlatformDoesNotRegister(t *testing.T) {
 	s := NewReverseServer()
 	stream := newFakeStream(t)

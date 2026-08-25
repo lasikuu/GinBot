@@ -11,7 +11,7 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/service"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // jobSet is the work RunCronJobs dispatches. Every field is optional: a nil
@@ -47,16 +47,16 @@ func defaultJobs() jobSet {
 
 			platformEnum := pb.Platform_PLATFORM_DISCORD
 			clientAction := pb.ClientAction_CLIENT_ACTION_SEND_TEST
-			content := structpb.Struct{
-				Fields: map[string]*structpb.Value{
-					"test": structpb.NewStringValue("test"),
-				},
-			}
 
 			resp := pb.OpenClientActionStreamResp_builder{
 				PlatformEnum: &platformEnum,
 				ClientAction: &clientAction,
-				Content:      &content,
+				// Stamped at emission, not at receipt, so the client's log line
+				// shows how long the push path took rather than only that it
+				// arrived.
+				Test: pb.TestAction_builder{
+					EmittedAt: timestamppb.Now(),
+				}.Build(),
 			}.Build()
 			service.ReverseServer.SendAction(resp)
 		},

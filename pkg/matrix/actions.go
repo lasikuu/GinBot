@@ -31,6 +31,19 @@ func actionHandlers() client.ActionHandlers {
 }
 
 // handleSendTest logs a development-only heartbeat pushed by cron.
+//
+// The emission time is logged rather than the whole message: the action itself
+// says nothing an operator does not already know, so the only information in a
+// heartbeat is how stale it is by the time it lands here.
 func handleSendTest(_ context.Context, in *pb.OpenClientActionStreamResp) {
-	log.Z.Debug("received test action", zap.Any("content", in.GetContent().AsMap()))
+	if !in.HasTest() {
+		// Not a defect on either end: SEND_TEST carries no payload from a
+		// server built before TestAction existed, and the heartbeat is still a
+		// heartbeat without one.
+		log.Z.Debug("received test action with no test payload")
+		return
+	}
+
+	log.Z.Debug("received test action",
+		zap.Time("emitted_at", in.GetTest().GetEmittedAt().AsTime()))
 }

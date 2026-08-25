@@ -335,6 +335,14 @@ func (s *ReverseServer) OpenClientActionStream(stream pb.ReverseService_OpenClie
 				return r.err
 			}
 
+			// Second line of defence, not the first. OpenClientActionStreamReq
+			// now constrains platform_enum with required + defined_only, so the
+			// validation interceptor rejects an unspecified platform at the edge
+			// and this never fires through the server's own chain. It stays
+			// because it is still reachable: unit tests drive this handler
+			// directly with no chain around it, and an interceptor left off a
+			// future wiring would otherwise register a client on a platform
+			// nothing can ever route to.
 			platform := r.msg.GetPlatformEnum()
 			if platform == pb.Platform_PLATFORM_UNSPECIFIED {
 				log.Z.Warn("ignoring stream registration with unspecified platform")
