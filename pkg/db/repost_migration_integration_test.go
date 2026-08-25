@@ -104,24 +104,35 @@ func newMigrationTestDatabase(t *testing.T) *sql.DB {
 // afterwards — even when repost_entry AND repost_fingerprint both hold rows at
 // the moment Down runs.
 //
-// It assumes the repost migration is the LATEST one, since goose.Down steps
-// down exactly one version with no way to name a migration by feature. True as
-// of this phase; a later migration added after it must update this test.
+// goose.Down steps down exactly ONE version and cannot be pointed at a
+// migration by name, so the repost migration has to be the newest applied one
+// before it is stepped. This used to be asserted and left to the reader to fix:
+// the assertion did its job and failed the moment a later migration was added,
+// but it failed permanently, so the whole test stopped running. It now arranges
+// the precondition itself with DownTo, which is stable against any number of
+// migrations landing after the repost one.
 func TestRepostMigrationDownWorksWithRowsPresentInBothTables(t *testing.T) {
 	ctx := context.Background()
 	handle := newMigrationTestDatabase(t)
 
-	// goose.Down steps down exactly ONE version and cannot be pointed at a
-	// migration by name, so this test is only testing the repost migration for
-	// as long as the repost migration is the newest one. Asserted rather than
-	// assumed: without this, the first migration added after it silently
-	// repoints the whole test at unrelated DDL while still passing green.
+	// DownTo reverts everything with a version ABOVE its target and leaves the
+	// target applied, so this makes the repost migration the newest one without
+	// touching it. Their Down blocks run here rather than under test; that is
+	// incidental, and any failure among them is still worth knowing about.
+	if err := goose.DownTo(handle, "migrations", repostMigrationVersion); err != nil {
+		t.Fatalf("step down the migrations newer than the repost one (%d): %v", repostMigrationVersion, err)
+	}
+
+	// A postcondition now rather than an assumption. Kept because the single
+	// goose.Down below is only meaningful if it lands on the repost migration,
+	// and DownTo silently doing nothing would otherwise repoint this whole test
+	// at unrelated DDL while still passing green.
 	version, err := goose.GetDBVersion(handle)
 	if err != nil {
 		t.Fatalf("read goose version: %v", err)
 	}
 	if version != repostMigrationVersion {
-		t.Fatalf("latest migration is %d, not the repost migration (%d); goose.Down would step down the wrong one, so this test must be updated to target it explicitly",
+		t.Fatalf("after DownTo the latest migration is %d, want the repost migration (%d); goose.Down would step down the wrong one",
 			version, repostMigrationVersion)
 	}
 
