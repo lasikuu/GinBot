@@ -21,11 +21,15 @@ func main() {
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 
-	// gRPC service clients first: a command handler and an action handler both
-	// need them, and neither runs yet.
-	discord.NewDiscordClient(ctx)
+	// Connect service clients first: a command handler and an action handler
+	// both need them, and neither runs yet.
+	clients, err := discord.NewDiscordClient(ctx)
+	if err != nil {
+		log.Z.Fatal("failed to connect to ginbot-server.", zap.Error(err))
+	}
+	defer clients.Close()
 
 	// Blocks until shutdown. The reverse action stream is started from inside,
 	// after the Discord session has been assigned — an action handler reads it.
-	discord.InitializeDiscord(ctx)
+	discord.InitializeDiscord(ctx, clients)
 }

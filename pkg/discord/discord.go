@@ -8,6 +8,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/internal/config"
+	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 )
@@ -22,9 +23,11 @@ var discordSession *discordgo.Session
 // is signalled to stop.
 //
 // ctx bounds the reverse action stream, which is started from here rather than
-// alongside the gRPC clients precisely because its handlers read
-// discordSession.
-func InitializeDiscord(ctx context.Context) {
+// alongside the Connect clients precisely because its handlers read
+// discordSession. clients are the service clients dialed by NewDiscordClient;
+// they travel into every command and action handler through the context — see
+// withClients — rather than as a package global.
+func InitializeDiscord(ctx context.Context, clients *client.Clients) {
 	var err error
 	if discordSession, err = discordgo.New(config.Options.Discord.BotToken); err != nil {
 		log.Z.Fatal("cannot create a new session.", zap.Error(err))
@@ -36,7 +39,9 @@ func InitializeDiscord(ctx context.Context) {
 		log.Z.Info("logged in as.", zap.String("username", s.State.User.Username))
 	})
 
-	discordSession.AddHandler(handleInteraction)
+	discordSession.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		handleInteraction(s, i, clients)
+	})
 
 	// Reading messages at all is opt-in, because it costs a privileged intent.
 	//
@@ -57,8 +62,12 @@ func InitializeDiscord(ctx context.Context) {
 	// TestMessageContentRequired exercises directly with two arguments.
 	if messageContentRequired(config.Options.Discord.CommandPrefixes.Prefixes, config.Options.Discord.MessageContent) || config.Options.Repost.Enabled {
 		discordSession.Identify.Intents |= discordgo.IntentMessageContent
-		discordSession.AddHandler(handleMessage)
-		discordSession.AddHandler(handleMessageUpdate)
+		discordSession.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
+			handleMessage(s, m, clients)
+		})
+		discordSession.AddHandler(func(s *discordgo.Session, m *discordgo.MessageUpdate) {
+			handleMessageUpdate(s, m, clients)
+		})
 	} else {
 		log.Z.Warn("MESSAGE_CONTENT intent not requested, so chat commands, trigger matching and WANHA are all disabled. " +
 			"Set DISCORD_COMMAND_PREFIXES, DISCORD_MESSAGE_CONTENT=true or GINBOT_REPOST=true, and enable the intent in the Discord developer portal.")
@@ -70,7 +79,7 @@ func InitializeDiscord(ctx context.Context) {
 
 	// Only now: discordSession is assigned and connected, so a notification
 	// arriving on the first tick has a session to post through.
-	startActionStream(ctx)
+	startActionStream(ctx, clients)
 
 	commands := applicationCommands(commandRegistry)
 	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))

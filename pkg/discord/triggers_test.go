@@ -3,21 +3,21 @@ package discord
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/trigger"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -88,11 +88,11 @@ func statFor(id string, phrase string, count int64) *pb.TriggerStat {
 
 // invokeTrigger binds named arguments and runs a trigger command's handler.
 //
-// The context is deliberately bare: it carries no origin and there is no gRPC
-// connection. Every case that uses this must be refused by argument validation
-// alone — a handler that resolved the instance first would answer
-// FailedPrecondition instead of the message the user needs, and one that reached
-// the RPC would nil-panic on client.TriggerServiceClient.
+// The context is deliberately bare: it carries no origin and no client.Clients.
+// Every case that uses this must be refused by argument validation alone — a
+// handler that resolved the instance first would answer FailedPrecondition
+// instead of the message the user needs, and one that reached the RPC would
+// nil-panic on clientsFrom(ctx), which is nil for a bare context.
 func invokeTrigger(t *testing.T, cmd command.Command, args map[string]any) error {
 	t.Helper()
 
@@ -104,6 +104,23 @@ func invokeTrigger(t *testing.T, cmd command.Command, args map[string]any) error
 	_, handlerErr := cmd.Handler(context.Background(), inv)
 
 	return handlerErr
+}
+
+// asConnectError extracts the *connect.Error errorMessage needs to read a
+// message off err. errorMessage (pkg/discord/respond.go) only ever reads
+// through connect.CodeOf/(*connect.Error).Message, so an err that is not one
+// at this boundary would reach the user as the generic fallback regardless of
+// what it says — the same failure mode requireInvalidArgument and its callers
+// exist to catch.
+func asConnectError(t *testing.T, err error) *connect.Error {
+	t.Helper()
+
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) {
+		t.Fatalf("error %v is not a *connect.Error, so errorMessage cannot map it", err)
+	}
+
+	return connErr
 }
 
 // requireInvalidArgument asserts a refusal the user can act on.
@@ -119,17 +136,14 @@ func requireInvalidArgument(t *testing.T, err error, mustMention ...string) {
 		t.Fatal("expected a refusal, got nil")
 	}
 
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("error %v is not a gRPC status, so errorMessage cannot map it", err)
-	}
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("code = %s, want %s (message %q)", st.Code(), codes.InvalidArgument, st.Message())
+	connErr := asConnectError(t, err)
+	if connErr.Code() != connect.CodeInvalidArgument {
+		t.Fatalf("code = %s, want %s (message %q)", connErr.Code(), connect.CodeInvalidArgument, connErr.Message())
 	}
 
 	for _, word := range mustMention {
-		if !strings.Contains(strings.ToLower(st.Message()), strings.ToLower(word)) {
-			t.Errorf("message %q does not mention %q", st.Message(), word)
+		if !strings.Contains(strings.ToLower(connErr.Message()), strings.ToLower(word)) {
+			t.Errorf("message %q does not mention %q", connErr.Message(), word)
 		}
 	}
 }
@@ -968,14 +982,11 @@ func TestCurrentTriggerInstanceRefusesAContextWithNoOrigin(t *testing.T) {
 		t.Fatal("a context with no origin produced an instance")
 	}
 
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("error %v is not a gRPC status, so errorMessage cannot map it", err)
+	connErr := asConnectError(t, err)
+	if connErr.Code() != connect.CodeFailedPrecondition {
+		t.Errorf("code = %s, want %s (message %q)", connErr.Code(), connect.CodeFailedPrecondition, connErr.Message())
 	}
-	if st.Code() != codes.FailedPrecondition {
-		t.Errorf("code = %s, want %s (message %q)", st.Code(), codes.FailedPrecondition, st.Message())
-	}
-	if st.Message() == "" {
+	if connErr.Message() == "" {
 		t.Error("the refusal has no message, so the user is shown an empty reply")
 	}
 }
@@ -1078,8 +1089,14 @@ func TestTriggerCommandsRefuseAnOutOfRangeChance(t *testing.T) {
 // on HasX(), and "sent a defaulted value for an argument the caller omitted" is
 // the named worst-bug class in this codebase — editing a trigger's reply must not
 // silently reset its chance. Nothing else can observe that but the request.
+//
+// It embeds ginbotv1connect.TriggerServiceClient (the Connect-generated
+// interface) rather than the deleted grpc-go pb.TriggerServiceClient, and its
+// methods carry the Connect signature — (context.Context,
+// *connect.Request[Req]) (*connect.Response[Resp], error) — so it plugs
+// directly into a *client.Clients literal via the Trigger field.
 type fakeTriggerClient struct {
-	pb.TriggerServiceClient
+	ginbotv1connect.TriggerServiceClient
 
 	update *pb.UpdateTriggerReq
 	create *pb.CreateTriggerReq
@@ -1095,58 +1112,54 @@ type fakeTriggerClient struct {
 	err error
 }
 
-func (f *fakeTriggerClient) UpdateTrigger(_ context.Context, in *pb.UpdateTriggerReq, _ ...grpc.CallOption) (*pb.UpdateTriggerResp, error) {
-	f.update = in
+func (f *fakeTriggerClient) UpdateTrigger(_ context.Context, in *connect.Request[pb.UpdateTriggerReq]) (*connect.Response[pb.UpdateTriggerResp], error) {
+	f.update = in.Msg
 	if f.err != nil {
 		return nil, f.err
 	}
 
-	return pb.UpdateTriggerResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.UpdateTriggerResp_builder{}.Build()), nil
 }
 
-func (f *fakeTriggerClient) CreateTrigger(_ context.Context, in *pb.CreateTriggerReq, _ ...grpc.CallOption) (*pb.CreateTriggerResp, error) {
-	f.create = in
+func (f *fakeTriggerClient) CreateTrigger(_ context.Context, in *connect.Request[pb.CreateTriggerReq]) (*connect.Response[pb.CreateTriggerResp], error) {
+	f.create = in.Msg
 	if f.err != nil {
 		return nil, f.err
 	}
 
 	id := triggerID
 
-	return pb.CreateTriggerResp_builder{Id: &id}.Build(), nil
+	return connect.NewResponse(pb.CreateTriggerResp_builder{Id: &id}.Build()), nil
 }
 
-func (f *fakeTriggerClient) ListTriggers(_ context.Context, in *pb.ListTriggersReq, _ ...grpc.CallOption) (*pb.ListTriggersResp, error) {
-	f.list = in
+func (f *fakeTriggerClient) ListTriggers(_ context.Context, in *connect.Request[pb.ListTriggersReq]) (*connect.Response[pb.ListTriggersResp], error) {
+	f.list = in.Msg
 	f.listCalls++
 	if f.err != nil {
 		return nil, f.err
 	}
 
-	return pb.ListTriggersResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.ListTriggersResp_builder{}.Build()), nil
 }
 
-func (f *fakeTriggerClient) GetTriggerStats(_ context.Context, in *pb.GetTriggerStatsReq, _ ...grpc.CallOption) (*pb.GetTriggerStatsResp, error) {
-	f.stats = in
+func (f *fakeTriggerClient) GetTriggerStats(_ context.Context, in *connect.Request[pb.GetTriggerStatsReq]) (*connect.Response[pb.GetTriggerStatsResp], error) {
+	f.stats = in.Msg
 	if f.err != nil {
 		return nil, f.err
 	}
 
-	return pb.GetTriggerStatsResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.GetTriggerStatsResp_builder{}.Build()), nil
 }
 
-// withFakeTriggerClient swaps the package-level client for the duration of a
-// test and restores it, so tests stay order-independent.
-func withFakeTriggerClient(t *testing.T, fake *fakeTriggerClient) {
-	t.Helper()
-
-	previous := client.TriggerServiceClient
-	client.TriggerServiceClient = fake
-	t.Cleanup(func() { client.TriggerServiceClient = previous })
-}
-
-// guildContext is the context a handler receives for a command typed in a guild.
-func guildContext() context.Context {
-	return withOrigin(context.Background(), "guild-1", "channel-1")
+// guildContext is the context a handler receives for a command typed in a
+// guild, carrying clients the way commandContext does in production —
+// through the context (withClients), never through a package-level global.
+// Passing a bare context here would nil-panic the moment a handler reached
+// clientsFrom(ctx).Trigger, exactly as an unset client.TriggerServiceClient
+// global used to.
+func guildContext(clients *client.Clients) context.Context {
+	ctx := withOrigin(context.Background(), "guild-1", "channel-1")
+	return withClients(ctx, clients)
 }
 
 // invokeNamed runs a command's handler with named arguments, the way a slash
@@ -1228,9 +1241,9 @@ func TestModifyTriggerSendsOnlyTheSuppliedFields(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := &fakeTriggerClient{}
-			withFakeTriggerClient(t, fake)
+			ctx := guildContext(&client.Clients{Trigger: fake})
 
-			if _, err := invokeNamed(t, triggerModCommand(), guildContext(), tt.args); err != nil {
+			if _, err := invokeNamed(t, triggerModCommand(), ctx, tt.args); err != nil {
 				t.Fatalf("handler returned %v", err)
 			}
 			if fake.update == nil {
@@ -1272,11 +1285,11 @@ func TestModifyTriggerRefusesAnEmptyPatch(t *testing.T) {
 		{"id": triggerID, "reply": "", "phrase": "", "file": ""},
 	} {
 		fake := &fakeTriggerClient{}
-		withFakeTriggerClient(t, fake)
+		ctx := guildContext(&client.Clients{Trigger: fake})
 
-		_, err := invokeNamed(t, triggerModCommand(), guildContext(), args)
-		if status.Code(err) != codes.InvalidArgument {
-			t.Errorf("args %v: code = %v, want InvalidArgument", args, status.Code(err))
+		_, err := invokeNamed(t, triggerModCommand(), ctx, args)
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("args %v: code = %v, want InvalidArgument", args, connect.CodeOf(err))
 		}
 		if fake.update != nil {
 			t.Errorf("args %v: an empty patch was sent to the server anyway", args)
@@ -1289,15 +1302,15 @@ func TestModifyTriggerRefusesAnEmptyPatch(t *testing.T) {
 // be paid for and never played. Refused before the RPC, so no CDN fetch happens.
 func TestAddTriggerRefusesBothAReplyAndAFile(t *testing.T) {
 	fake := &fakeTriggerClient{}
-	withFakeTriggerClient(t, fake)
+	ctx := guildContext(&client.Clients{Trigger: fake})
 
-	_, err := invokeNamed(t, triggerAddCommand(), guildContext(), map[string]any{
+	_, err := invokeNamed(t, triggerAddCommand(), ctx, map[string]any{
 		"phrase": "gm",
 		"reply":  "good morning",
 		"file":   "https://cdn.discordapp.com/x.png",
 	})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", connect.CodeOf(err))
 	}
 	if fake.create != nil {
 		t.Error("the request was sent anyway, so the server fetched the file")
@@ -1309,9 +1322,9 @@ func TestAddTriggerRefusesBothAReplyAndAFile(t *testing.T) {
 // explicitly would work today but pins a default the server owns.
 func TestAddTriggerLeavesAnUnchosenModeUnset(t *testing.T) {
 	fake := &fakeTriggerClient{}
-	withFakeTriggerClient(t, fake)
+	ctx := guildContext(&client.Clients{Trigger: fake})
 
-	if _, err := invokeNamed(t, triggerAddCommand(), guildContext(), map[string]any{
+	if _, err := invokeNamed(t, triggerAddCommand(), ctx, map[string]any{
 		"phrase": "gm",
 		"reply":  "good morning",
 	}); err != nil {
@@ -1339,50 +1352,53 @@ func TestAddTriggerLeavesAnUnchosenModeUnset(t *testing.T) {
 // The guard matters as much as the rewrite. It must not explain an unrelated
 // refusal as a clearance problem, and it must not touch a non-regex request.
 func TestExplainRegexRefusal(t *testing.T) {
-	denied := status.Error(codes.PermissionDenied, "regex triggers require CLEARANCE_MODERATOR clearance")
+	denied := connect.NewError(connect.CodePermissionDenied, errors.New("regex triggers require CLEARANCE_MODERATOR clearance"))
 
 	tests := []struct {
 		name     string
 		err      error
 		mode     pb.TriggerMode
-		wantCode codes.Code
+		wantCode connect.Code
 		wantText string
 	}{
 		{
 			name:     "a regex refusal is explained",
 			err:      denied,
 			mode:     pb.TriggerMode_TRIGGER_MODE_REGEX,
-			wantCode: codes.FailedPrecondition,
+			wantCode: connect.CodeFailedPrecondition,
 			wantText: "moderator",
 		},
 		{
 			name:     "a refusal for another mode is left alone",
 			err:      denied,
 			mode:     pb.TriggerMode_TRIGGER_MODE_ANY,
-			wantCode: codes.PermissionDenied,
+			wantCode: connect.CodePermissionDenied,
 		},
 		{
 			name:     "a regex request refused for another reason is left alone",
-			err:      status.Error(codes.NotFound, "trigger not found"),
+			err:      connect.NewError(connect.CodeNotFound, errors.New("trigger not found")),
 			mode:     pb.TriggerMode_TRIGGER_MODE_REGEX,
-			wantCode: codes.NotFound,
+			wantCode: connect.CodeNotFound,
 		},
 		{
 			name:     "an unspecified mode is left alone",
 			err:      denied,
 			mode:     pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED,
-			wantCode: codes.PermissionDenied,
+			wantCode: connect.CodePermissionDenied,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := explainRegexRefusal(tt.err, tt.mode)
-			if status.Code(got) != tt.wantCode {
-				t.Fatalf("code = %v, want %v", status.Code(got), tt.wantCode)
+			if connect.CodeOf(got) != tt.wantCode {
+				t.Fatalf("code = %v, want %v", connect.CodeOf(got), tt.wantCode)
 			}
-			if tt.wantText != "" && !strings.Contains(status.Convert(got).Message(), tt.wantText) {
-				t.Errorf("message %q does not name %q", status.Convert(got).Message(), tt.wantText)
+			if tt.wantText != "" {
+				connErr := asConnectError(t, got)
+				if !strings.Contains(connErr.Message(), tt.wantText) {
+					t.Errorf("message %q does not name %q", connErr.Message(), tt.wantText)
+				}
 			}
 			// Whatever the outcome, the user must never see a raw code name.
 			if message := errorMessage(got); message == "" {
@@ -1393,10 +1409,10 @@ func TestExplainRegexRefusal(t *testing.T) {
 }
 
 // The explained refusal has to survive errorMessage, which is the only thing
-// standing between a gRPC status and the channel. A PermissionDenied would be
+// standing between a Connect error and the channel. A PermissionDenied would be
 // flattened to a message that names no requirement at all.
 func TestExplainedRegexRefusalReachesTheUser(t *testing.T) {
-	denied := status.Error(codes.PermissionDenied, "regex triggers require CLEARANCE_MODERATOR clearance")
+	denied := connect.NewError(connect.CodePermissionDenied, errors.New("regex triggers require CLEARANCE_MODERATOR clearance"))
 
 	explained := errorMessage(explainRegexRefusal(denied, pb.TriggerMode_TRIGGER_MODE_REGEX))
 	if !strings.Contains(explained, regexClearanceRequirement) {
@@ -1474,9 +1490,9 @@ func TestTriggerListMaxLimitFitsOneMessage(t *testing.T) {
 func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
 	t.Run("omitted", func(t *testing.T) {
 		fake := &fakeTriggerClient{}
-		withFakeTriggerClient(t, fake)
+		ctx := guildContext(&client.Clients{Trigger: fake})
 
-		if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{}); err != nil {
+		if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{}); err != nil {
 			t.Fatalf("handler returned %v", err)
 		}
 		if fake.list == nil {
@@ -1497,9 +1513,9 @@ func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
 	// without this, a handler that never set the field would pass.
 	t.Run("supplied", func(t *testing.T) {
 		fake := &fakeTriggerClient{}
-		withFakeTriggerClient(t, fake)
+		ctx := guildContext(&client.Clients{Trigger: fake})
 
-		if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{"mine": true}); err != nil {
+		if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{"mine": true}); err != nil {
 			t.Fatalf("handler returned %v", err)
 		}
 		if fake.list == nil {
@@ -1515,9 +1531,9 @@ func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
 	// because `--mine=false` is spellable in Discord's UI.
 	t.Run("explicitly false", func(t *testing.T) {
 		fake := &fakeTriggerClient{}
-		withFakeTriggerClient(t, fake)
+		ctx := guildContext(&client.Clients{Trigger: fake})
 
-		if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{"mine": false}); err != nil {
+		if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{"mine": false}); err != nil {
 			t.Fatalf("handler returned %v", err)
 		}
 		if fake.list == nil {
@@ -1532,20 +1548,20 @@ func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
 // countingUserClient counts GetUser calls so that a round trip which no longer
 // happens can be asserted to not happen.
 //
-// A nil client.UserServiceClient would also catch a regression, by panicking,
-// but as an unrelated-looking crash rather than a named failure — and only for
-// as long as nothing else in the package installs one.
+// A *client.Clients with a nil User field would also catch a regression, by
+// panicking, but as an unrelated-looking crash rather than a named failure —
+// and only for as long as nothing else in the package installs one.
 type countingUserClient struct {
-	pb.UserServiceClient
+	ginbotv1connect.UserServiceClient
 
 	getUserCalls int
 }
 
-func (c *countingUserClient) GetUser(_ context.Context, _ *pb.GetUserReq, _ ...grpc.CallOption) (*pb.GetUserResp, error) {
+func (c *countingUserClient) GetUser(_ context.Context, _ *connect.Request[pb.GetUserReq]) (*connect.Response[pb.GetUserResp], error) {
 	c.getUserCalls++
 
 	id := "0192f000-0000-7000-8000-0000000000aa"
-	return pb.GetUserResp_builder{User: pb.User_builder{Id: &id}.Build()}.Build(), nil
+	return connect.NewResponse(pb.GetUserResp_builder{User: pb.User_builder{Id: &id}.Build()}.Build()), nil
 }
 
 // TestListTriggersWithMineMakesExactlyOneRPC is the user-visible payoff of
@@ -1564,14 +1580,10 @@ func (c *countingUserClient) GetUser(_ context.Context, _ *pb.GetUserReq, _ ...g
 // reintroduced GetUser would produce exactly the same listing.
 func TestListTriggersWithMineMakesExactlyOneRPC(t *testing.T) {
 	fake := &fakeTriggerClient{}
-	withFakeTriggerClient(t, fake)
-
 	users := &countingUserClient{}
-	previous := client.UserServiceClient
-	client.UserServiceClient = users
-	t.Cleanup(func() { client.UserServiceClient = previous })
+	ctx := guildContext(&client.Clients{Trigger: fake, User: users})
 
-	if _, err := invokeNamed(t, triggerListCommand(), guildContext(), map[string]any{"mine": true}); err != nil {
+	if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{"mine": true}); err != nil {
 		t.Fatalf("handler returned %v", err)
 	}
 
@@ -1598,9 +1610,9 @@ func TestListTriggersWithMineMakesExactlyOneRPC(t *testing.T) {
 // FailedPrecondition rather than a wrong answer.
 func TestTriggerStatsScopesToTheCallersInstance(t *testing.T) {
 	fake := &fakeTriggerClient{}
-	withFakeTriggerClient(t, fake)
+	ctx := guildContext(&client.Clients{Trigger: fake})
 
-	if _, err := invokeNamed(t, triggerStatsCommand(), guildContext(), map[string]any{"kind": "called"}); err != nil {
+	if _, err := invokeNamed(t, triggerStatsCommand(), ctx, map[string]any{"kind": "called"}); err != nil {
 		t.Fatalf("handler returned %v", err)
 	}
 	if fake.stats == nil {
@@ -1636,14 +1648,14 @@ func TestTriggerCommandsRefuseADirectMessage(t *testing.T) {
 	for name, cmd := range commands {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeTriggerClient{}
-			withFakeTriggerClient(t, fake)
 
 			// An origin with no guild is exactly what a DM delivers.
 			ctx := withOrigin(context.Background(), "", "dm-channel")
+			ctx = withClients(ctx, &client.Clients{Trigger: fake})
 
 			_, err := invokeNamed(t, cmd, ctx, args[name])
-			if status.Code(err) != codes.FailedPrecondition {
-				t.Fatalf("code = %v, want FailedPrecondition", status.Code(err))
+			if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("code = %v, want FailedPrecondition", connect.CodeOf(err))
 			}
 			if message := errorMessage(err); message == "Something went wrong." {
 				t.Error("the refusal reached the user as a generic failure")

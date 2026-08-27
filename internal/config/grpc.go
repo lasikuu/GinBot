@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 
 	"github.com/lasikuu/GinBot/internal/auth"
@@ -28,6 +29,21 @@ type GRPCServerOptions struct {
 	Port      string
 	TLS       bool
 	CertsPath string
+}
+
+// ClientBaseURL is the scheme://host:port the platform clients dial.
+//
+// Plain data, deliberately: it names the boundary without building anything
+// transport-shaped from it, matching the reasoning on GRPCServerOptions
+// above. ClientOptions in client.go is what turns this into a client.Options,
+// including loading TLS material when TLS is set.
+func (o GRPCServerOptions) ClientBaseURL() string {
+	scheme := "http"
+	if o.TLS {
+		scheme = "https"
+	}
+
+	return scheme + "://" + net.JoinHostPort(o.Host, o.Port)
 }
 
 // MaxGRPCMessageBytes bounds a single Connect message. It must exceed

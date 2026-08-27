@@ -2,25 +2,25 @@ package callermeta
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// incoming converts an outgoing context into an incoming one, simulating the
-// round trip over the wire so both halves of the contract are exercised together.
-func incoming(t *testing.T, ctx context.Context) context.Context {
-	t.Helper()
-	md, ok := metadata.FromOutgoingContext(ctx)
-	if !ok {
-		t.Fatal("no outgoing metadata attached")
-	}
-	return metadata.NewIncomingContext(context.Background(), md)
+// headerFor materialises whatever NewOutgoingContext/NewOutgoingOrigin
+// attached to ctx into an http.Header, the way a Connect client actually puts
+// it on the wire. Every round-trip test below goes through this rather than
+// reading context values directly, so what is pinned is the WIRE contract —
+// the same one FromHeader/OriginFromHeader parse — and not an implementation
+// detail of how the values are stashed on ctx.
+func headerFor(ctx context.Context) http.Header {
+	header := make(http.Header)
+	WriteHeader(ctx, header)
+	return header
 }
 
 // This is the regression test for the original break: the client sent the enum
@@ -53,30 +53,27 @@ func TestRoundTrip(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := NewOutgoingContext(context.Background(), tt.platform, tt.uid)
+			header := headerFor(ctx)
 
-			md, ok := metadata.FromOutgoingContext(ctx)
-			if !ok {
-				t.Fatal("no outgoing metadata attached")
+			if got := header.Get(HeaderPlatformEnum); got != tt.platform.String() {
+				t.Errorf("outgoing %q = %q, want %q", HeaderPlatformEnum, got, tt.platform.String())
 			}
-			if got := md.Get(HeaderPlatformEnum); len(got) != 1 || got[0] != tt.platform.String() {
-				t.Errorf("outgoing %q = %v, want [%q]", HeaderPlatformEnum, got, tt.platform.String())
-			}
-			if userValues := md.Get(HeaderUserID); tt.wantUID {
-				if len(userValues) != 1 || userValues[0] != tt.uid {
-					t.Errorf("outgoing %q = %v, want [%q]", HeaderUserID, userValues, tt.uid)
+			if tt.wantUID {
+				if got := header.Get(HeaderUserID); got != tt.uid {
+					t.Errorf("outgoing %q = %q, want %q", HeaderUserID, got, tt.uid)
 				}
-			} else if len(userValues) != 0 {
-				t.Errorf("outgoing %q = %v, want it absent entirely", HeaderUserID, userValues)
+			} else if got := header.Get(HeaderUserID); got != "" {
+				t.Errorf("outgoing %q = %q, want it absent entirely", HeaderUserID, got)
 			}
 
 			// No origin was attached, and none must appear.
-			if got, ok := OriginFromIncomingContext(incoming(t, ctx)); ok {
+			if got, ok := OriginFromHeader(header); ok {
 				t.Errorf("origin = %+v on a call that carried none", got)
 			}
 
-			caller, err := FromIncomingContext(incoming(t, ctx))
+			caller, err := FromHeader(header)
 			if err != nil {
-				t.Fatalf("FromIncomingContext: %v", err)
+				t.Fatalf("FromHeader: %v", err)
 			}
 			if caller.PlatformEnum != tt.platform {
 				t.Errorf("platform = %v, want %v", caller.PlatformEnum, tt.platform)
@@ -134,23 +131,20 @@ func TestOriginRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, "uid")
 			ctx = NewOutgoingOrigin(ctx, tt.origin)
+			header := headerFor(ctx)
 
 			// The wire form, for the same reason as in TestRoundTrip: both ends
 			// of this encoding live here, so agreeing with each other on the
 			// wrong header name would otherwise go unnoticed.
-			md, hasMetadata := metadata.FromOutgoingContext(ctx)
-			if !hasMetadata {
-				t.Fatal("no outgoing metadata attached")
-			}
-			if values := md.Get(HeaderInstanceUID); tt.wantOK {
-				if len(values) != 1 || values[0] != tt.wantInstance {
-					t.Errorf("outgoing %q = %v, want [%q]", HeaderInstanceUID, values, tt.wantInstance)
+			if got := header.Get(HeaderInstanceUID); tt.wantOK {
+				if got != tt.wantInstance {
+					t.Errorf("outgoing %q = %q, want %q", HeaderInstanceUID, got, tt.wantInstance)
 				}
-			} else if len(values) != 0 {
-				t.Errorf("outgoing %q = %v, want it absent entirely", HeaderInstanceUID, values)
+			} else if got != "" {
+				t.Errorf("outgoing %q = %q, want it absent entirely", HeaderInstanceUID, got)
 			}
 
-			got, ok := OriginFromIncomingContext(incoming(t, ctx))
+			got, ok := OriginFromHeader(header)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v (origin = %+v)", ok, tt.wantOK, got)
 			}
@@ -172,11 +166,11 @@ func TestOriginAndIdentityCoexist(t *testing.T) {
 	ctx := NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_MATRIX_PROTOCOL, "@a:example.org")
 	ctx = NewOutgoingOrigin(ctx, Origin{InstanceUID: "!room:example.org", DestinationUID: "!room:example.org"})
 
-	incomingCtx := incoming(t, ctx)
+	header := headerFor(ctx)
 
-	caller, err := FromIncomingContext(incomingCtx)
+	caller, err := FromHeader(header)
 	if err != nil {
-		t.Fatalf("FromIncomingContext: %v", err)
+		t.Fatalf("FromHeader: %v", err)
 	}
 	if caller.PlatformEnum != pb.Platform_PLATFORM_MATRIX_PROTOCOL {
 		t.Errorf("platform = %v, want %v", caller.PlatformEnum, pb.Platform_PLATFORM_MATRIX_PROTOCOL)
@@ -185,34 +179,54 @@ func TestOriginAndIdentityCoexist(t *testing.T) {
 		t.Errorf("PlatformUID = %v, want @a:example.org", caller.PlatformUID)
 	}
 
-	if _, ok := OriginFromIncomingContext(incomingCtx); !ok {
+	if _, ok := OriginFromHeader(header); !ok {
 		t.Error("origin was lost when identity was attached")
 	}
 }
 
-// This documents a trap; it does not endorse it. NewOutgoingContext calls
-// metadata.NewOutgoingContext, which REPLACES the outgoing metadata wholesale,
-// so an origin appended first is silently discarded. Swapping the two lines in
-// discord.commandContext disables origin bootstrap forever and every other test
-// in the repository still passes — this is the one that would not.
-func TestOriginIsLostWhenAttachedBeforeIdentity(t *testing.T) {
+// TestOriginOrderDoesNotMatter used to be TestOriginIsLostWhenAttachedBeforeIdentity,
+// which documented a real trap: NewOutgoingContext called
+// metadata.NewOutgoingContext, which REPLACED the outgoing gRPC metadata
+// wholesale, so an origin appended first was silently discarded. Swapping the
+// two lines in discord.commandContext used to disable origin bootstrap
+// forever with every other test in the repository still green.
+//
+// The Connect port removed the hazard rather than just the symptom:
+// NewOutgoingContext and NewOutgoingOrigin now attach independent context
+// VALUES (distinct keys) instead of sharing one metadata.MD that the second
+// call could replace wholesale. There is no "wrong order" left to trap a
+// caller into, so this asserts the new, stronger property directly: both call
+// orders produce byte-identical headers. If this ever fails, the replacement
+// hazard is back and the ordering warning on NewOutgoingOrigin needs to be
+// restored along with a test that pins the wrong order as broken again.
+func TestOriginOrderDoesNotMatter(t *testing.T) {
 	origin := Origin{InstanceUID: "guild-1", DestinationUID: "channel-1"}
 
-	// The wrong order.
-	ctx := NewOutgoingOrigin(context.Background(), origin)
-	ctx = NewOutgoingContext(ctx, pb.Platform_PLATFORM_DISCORD, "uid")
+	// Origin first, identity second — the order that used to lose the origin.
+	wrongOrderFirst := NewOutgoingOrigin(context.Background(), origin)
+	wrongOrderFirst = NewOutgoingContext(wrongOrderFirst, pb.Platform_PLATFORM_DISCORD, "uid")
 
-	if got, ok := OriginFromIncomingContext(incoming(t, ctx)); ok {
-		t.Fatalf("origin survived the wrong ordering as %+v; if this now works, "+
-			"delete this test and the ordering warning on NewOutgoingOrigin", got)
+	// Identity first, origin second — the order that was always documented as
+	// required.
+	rightOrderFirst := NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, "uid")
+	rightOrderFirst = NewOutgoingOrigin(rightOrderFirst, origin)
+
+	headerA := headerFor(wrongOrderFirst)
+	headerB := headerFor(rightOrderFirst)
+
+	for _, name := range []string{HeaderPlatformEnum, HeaderUserID, HeaderInstanceUID, HeaderDestinationUID} {
+		if a, b := headerA.Get(name), headerB.Get(name); a != b {
+			t.Errorf("%s: origin-first order produced %q, identity-first order produced %q; the two orders must agree", name, a, b)
+		}
 	}
 
-	// The right order, for contrast: same two calls, same arguments.
-	right := NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, "uid")
-	right = NewOutgoingOrigin(right, origin)
-
-	if _, ok := OriginFromIncomingContext(incoming(t, right)); !ok {
-		t.Error("origin was lost even in the documented order")
+	// And both orders must actually carry the origin, not merely agree on
+	// dropping it.
+	if _, ok := OriginFromHeader(headerA); !ok {
+		t.Error("origin-first order lost the origin; the replacement hazard is back")
+	}
+	if _, ok := OriginFromHeader(headerB); !ok {
+		t.Error("identity-first order lost the origin")
 	}
 }
 
@@ -249,7 +263,7 @@ func TestMetaShapesAreCanonical(t *testing.T) {
 }
 
 // The jsonb field names are a STORAGE contract and are pinned as literals here
-// on purpose. See the comment block above them in callermeta.go.
+// on purpose, byte-for-byte. See the comment block above them in callermeta.go.
 //
 // instance.instance_meta and destination.destination_meta are matched by jsonb
 // equality against rows that already exist, indexed by
@@ -335,11 +349,11 @@ func TestHeaderAndJSONBNamesAreIndependent(t *testing.T) {
 	}
 }
 
-// gRPC lowercases metadata keys on the wire, so a constant containing an
-// uppercase letter is written under one name and read under another — a
-// silently anonymous caller rather than an error. Cheap to assert, and the
-// rename is exactly when it could have been introduced.
-func TestHeaderNamesAreValidMetadataKeys(t *testing.T) {
+// HTTP header field names are case-insensitive on the wire and net/http
+// canonicalises them, but a constant containing an uppercase letter or an
+// invalid character is still worth refusing here: it is cheap to assert, and
+// the rename is exactly when it could have been introduced.
+func TestHeaderNamesAreValidHTTPHeaderKeys(t *testing.T) {
 	headers := map[string]string{
 		"HeaderPlatformEnum":   HeaderPlatformEnum,
 		"HeaderUserID":         HeaderUserID,
@@ -350,18 +364,13 @@ func TestHeaderNamesAreValidMetadataKeys(t *testing.T) {
 	for name, header := range headers {
 		t.Run(name, func(t *testing.T) {
 			if header != strings.ToLower(header) {
-				t.Errorf("%s = %q is not lowercase; gRPC will lowercase it on the wire "+
-					"and md.Get with this constant will then never match", name, header)
-			}
-			// -bin is gRPC's marker for base64-encoded binary values. A key
-			// ending in it changes how the value is transported.
-			if strings.HasSuffix(header, "-bin") {
-				t.Errorf("%s = %q ends in -bin, which makes gRPC treat the value as binary", name, header)
+				t.Errorf("%s = %q is not lowercase", name, header)
 			}
 
-			md := metadata.Pairs(header, "value")
-			if got := md.Get(header); len(got) != 1 || got[0] != "value" {
-				t.Errorf("%s = %q does not round-trip through metadata.Pairs/Get: %v", name, header, got)
+			h := make(http.Header)
+			h.Set(header, "value")
+			if got := h.Get(header); got != "value" {
+				t.Errorf("%s = %q does not round-trip through http.Header.Set/Get: %v", name, header, h)
 			}
 		})
 	}
@@ -375,67 +384,22 @@ func TestHeaderNamesAreValidMetadataKeys(t *testing.T) {
 // what a partial rollout produces: an old client against a new server. An
 // InvalidArgument tells an operator what happened; an anonymous caller does not.
 func TestPreRenameHeaderNamesAreNotAccepted(t *testing.T) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-		"platform_enum", pb.Platform_PLATFORM_DISCORD.String(),
-		"user_id", "123456789",
-	))
+	header := make(http.Header)
+	header.Set("platform_enum", pb.Platform_PLATFORM_DISCORD.String())
+	header.Set("user_id", "123456789")
 
-	if _, err := FromIncomingContext(ctx); err == nil {
+	if _, err := FromHeader(header); err == nil {
 		t.Fatal("the old header names were accepted; the server is reading two spellings, " +
 			"so a rename of either is no longer observable")
-	} else if got := status.Code(err); got != codes.InvalidArgument {
-		t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
+	} else if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
 	}
 
 	// And the origin half, which reports "no origin" rather than an error.
-	originCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-		"instance_uid", "guild-1",
-		"destination_uid", "channel-1",
-	))
-	if got, ok := OriginFromIncomingContext(originCtx); ok {
+	originHeader := make(http.Header)
+	originHeader.Set("instance_uid", "guild-1")
+	originHeader.Set("destination_uid", "channel-1")
+	if got, ok := OriginFromHeader(originHeader); ok {
 		t.Errorf("the old origin header names produced %+v; they must not be read", got)
-	}
-}
-
-func TestFromIncomingContextErrors(t *testing.T) {
-	tests := []struct {
-		name string
-		ctx  context.Context
-	}{
-		{
-			name: "no metadata at all",
-			ctx:  context.Background(),
-		},
-		{
-			name: "platform_enum missing",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderUserID, "1")),
-		},
-		{
-			name: "platform_enum empty",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderPlatformEnum, "")),
-		},
-		{
-			name: "platform_enum unknown name",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderPlatformEnum, "PLATFORM_CARRIER_PIGEON")),
-		},
-		{
-			// The pre-fix client/server mismatch: a numeric value is not a valid name.
-			name: "platform_enum sent as a number",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderPlatformEnum, "1")),
-		},
-		{
-			name: "platform_enum unspecified",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderPlatformEnum, pb.Platform_PLATFORM_UNSPECIFIED.String())),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := FromIncomingContext(tt.ctx); err == nil {
-				t.Fatal("expected an error")
-			} else if got := status.Code(err); got != codes.InvalidArgument {
-				t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
-			}
-		})
 	}
 }

@@ -3,9 +3,11 @@ package discord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/command"
@@ -14,8 +16,6 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // reRollPrefix namespaces a re-roll button's custom ID so that the component
@@ -104,17 +104,18 @@ func discordOrigin(guildID string, channelID string) callermeta.Origin {
 }
 
 // commandContext assembles the context every handler receives: caller identity
-// and origin as gRPC metadata, plus the invoking user for the handlers that
-// need a display name.
-func commandContext(user *discordgo.User, guildID string, channelID string) context.Context {
+// and origin as request headers, the service clients, plus the invoking user
+// for the handlers that need a display name.
+func commandContext(clients *client.Clients, user *discordgo.User, guildID string, channelID string) context.Context {
 	ctx := callermeta.NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, user.ID)
 	ctx = callermeta.NewOutgoingOrigin(ctx, discordOrigin(guildID, channelID))
 	ctx = withOrigin(ctx, guildID, channelID)
+	ctx = withClients(ctx, clients)
 
 	return withInvoker(ctx, user)
 }
 
-func interactionContext(i *discordgo.InteractionCreate) (context.Context, error) {
+func interactionContext(i *discordgo.InteractionCreate, clients *client.Clients) (context.Context, error) {
 	var user *discordgo.User
 	// Member.User is populated for guild interactions and User for DMs, but the
 	// nested pointer is checked too: a nil deref here would kill the process,
@@ -128,18 +129,18 @@ func interactionContext(i *discordgo.InteractionCreate) (context.Context, error)
 		return context.Background(), errors.New("cannot get discord user id")
 	}
 
-	return commandContext(user, i.GuildID, i.ChannelID), nil
+	return commandContext(clients, user, i.GuildID, i.ChannelID), nil
 }
 
 // messageContext builds the caller context for a chat command. Identity travels
-// as gRPC metadata, never as a request field.
-func messageContext(m *discordgo.MessageCreate) context.Context {
-	return commandContext(m.Author, m.GuildID, m.ChannelID)
+// as a request header, never as a request field.
+func messageContext(m *discordgo.MessageCreate, clients *client.Clients) context.Context {
+	return commandContext(clients, m.Author, m.GuildID, m.ChannelID)
 }
 
 // handleInteraction routes slash commands and re-roll buttons through the
 // registry.
-func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, clients *client.Clients) {
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
 		data := i.ApplicationCommandData()
@@ -159,7 +160,7 @@ func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			return
 		}
 
-		runInteraction(s, i, cmd, inv)
+		runInteraction(s, i, cmd, inv, clients)
 
 	case discordgo.InteractionMessageComponent:
 		customID := i.MessageComponentData().CustomID
@@ -185,7 +186,7 @@ func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			return
 		}
 
-		runInteraction(s, i, cmd, inv)
+		runInteraction(s, i, cmd, inv, clients)
 	}
 }
 
@@ -258,8 +259,8 @@ func isCommandGroup(name string) bool {
 // Discord kills the interaction after three seconds and the handler may take
 // longer than that. Everything else answers in the callback, which keeps the
 // response and the acknowledgement to a single round trip.
-func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd command.Command, inv *command.Invocation) {
-	ctx, err := interactionContext(i)
+func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd command.Command, inv *command.Invocation, clients *client.Clients) {
+	ctx, err := interactionContext(i, clients)
 	if err != nil {
 		respondError(s, i, err)
 		return
@@ -394,7 +395,7 @@ var triggerAttemptSlots = make(chan struct{}, maxConcurrentTriggerAttempts)
 //
 // The two are exclusive. A prefixed message is a command, and a command that
 // does not resolve is still not an invitation to fire an auto-responder.
-func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
+func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate, clients *client.Clients) {
 	if !isHuman(s, m) {
 		return
 	}
@@ -415,12 +416,12 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// nothing follows it. Concurrency and memory are already bounded
 	// independently by repostAttemptSlots.
 	if config.Options.Repost.Enabled {
-		go attemptRepost(s, m.Message, false)
+		go attemptRepost(s, m.Message, false, clients)
 	}
 
 	name, raw, prefixed := command.ParseChat(m.Content, config.Options.Discord.CommandPrefixes.Prefixes)
 	if prefixed {
-		dispatchChatCommand(s, m, name, raw)
+		dispatchChatCommand(s, m, name, raw, clients)
 		return
 	}
 
@@ -438,7 +439,7 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// attempt unobservable to the caller while bounding nothing — what actually
 	// needs bounding is memory and RPC lifetime, which is what
 	// triggerAttemptSlots and triggerAttemptTimeout do.
-	attemptTrigger(s, m, forced)
+	attemptTrigger(s, m, forced, clients)
 }
 
 // handleMessageUpdate offers an edited message to WANHA. An edit MATCHES but
@@ -446,7 +447,7 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 // this is just the client-side trigger for it — editing a message to add a
 // link should be able to trigger WANHA, but must not seed the index and make
 // the edited message match itself.
-func handleMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
+func handleMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate, clients *client.Clients) {
 	if !config.Options.Repost.Enabled {
 		return
 	}
@@ -454,11 +455,11 @@ func handleMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
 		return
 	}
 
-	attemptRepost(s, m.Message, true)
+	attemptRepost(s, m.Message, true, clients)
 }
 
 // dispatchChatCommand runs a prefixed chat message through the registry.
-func dispatchChatCommand(s *discordgo.Session, m *discordgo.MessageCreate, name string, raw []string) {
+func dispatchChatCommand(s *discordgo.Session, m *discordgo.MessageCreate, name string, raw []string, clients *client.Clients) {
 	// ResolveChat rather than Lookup, so ??reminder add reaches the same handler
 	// as ??remindme. It returns the arguments left after the command name — which
 	// for a group is one token shorter than raw.
@@ -475,7 +476,7 @@ func dispatchChatCommand(s *discordgo.Session, m *discordgo.MessageCreate, name 
 		return
 	}
 
-	resp, err := cmd.Handler(messageContext(m), inv)
+	resp, err := cmd.Handler(messageContext(m, clients), inv)
 	if err != nil {
 		log.Z.Error("chat command failed.", zap.String("command", cmd.Name), zap.Error(err))
 		respondChatError(s, m, err)
@@ -489,14 +490,14 @@ func dispatchChatCommand(s *discordgo.Session, m *discordgo.MessageCreate, name 
 // whatever fires.
 //
 // It shares commandContext with the command path so identity and origin travel
-// as metadata rather than as request fields, and it renders through respondChat
-// so truncation, mention suppression and attachment rendering are the same code
-// a command reply goes through.
+// as request headers rather than as request fields, and it renders through
+// respondChat so truncation, mention suppression and attachment rendering are
+// the same code a command reply goes through.
 //
 // A non-match says NOTHING. Neither does a rate-limited forced fire, a direct
 // message with no instance, or a failed RPC: the alternative is a bot that
 // comments on ordinary conversation.
-func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced bool) {
+func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced bool, clients *client.Clients) {
 	select {
 	case triggerAttemptSlots <- struct{}{}:
 		defer func() { <-triggerAttemptSlots }()
@@ -507,7 +508,7 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(messageContext(m), triggerAttemptTimeout)
+	ctx, cancel := context.WithTimeout(messageContext(m, clients), triggerAttemptTimeout)
 	defer cancel()
 
 	instance, err := currentTriggerInstance(ctx)
@@ -520,7 +521,7 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 	// spoiler stripping are the server's to define (ADR-0019).
 	phrase := m.Content
 
-	// No caller identity in the request: it travels as metadata, which is the
+	// No caller identity in the request: it travels as a header, which is the
 	// only channel the server reads it from. No client-side forced-fire limiter
 	// either — trigger.ForcedLimiter already bounds it to once per author per
 	// interval, server-side, where it cannot be bypassed by a second client.
@@ -530,21 +531,21 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 		Forced:   &forced,
 	}.Build()
 
-	resp, err := client.TriggerServiceClient.TryTrigger(ctx, req)
+	resp, err := clientsFrom(ctx).Trigger.TryTrigger(ctx, connect.NewRequest(req))
 	if err != nil {
 		// No phrase in the log line: a stored phrase must not be echoed into
 		// logs, and neither must the message that was matched against it.
 		log.Z.Error("failed to call TryTrigger.", zap.Error(err))
 		return
 	}
-	if resp.GetId() == "" {
+	if resp.Msg.GetId() == "" {
 		return
 	}
 
-	out, err := triggerPlaybackResponse(ctx, resp)
+	out, err := triggerPlaybackResponse(ctx, resp.Msg)
 	if err != nil {
 		log.Z.Error("failed to render a fired trigger.",
-			zap.String("trigger_id", resp.GetId()), zap.Error(err))
+			zap.String("trigger_id", resp.Msg.GetId()), zap.Error(err))
 		return
 	}
 	if out == nil {
@@ -602,7 +603,8 @@ func invocationFromOptions(cmd command.Command, options []*discordgo.Application
 		case discordgo.ApplicationCommandOptionString:
 			args[option.Name] = option.StringValue()
 		default:
-			return nil, status.Errorf(codes.Internal, "unsupported option type %v for %q", option.Type, option.Name)
+			return nil, connect.NewError(connect.CodeInternal,
+				fmt.Errorf("unsupported option type %v for %q", option.Type, option.Name))
 		}
 	}
 

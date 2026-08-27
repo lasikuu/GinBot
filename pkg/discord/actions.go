@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/bwmarrin/discordgo"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
@@ -285,7 +286,8 @@ func confirmDelivery(ctx context.Context, reminderID string, ownerUID string, de
 		Delivered: &delivered,
 	}.Build()
 
-	if _, err := client.ReminderServiceClient.ConfirmDelivery(outCtx, req); err != nil {
+	clients := clientsFrom(outCtx)
+	if _, err := clients.Reminder.ConfirmDelivery(outCtx, connect.NewRequest(req)); err != nil {
 		log.Z.Error("failed to confirm reminder delivery",
 			zap.String("reminder_id", reminderID),
 			zap.Bool("delivered", delivered),

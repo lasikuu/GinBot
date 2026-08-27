@@ -2,21 +2,33 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
-	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"github.com/lasikuu/GinBot/pkg/reminder"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// reminderCallTimeout bounds every outgoing reminder/user RPC in this file
+// other than the delete loop, which additionally carries its own overall
+// budget — see deleteRemindersOverallTimeout. None of these calls inherits a
+// deadline of its own: commandContext roots the handler context at
+// context.Background.
+const reminderCallTimeout = 20 * time.Second
+
+// boundedReminderCall derives the context an RPC in this file is made on, and
+// the cancel its caller must defer.
+func boundedReminderCall(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, reminderCallTimeout)
+}
 
 // reminderGroup nests the five reminder commands under one Discord parent, so
 // they appear as /reminder add, /reminder list and so on instead of five
@@ -107,8 +119,8 @@ func remind(ctx context.Context, inv *command.Invocation) (*command.Response, er
 
 	fireAt, err := reminder.ParseWhen(whenInput, time.Now(), loc)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"could not understand the time %q", whenInput)
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("could not understand the time %q", whenInput))
 	}
 
 	destination, err := currentDestination(ctx)
@@ -128,7 +140,10 @@ func remind(ctx context.Context, inv *command.Invocation) (*command.Response, er
 		b.RepeatCron = &repeat
 	}
 
-	if _, err := client.ReminderServiceClient.CreateReminder(ctx, b.Build()); err != nil {
+	callCtx, cancel := boundedReminderCall(ctx)
+	defer cancel()
+
+	if _, err := clientsFrom(ctx).Reminder.CreateReminder(callCtx, connect.NewRequest(b.Build())); err != nil {
 		log.Z.Error("failed to call CreateReminder.", zap.Error(err))
 		return nil, err
 	}
@@ -158,13 +173,16 @@ func listReminders(ctx context.Context, _ *command.Invocation) (*command.Respons
 		Limit: &limit,
 	}.Build()
 
-	resp, err := client.ReminderServiceClient.ListReminders(ctx, req)
+	callCtx, cancel := boundedReminderCall(ctx)
+	defer cancel()
+
+	resp, err := clientsFrom(ctx).Reminder.ListReminders(callCtx, connect.NewRequest(req))
 	if err != nil {
 		log.Z.Error("failed to call ListReminders.", zap.Error(err))
 		return nil, err
 	}
 
-	reminders := resp.GetReminders()
+	reminders := resp.Msg.GetReminders()
 	if len(reminders) == 0 {
 		return &command.Response{Content: "You have no reminders.", Ephemeral: true}, nil
 	}
@@ -204,14 +222,17 @@ func reminderInfo(ctx context.Context, inv *command.Invocation) (*command.Respon
 	id := inv.String("id")
 	req := pb.GetReminderReq_builder{Id: &id}.Build()
 
-	resp, err := client.ReminderServiceClient.GetReminder(ctx, req)
+	callCtx, cancel := boundedReminderCall(ctx)
+	defer cancel()
+
+	resp, err := clientsFrom(ctx).Reminder.GetReminder(callCtx, connect.NewRequest(req))
 	if err != nil {
 		log.Z.Error("failed to call GetReminder.", zap.Error(err))
 		return nil, err
 	}
 
 	return &command.Response{
-		Content:   formatReminderInfo(resp.GetReminder()),
+		Content:   formatReminderInfo(resp.Msg.GetReminder()),
 		Ephemeral: true,
 	}, nil
 }
@@ -220,7 +241,7 @@ func reminderInfo(ctx context.Context, inv *command.Invocation) (*command.Respon
 // message, repeat, created, updated and destination.
 //
 // It is a pure function of the protobuf so it can be unit-tested without a
-// Discord session or a gRPC client. Every timestamp is a Discord timestamp tag,
+// Discord session or a Connect client. Every timestamp is a Discord timestamp tag,
 // so the whole view reads on the viewer's own clock rather than mixing zones.
 func formatReminderInfo(r *pb.Reminder) string {
 	var b strings.Builder
@@ -306,6 +327,14 @@ func reminderDelCommand() command.Command {
 	}
 }
 
+// deleteRemindersOverallTimeout bounds the WHOLE loop across every id
+// deleteReminders is given, on top of reminderCallTimeout bounding each
+// individual call within it. Without an overall budget, N unresponsive ids
+// would serialise into N waits of reminderCallTimeout each — a caller who
+// pastes ten stale ids would hold the handler open ten times as long as any
+// single DeleteReminder call is allowed to take.
+const deleteRemindersOverallTimeout = 60 * time.Second
+
 // deleteReminders accepts several space-separated ids. Chat tokenising splits on
 // whitespace, so a slash-command user passes them as one option and a chat user
 // as trailing words; the ids argument re-splits either form. The RPC deletes one
@@ -313,13 +342,25 @@ func reminderDelCommand() command.Command {
 func deleteReminders(ctx context.Context, inv *command.Invocation) (*command.Response, error) {
 	ids := strings.Fields(inv.String("ids"))
 	if len(ids) == 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "at least one reminder id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one reminder id is required"))
 	}
+
+	overallCtx, overallCancel := context.WithTimeout(ctx, deleteRemindersOverallTimeout)
+	defer overallCancel()
+
+	clients := clientsFrom(ctx)
 
 	var deleted, failed int
 	for _, id := range ids {
 		req := pb.DeleteReminderReq_builder{Id: &id}.Build()
-		if _, err := client.ReminderServiceClient.DeleteReminder(ctx, req); err != nil {
+
+		// Derived from overallCtx, not ctx: context.WithTimeout takes the
+		// EARLIER of the two deadlines, so this never outlives the loop's own
+		// budget even when reminderCallTimeout alone would have allowed it to.
+		callCtx, cancel := boundedReminderCall(overallCtx)
+		_, err := clients.Reminder.DeleteReminder(callCtx, connect.NewRequest(req))
+		cancel()
+		if err != nil {
 			// NotFound covers "not yours" too; keep going so one bad id does not
 			// abort the rest.
 			failed++
@@ -385,8 +426,8 @@ func modifyReminder(ctx context.Context, inv *command.Invocation) (*command.Resp
 
 	fireAt, err := reminder.ParseWhen(whenInput, time.Now(), loc)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"could not understand the time %q", whenInput)
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("could not understand the time %q", whenInput))
 	}
 
 	destination, err := currentDestination(ctx)
@@ -418,7 +459,10 @@ func modifyReminder(ctx context.Context, inv *command.Invocation) (*command.Resp
 		repeatNote = fmt.Sprintf(" Repeats: `%s`.", repeat)
 	}
 
-	if _, err := client.ReminderServiceClient.UpdateReminder(ctx, b.Build()); err != nil {
+	callCtx, cancel := boundedReminderCall(ctx)
+	defer cancel()
+
+	if _, err := clientsFrom(ctx).Reminder.UpdateReminder(callCtx, connect.NewRequest(b.Build())); err != nil {
 		log.Z.Error("failed to call UpdateReminder.", zap.Error(err))
 		return nil, err
 	}
@@ -440,13 +484,16 @@ func modifyReminder(ctx context.Context, inv *command.Invocation) (*command.Resp
 // @daily reminder at 09:00 local across a DST change, and it is what clients
 // with no native timestamp format render with. Do not stop sending it.
 func callerLocation(ctx context.Context) (*time.Location, string) {
-	resp, err := client.UserServiceClient.GetUser(ctx, pb.GetUserReq_builder{}.Build())
+	callCtx, cancel := boundedReminderCall(ctx)
+	defer cancel()
+
+	resp, err := clientsFrom(ctx).User.GetUser(callCtx, connect.NewRequest(pb.GetUserReq_builder{}.Build()))
 	if err != nil {
 		log.Z.Warn("failed to resolve caller timezone, using UTC", zap.Error(err))
 		return time.UTC, defaultTimezone
 	}
 
-	timezone := resp.GetUser().GetTimezone()
+	timezone := resp.Msg.GetUser().GetTimezone()
 	if timezone == "" {
 		return time.UTC, defaultTimezone
 	}
@@ -467,7 +514,7 @@ func callerLocation(ctx context.Context) (*time.Location, string) {
 func currentDestination(ctx context.Context) (*pb.ReminderDestination, error) {
 	origin, ok := originFromContext(ctx)
 	if !ok {
-		return nil, status.Errorf(codes.Internal, "cannot determine where the command was sent")
+		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot determine where the command was sent"))
 	}
 
 	meta := callermeta.Origin{InstanceUID: origin.GuildID, DestinationUID: origin.ChannelID}

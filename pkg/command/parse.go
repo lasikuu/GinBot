@@ -1,12 +1,12 @@
 package command
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 )
 
 // ParseChat splits a chat message into a command name and its raw arguments.
@@ -149,8 +149,8 @@ func BindNamed(cmd Command, args map[string]any) (*Invocation, error) {
 		value, supplied := args[arg.Name]
 		if !supplied {
 			if arg.Required {
-				return nil, status.Errorf(codes.InvalidArgument,
-					"%s: %s is required", cmd.Name, arg.Name)
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					fmt.Errorf("%s: %s is required", cmd.Name, arg.Name))
 			}
 			continue
 		}
@@ -174,22 +174,22 @@ func parseArg(cmd Command, arg Arg, raw string) (any, error) {
 	case ArgInt:
 		value, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"%s: %s must be a whole number, got %q", cmd.Name, arg.Name, raw)
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("%s: %s must be a whole number, got %q", cmd.Name, arg.Name, raw))
 		}
 		return value, nil
 
 	case ArgBool:
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"%s: %s must be true or false, got %q", cmd.Name, arg.Name, raw)
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("%s: %s must be true or false, got %q", cmd.Name, arg.Name, raw))
 		}
 		return value, nil
 
 	default:
-		return nil, status.Errorf(codes.Internal,
-			"%s: %s has an unknown argument type", cmd.Name, arg.Name)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("%s: %s has an unknown argument type", cmd.Name, arg.Name))
 	}
 }
 
@@ -212,10 +212,10 @@ func coerceArg(cmd Command, arg Arg, value any) (any, error) {
 		}
 
 	default:
-		return nil, status.Errorf(codes.Internal,
-			"%s: %s has an unknown argument type", cmd.Name, arg.Name)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("%s: %s has an unknown argument type", cmd.Name, arg.Name))
 	}
 
-	return nil, status.Errorf(codes.InvalidArgument,
-		"%s: %s has the wrong type", cmd.Name, arg.Name)
+	return nil, connect.NewError(connect.CodeInvalidArgument,
+		fmt.Errorf("%s: %s has the wrong type", cmd.Name, arg.Name))
 }

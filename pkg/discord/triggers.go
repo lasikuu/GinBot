@@ -2,19 +2,18 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
-	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"github.com/lasikuu/GinBot/pkg/trigger"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // triggerGroup nests the trigger commands under one Discord parent, so they
@@ -63,9 +62,10 @@ const triggerFileTimeout = 10 * time.Second
 // triggerCallTimeout bounds every other outgoing trigger RPC.
 //
 // None of them inherits a deadline: commandContext roots the handler context at
-// context.Background, and no gRPC keepalive is configured, so a half-open
-// connection would hold a handler — and its interaction — open forever.
-// confirmDelivery bounds its own call for exactly this reason.
+// context.Background. pkg/grpc/client's default-deadline interceptor would
+// eventually catch an unbounded call too, but at its own package-wide 30s
+// default — this is the tighter, command-specific budget that is meant to win.
+// confirmDelivery bounds its own call for the same reason.
 const triggerCallTimeout = 20 * time.Second
 
 // unnamedTriggerFileName names an attachment whose file carries neither a
@@ -149,7 +149,7 @@ func boundedCall(ctx context.Context) (context.Context, context.CancelFunc) {
 // rather than filling the log with errors that need no action. runInteraction and
 // dispatchChatCommand log the returned error again, so nothing is lost.
 func logCallFailure(rpc string, err error) {
-	if status.Code(err) == codes.NotFound {
+	if connect.CodeOf(err) == connect.CodeNotFound {
 		log.Z.Debug("trigger rpc found nothing.", zap.String("rpc", rpc))
 		return
 	}
@@ -287,8 +287,8 @@ func addTrigger(ctx context.Context, inv *command.Invocation) (*command.Response
 	// before the RPC. The server enforces all of it too, but a round trip that
 	// only tells the user something obvious is a bad trade.
 	if reply == "" && fileURL == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"a trigger needs either a reply or a file")
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("a trigger needs either a reply or a file"))
 	}
 	// Refused rather than silently resolved. chk_reply_or_file permits both
 	// columns at once and the server fires the REPLY when both are set, so
@@ -296,8 +296,8 @@ func addTrigger(ctx context.Context, inv *command.Invocation) (*command.Response
 	// a CDN fetch for it. There is no way to express "both" in a single answer,
 	// so the caller has to choose.
 	if reply != "" && fileURL != "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"a trigger answers with a reply or a file, not both")
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("a trigger answers with a reply or a file, not both"))
 	}
 
 	mode, ok := parseTriggerMode(inv.String("mode"))
@@ -337,14 +337,14 @@ func addTrigger(ctx context.Context, inv *command.Invocation) (*command.Response
 	callCtx, cancel := boundedCall(ctx)
 	defer cancel()
 
-	resp, err := client.TriggerServiceClient.CreateTrigger(callCtx, b.Build())
+	resp, err := clientsFrom(ctx).Trigger.CreateTrigger(callCtx, connect.NewRequest(b.Build()))
 	if err != nil {
 		logCallFailure("CreateTrigger", err)
 		return nil, explainRegexRefusal(err, mode)
 	}
 
 	return &command.Response{
-		Content:   fmt.Sprintf("Trigger created: `%s`.", resp.GetId()),
+		Content:   fmt.Sprintf("Trigger created: `%s`.", resp.Msg.GetId()),
 		Ephemeral: true,
 	}, nil
 }
@@ -380,7 +380,7 @@ func deleteTrigger(ctx context.Context, inv *command.Invocation) (*command.Respo
 	defer cancel()
 
 	req := pb.DeleteTriggerReq_builder{Id: &id}.Build()
-	if _, err := client.TriggerServiceClient.DeleteTrigger(callCtx, req); err != nil {
+	if _, err := clientsFrom(ctx).Trigger.DeleteTrigger(callCtx, connect.NewRequest(req)); err != nil {
 		logCallFailure("DeleteTrigger", err)
 		return nil, err
 	}
@@ -491,14 +491,14 @@ func modifyTrigger(ctx context.Context, inv *command.Invocation) (*command.Respo
 	// do nothing and report success, which reads to the user as a change that
 	// did not stick.
 	if b.Phrase == nil && b.Reply == nil && b.FileUrl == nil && b.Chance == nil && b.Mode == nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"nothing to change: give at least one of phrase, reply, file, chance or mode")
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("nothing to change: give at least one of phrase, reply, file, chance or mode"))
 	}
 
 	callCtx, cancel := boundedCall(ctx)
 	defer cancel()
 
-	if _, err := client.TriggerServiceClient.UpdateTrigger(callCtx, b.Build()); err != nil {
+	if _, err := clientsFrom(ctx).Trigger.UpdateTrigger(callCtx, connect.NewRequest(b.Build())); err != nil {
 		logCallFailure("UpdateTrigger", err)
 		return nil, explainRegexRefusal(err, mode)
 	}
@@ -561,13 +561,13 @@ func listTriggers(ctx context.Context, inv *command.Invocation) (*command.Respon
 	callCtx, cancel := boundedCall(ctx)
 	defer cancel()
 
-	resp, err := client.TriggerServiceClient.ListTriggers(callCtx, req.Build())
+	resp, err := clientsFrom(ctx).Trigger.ListTriggers(callCtx, connect.NewRequest(req.Build()))
 	if err != nil {
 		logCallFailure("ListTriggers", err)
 		return nil, err
 	}
 
-	triggers := resp.GetTriggers()
+	triggers := resp.Msg.GetTriggers()
 	if len(triggers) == 0 {
 		return &command.Response{Content: "No triggers found.", Ephemeral: true}, nil
 	}
@@ -608,14 +608,14 @@ func triggerInfo(ctx context.Context, inv *command.Invocation) (*command.Respons
 	defer cancel()
 
 	req := pb.GetTriggerReq_builder{Id: &id}.Build()
-	resp, err := client.TriggerServiceClient.GetTrigger(callCtx, req)
+	resp, err := clientsFrom(ctx).Trigger.GetTrigger(callCtx, connect.NewRequest(req))
 	if err != nil {
 		logCallFailure("GetTrigger", err)
 		return nil, err
 	}
 
 	return &command.Response{
-		Content:   formatTriggerInfo(resp.GetTrigger()),
+		Content:   formatTriggerInfo(resp.Msg.GetTrigger()),
 		Ephemeral: true,
 	}, nil
 }
@@ -647,8 +647,8 @@ func triggerStatsCommand() command.Command {
 func triggerStats(ctx context.Context, inv *command.Invocation) (*command.Response, error) {
 	kind, ok := parseStatsKind(inv.String("kind"))
 	if !ok {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"kind must be one of: %s", statsKindNames())
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("kind must be one of: %s", statsKindNames()))
 	}
 
 	limit := clampTriggerLimit(inv, triggerStatsDefaultLimit, triggerStatsMaxLimit)
@@ -667,14 +667,14 @@ func triggerStats(ctx context.Context, inv *command.Invocation) (*command.Respon
 	callCtx, cancel := boundedCall(ctx)
 	defer cancel()
 
-	resp, err := client.TriggerServiceClient.GetTriggerStats(callCtx, req)
+	resp, err := clientsFrom(ctx).Trigger.GetTriggerStats(callCtx, connect.NewRequest(req))
 	if err != nil {
 		logCallFailure("GetTriggerStats", err)
 		return nil, err
 	}
 
 	return &command.Response{
-		Content:   formatTriggerStats(resp.GetStats(), kind),
+		Content:   formatTriggerStats(resp.Msg.GetStats(), kind),
 		Ephemeral: true,
 	}, nil
 }
@@ -717,13 +717,19 @@ func execTrigger(ctx context.Context, inv *command.Invocation) (*command.Respons
 	callCtx, cancel := boundedCall(ctx)
 	defer cancel()
 
-	resp, err := client.TriggerServiceClient.ExecTrigger(callCtx, req)
+	resp, err := clientsFrom(ctx).Trigger.ExecTrigger(callCtx, connect.NewRequest(req))
 	if err != nil {
 		logCallFailure("ExecTrigger", err)
 		return nil, err
 	}
 
-	out, err := triggerPlaybackResponse(ctx, resp)
+	// callCtx, not ctx: triggerPlaybackResponse derives its own GetFile
+	// deadline (triggerFileTimeout) from whatever it is handed, and that only
+	// bounds anything if the parent itself is bounded. ctx here is the raw
+	// handler context, rooted at context.Background with no deadline of its
+	// own — passing it would have made triggerFileTimeout a no-op nested
+	// inside an unbounded parent.
+	out, err := triggerPlaybackResponse(callCtx, resp.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -764,7 +770,7 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 		fileCtx, cancel := context.WithTimeout(ctx, triggerFileTimeout)
 		defer cancel()
 
-		got, err := client.TriggerServiceClient.GetFile(fileCtx, req)
+		got, err := clientsFrom(ctx).Trigger.GetFile(fileCtx, connect.NewRequest(req))
 		if err != nil {
 			logCallFailure("GetFile", err)
 			return nil, err
@@ -774,12 +780,12 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 		// zero-byte attachment, and Content is empty here by design, so sending
 		// it would be a message with neither text nor a file — which Discord
 		// rejects outright, leaving only a log line behind.
-		if len(got.GetContent()) == 0 {
+		if len(got.Msg.GetContent()) == 0 {
 			log.Z.Warn("a trigger file has no content.", zap.String("file_id", fileID))
 			return nil, nil
 		}
 
-		return triggerFileResponse(file, got.GetContent()), nil
+		return triggerFileResponse(file, got.Msg.GetContent()), nil
 	}
 
 	return nil, nil
@@ -813,7 +819,7 @@ func triggerFileResponse(file *pb.TriggerFile, content []byte) *command.Response
 // formatTriggerInfo renders the detail view of one trigger.
 //
 // It is a pure function of the protobuf so it can be unit-tested without a
-// Discord session or a gRPC client, and it is nil-safe throughout because
+// Discord session or a Connect client, and it is nil-safe throughout because
 // discordgo does not recover a panic raised in a handler.
 func formatTriggerInfo(t *pb.Trigger) string {
 	var b strings.Builder
@@ -917,8 +923,8 @@ func formatTriggerStats(stats []*pb.TriggerStat, kind pb.ActionType) string {
 func currentTriggerInstance(ctx context.Context) (*pb.TriggerInstance, error) {
 	origin, ok := originFromContext(ctx)
 	if !ok || origin.GuildID == "" {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"triggers belong to a server, so this has to be used in one")
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("triggers belong to a server, so this has to be used in one"))
 	}
 
 	meta := callermeta.Origin{InstanceUID: origin.GuildID, DestinationUID: origin.ChannelID}
@@ -943,8 +949,8 @@ func triggerChance(inv *command.Invocation) (*int32, error) {
 
 	raw := inv.Int("chance")
 	if raw < 0 || raw > int64(trigger.MaxChance) {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"chance must be between 0 and %d", trigger.MaxChance)
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("chance must be between 0 and %d", trigger.MaxChance))
 	}
 
 	chance := int32(raw)
@@ -973,7 +979,7 @@ func clampTriggerLimit(inv *command.Invocation, defaultLimit int64, maxLimit int
 // invalidModeError names the accepted mode words, so a typo is answered with the
 // list instead of a bare refusal.
 func invalidModeError() error {
-	return status.Errorf(codes.InvalidArgument, "mode must be one of: %s", triggerModeNames())
+	return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("mode must be one of: %s", triggerModeNames()))
 }
 
 // explainRegexRefusal rewrites the server's PermissionDenied for a regex trigger
@@ -986,10 +992,10 @@ func invalidModeError() error {
 // decision, and any other refusal keeps its generic wording rather than being
 // explained as something it may not be.
 func explainRegexRefusal(err error, mode pb.TriggerMode) error {
-	if mode != pb.TriggerMode_TRIGGER_MODE_REGEX || status.Code(err) != codes.PermissionDenied {
+	if mode != pb.TriggerMode_TRIGGER_MODE_REGEX || connect.CodeOf(err) != connect.CodePermissionDenied {
 		return err
 	}
 
-	return status.Errorf(codes.FailedPrecondition,
-		"regex triggers need %s clearance", regexClearanceRequirement)
+	return connect.NewError(connect.CodeFailedPrecondition,
+		fmt.Errorf("regex triggers need %s clearance", regexClearanceRequirement))
 }

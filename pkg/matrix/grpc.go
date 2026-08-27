@@ -3,15 +3,39 @@ package matrix
 import (
 	"context"
 
+	"maunium.net/go/mautrix/id"
+
+	"github.com/lasikuu/GinBot/internal/clientopts"
 	"github.com/lasikuu/GinBot/internal/config"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
-	"github.com/lasikuu/GinBot/pkg/log"
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
 )
 
-// NewMatrixClient dials the gRPC server and initialises every service client.
+// clientsContextKey types the context value carrying the service clients a
+// handler runs against, so it cannot collide with another package's key.
+type clientsContextKey struct{}
+
+// withClients attaches the service clients to ctx.
+func withClients(ctx context.Context, c *client.Clients) context.Context {
+	return context.WithValue(ctx, clientsContextKey{}, c)
+}
+
+// clientsFrom returns the service clients the handler context carries. It
+// returns nil when none were attached, which is a wiring bug.
+//
+// This mirrors pkg/discord deliberately, including the fact that nothing in
+// this package reads it yet: actionHandlers registers only handleSendTest,
+// which makes no RPC. The seam exists for the same reason startActionStream
+// does — the first Matrix notification handler will need ConfirmDelivery
+// exactly as Discord's does, and it should find a client waiting rather than
+// have to invent a way to reach one.
+func clientsFrom(ctx context.Context) *client.Clients {
+	c, _ := ctx.Value(clientsContextKey{}).(*client.Clients)
+	return c
+}
+
+// NewMatrixClient dials the Connect boundary and builds every service client
+// this package needs.
 //
 // It deliberately does NOT start the reverse action stream. That happens in
 // InitializeMatrix, once matrixClient exists — see startActionStream.
@@ -21,22 +45,30 @@ import (
 // reason. cmd/ginbot-matrix still passes ctx, so dropping it here would make the
 // two binaries diverge for no gain — do not "clean it up" in one without the
 // other.
-func NewMatrixClient(_ context.Context) {
-	serverAddress := config.Options.GRPC.Host + ":" + config.Options.GRPC.Port
-
-	conn, err := grpc.NewClient(serverAddress, config.Options.Matrix.GRPCClientOptions.DialOptions...)
+func NewMatrixClient(_ context.Context) (*client.Clients, error) {
+	opts, err := clientopts.Dial()
 	if err != nil {
-		log.Z.Fatal("failed to connect to gRPC server.", zap.Error(err))
-		return
+		return nil, err
 	}
 
-	client.InitUserService(conn)
-	client.InitUtilityService(conn)
-	client.InitReminderService(conn)
-	client.InitEntertainmentService(conn)
-	client.InitReverseService(conn)
-	client.InitTriggerService(conn)
-	client.InitRepostService(conn)
+	return client.Dial(opts)
+}
+
+// matrixStreamIdentity is the identity this bot process asserts to open the
+// reverse action stream — its own Matrix account, not any invoking user's.
+func matrixStreamIdentity() client.StreamIdentity {
+	mxid := config.Options.Matrix.UserID
+
+	username := id.UserID(mxid).Localpart()
+	if username == "" {
+		username = "ginbot"
+	}
+
+	return client.StreamIdentity{
+		Platform:    pb.Platform_PLATFORM_MATRIX_PROTOCOL,
+		PlatformUID: mxid,
+		Username:    username,
+	}
 }
 
 // startActionStream begins consuming server-pushed actions.
@@ -55,7 +87,11 @@ func NewMatrixClient(_ context.Context) {
 // BEFORE InitializeMatrix — so writing that handler would have been enough to
 // break it. This seam is what makes writing one safe rather than merely lucky.
 //
-// It requires NewMatrixClient to have run, for ReverseServiceClient.
-func startActionStream(ctx context.Context) {
-	go client.RunClientActionStream(ctx, pb.Platform_PLATFORM_MATRIX_PROTOCOL, actionHandlers())
+// It requires clients to have already been dialed. clients is attached to the
+// stream's own context — not a package global — so an action handler that
+// makes its own RPC can reach it through clientsFrom, exactly as the Discord
+// equivalent does.
+func startActionStream(ctx context.Context, clients *client.Clients) {
+	ctx = withClients(ctx, clients)
+	go clients.RunClientActionStream(ctx, matrixStreamIdentity(), actionHandlers())
 }

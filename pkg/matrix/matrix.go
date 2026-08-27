@@ -7,11 +7,13 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/internal/config"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
@@ -19,6 +21,13 @@ import (
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 )
+
+// healthCheckTimeout bounds the outgoing HealthCheck call below. The sync
+// context it would otherwise inherit carries no deadline of its own — it is
+// mautrix's own sync loop context, not a request-scoped one — so without this
+// an unresponsive server would hold the sync dispatch goroutine open
+// indefinitely.
+const healthCheckTimeout = 10 * time.Second
 
 // matrixClient is written once by InitializeMatrix and then read from several
 // goroutines (mautrix's sync dispatch, and the reverse action stream). Nothing
@@ -30,9 +39,9 @@ var matrixClient *mautrix.Client
 // signalled to stop.
 //
 // ctx bounds the reverse action stream, which is started from here rather than
-// alongside the gRPC clients precisely because its handlers may read
-// matrixClient.
-func InitializeMatrix(ctx context.Context) {
+// alongside the Connect clients precisely because its handlers may read
+// matrixClient. clients are the service clients dialed by NewMatrixClient.
+func InitializeMatrix(ctx context.Context, clients *client.Clients) {
 	var err error
 	if matrixClient, err = mautrix.NewClient(config.Options.Matrix.HomeServerURL, id.UserID(config.Options.Matrix.UserID), config.Options.Matrix.AccessToken); err != nil {
 		log.Z.Fatal("cannot create a new session.", zap.Error(err))
@@ -40,7 +49,7 @@ func InitializeMatrix(ctx context.Context) {
 
 	// Only now: matrixClient is assigned, so an action arriving on the first tick
 	// has a client to post through.
-	startActionStream(ctx)
+	startActionStream(ctx, clients)
 
 	selfID := id.UserID(config.Options.Matrix.UserID)
 
@@ -59,16 +68,18 @@ func InitializeMatrix(ctx context.Context) {
 
 		if evt.Content.AsMessage().Body == "!healthcheck" {
 			// Caller identity has to be attached explicitly; the sync context
-			// carries no gRPC metadata, so any RPC requiring it would fail.
+			// carries no identity of its own, so any RPC requiring it would fail.
 			rpcCtx := callermeta.NewOutgoingContext(ctx, pb.Platform_PLATFORM_MATRIX_PROTOCOL, evt.Sender.String())
+			rpcCtx, cancel := context.WithTimeout(rpcCtx, healthCheckTimeout)
+			defer cancel()
 
-			resp, err := client.UtilityServiceClient.HealthCheck(rpcCtx, pb.HealthCheckReq_builder{}.Build())
+			resp, err := clients.Utility.HealthCheck(rpcCtx, connect.NewRequest(pb.HealthCheckReq_builder{}.Build()))
 			if err != nil {
 				log.Z.Error("failed to call HealthCheck", zap.Error(err))
 				return
 			}
 
-			if _, err := matrixClient.SendText(ctx, evt.RoomID, resp.GetStatus().String()); err != nil {
+			if _, err := matrixClient.SendText(ctx, evt.RoomID, resp.Msg.GetStatus().String()); err != nil {
 				log.Z.Error("failed to send event", zap.Error(err))
 				return
 			}

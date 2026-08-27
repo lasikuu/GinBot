@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
@@ -102,7 +103,7 @@ func repostAttachmentKind(a *discordgo.MessageAttachment) pb.RepostKind {
 // command reply goes through. A non-match, a dropped attempt under load, and
 // a failed RPC all say NOTHING: the alternative is a bot that comments on
 // ordinary conversation.
-func attemptRepost(s *discordgo.Session, m *discordgo.Message, edit bool) {
+func attemptRepost(s *discordgo.Session, m *discordgo.Message, edit bool, clients *client.Clients) {
 	if m == nil || m.GuildID == "" {
 		// A direct message belongs to no guild, and a repost only exists
 		// within the community that saw the original (W5). The server refuses
@@ -126,7 +127,7 @@ func attemptRepost(s *discordgo.Session, m *discordgo.Message, edit bool) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(commandContext(m.Author, m.GuildID, m.ChannelID), repostAttemptTimeout)
+	ctx, cancel := context.WithTimeout(commandContext(clients, m.Author, m.GuildID, m.ChannelID), repostAttemptTimeout)
 	defer cancel()
 
 	messageUID := m.ID
@@ -144,7 +145,7 @@ func attemptRepost(s *discordgo.Session, m *discordgo.Message, edit bool) {
 		PostedAt:   postedAt,
 	}.Build()
 
-	resp, err := client.RepostServiceClient.CheckRepost(ctx, req)
+	resp, err := clients.Repost.CheckRepost(ctx, connect.NewRequest(req))
 	if err != nil {
 		// No candidate content in the log line: URLs and attachment names are
 		// the user's input, not something to persist in logs.
@@ -152,7 +153,7 @@ func attemptRepost(s *discordgo.Session, m *discordgo.Message, edit bool) {
 		return
 	}
 
-	matches := resp.GetMatches()
+	matches := resp.Msg.GetMatches()
 	if len(matches) == 0 {
 		return
 	}

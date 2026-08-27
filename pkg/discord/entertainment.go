@@ -3,14 +3,28 @@ package discord
 import (
 	"context"
 	"strings"
+	"time"
 
+	"connectrpc.com/connect"
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 )
+
+// entertainmentCallTimeout bounds every outgoing RPC in this file. None of
+// them inherits a deadline of its own — commandContext roots the handler
+// context at context.Background — and GetRandomNumber is public (see
+// pkg/grpc/interceptor.DefaultRequirements), so an unauthenticated round trip
+// that hangs would hold the handler open indefinitely without this.
+const entertainmentCallTimeout = 15 * time.Second
+
+// boundedEntertainmentCall derives the context an entertainment RPC is made
+// on, and the cancel its caller must defer.
+func boundedEntertainmentCall(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, entertainmentCallTimeout)
+}
 
 // digitRoll declares one member of the doubles family. Keeping the digit count
 // beside the name means adding a roll is one table entry rather than a new
@@ -119,13 +133,16 @@ func doublesPlusN(ctx context.Context, digits int32) (string, error) {
 		Digits: &digits,
 	}.Build()
 
-	resp, err := client.EntertainmentServiceClient.GetRandomNumber(ctx, req)
+	callCtx, cancel := boundedEntertainmentCall(ctx)
+	defer cancel()
+
+	resp, err := clientsFrom(ctx).Entertainment.GetRandomNumber(callCtx, connect.NewRequest(req))
 	if err != nil {
 		log.Z.Error("failed to call GetRandomNumber", zap.Error(err))
 		return "", err
 	}
 
-	msg := resp.GetNumber()
+	msg := resp.Msg.GetNumber()
 
 	// Hits are bolded. The roll is ASCII digits, so counting the first byte is
 	// equivalent to counting the first character; an empty response would panic
@@ -149,13 +166,16 @@ func number(ctx context.Context, inv *command.Invocation) (*command.Response, er
 		Upper: &upper,
 	}.Build()
 
-	resp, err := client.EntertainmentServiceClient.GetRandomNumber(ctx, req)
+	callCtx, cancel := boundedEntertainmentCall(ctx)
+	defer cancel()
+
+	resp, err := clientsFrom(ctx).Entertainment.GetRandomNumber(callCtx, connect.NewRequest(req))
 	if err != nil {
 		log.Z.Error("failed to call GetRandomNumber", zap.Error(err))
 		return nil, err
 	}
 
 	return &command.Response{
-		Content: "**" + resp.GetNumber() + "** \U0001F3B2",
+		Content: "**" + resp.Msg.GetNumber() + "** \U0001F3B2",
 	}, nil
 }

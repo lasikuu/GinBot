@@ -2,21 +2,30 @@ package discord
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"connectrpc.com/connect"
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/pkg/command"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
-// TestErrorMessage pins which gRPC codes are allowed to reach a channel
+// TestErrorMessage pins which Connect codes are allowed to reach a channel
 // verbatim. InvalidArgument and FailedPrecondition are written for the caller;
 // everything else is internal and must be replaced, so that a database error or
 // a stack detail cannot be echoed into a public guild.
+//
+// errorMessage switched from google.golang.org/grpc/status.FromError to
+// connect.CodeOf as part of the Connect port, and gained a sixth branch for
+// connect.CodeUnavailable — the code a client gets when it cannot reach
+// ginbot-server at all, which previously fell through to the same generic
+// message as codes.Unavailable did. That branch's wording is asserted
+// alongside the five pre-existing ones so a future edit cannot special-case
+// Unavailable without the others noticing, and cannot leave Unavailable
+// producing the bare fallback without ITS case noticing either.
 func TestErrorMessage(t *testing.T) {
 	tests := []struct {
 		name string
@@ -25,37 +34,58 @@ func TestErrorMessage(t *testing.T) {
 	}{
 		{
 			name: "invalid argument reaches the caller",
-			err:  status.Error(codes.InvalidArgument, "lower must be a whole number"),
+			err:  connect.NewError(connect.CodeInvalidArgument, errors.New("lower must be a whole number")),
 			want: "lower must be a whole number",
 		},
 		{
 			name: "failed precondition reaches the caller",
-			err:  status.Error(codes.FailedPrecondition, "you are not registered"),
+			err:  connect.NewError(connect.CodeFailedPrecondition, errors.New("you are not registered")),
 			want: "you are not registered",
 		},
 		{
 			name: "permission denied is replaced",
-			err:  status.Error(codes.PermissionDenied, "user 42 lacks clearance 20"),
+			err:  connect.NewError(connect.CodePermissionDenied, errors.New("user 42 lacks clearance 20")),
 			want: "You are not allowed to do that.",
 		},
 		{
 			name: "not found is replaced",
-			err:  status.Error(codes.NotFound, "reminder 7 not in table reminder"),
+			err:  connect.NewError(connect.CodeNotFound, errors.New("reminder 7 not in table reminder")),
 			want: "Not found.",
 		},
 		{
 			name: "unimplemented is replaced",
-			err:  status.Error(codes.Unimplemented, "method Ping not implemented"),
+			err:  connect.NewError(connect.CodeUnimplemented, errors.New("method Ping not implemented")),
 			want: "That is not implemented yet.",
 		},
 		{
 			name: "internal detail never leaks",
-			err:  status.Error(codes.Internal, `pgx: connection refused to 10.0.0.5:5432`),
+			err:  connect.NewError(connect.CodeInternal, errors.New(`pgx: connection refused to 10.0.0.5:5432`)),
 			want: "Something went wrong.",
 		},
 		{
-			name: "unavailable never leaks",
-			err:  status.Error(codes.Unavailable, "grpc: no connection to ginbot-server:50051"),
+			// The sixth branch. Two things at once: the transport error
+			// (connection refused, DNS failure, ...) must not reach a public
+			// channel, AND the caller must be told this one is transient —
+			// which is the only failure here they can usefully act on.
+			// TestUnavailableIsNotTheGenericMessage below is what stops this
+			// silently collapsing back into the default.
+			name: "unavailable gets its own actionable message",
+			err:  connect.NewError(connect.CodeUnavailable, errors.New("dial tcp 10.0.0.9:50051: connect: connection refused")),
+			want: "The bot's backend is unreachable right now. Try again in a moment.",
+		},
+		{
+			name: "nil error is still a generic message",
+			err:  nil,
+			want: "Something went wrong.",
+		},
+		{
+			// Not every error reaching errorMessage originated as a Connect
+			// error — a bare error from local validation, or something a
+			// dependency returned unwrapped. connect.CodeOf reports
+			// CodeUnknown for these, which must fall through to the generic
+			// message rather than panic or leak the raw error text.
+			name: "a non-Connect error is still a generic message",
+			err:  errors.New("some ordinary Go error"),
 			want: "Something went wrong.",
 		},
 	}
@@ -64,6 +94,55 @@ func TestErrorMessage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := errorMessage(tt.err); got != tt.want {
 				t.Errorf("errorMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUnavailableIsNotTheGenericMessage pins the POINT of the sixth branch
+// rather than its wording.
+//
+// An earlier version of errorMessage had the CodeUnavailable case assign the
+// same string as the default, on the reasoning that the case's existence was
+// itself the safeguard. It was not: deleting the whole case changed no
+// observable behaviour and the entire package's tests stayed green, so the
+// branch was inert and the requirement it was meant to satisfy — a transient
+// backend outage must not reach the user as "Something went wrong." — was
+// still unmet. Comparing against the generic message rather than a literal is
+// what makes that impossible to reintroduce, whatever the wording becomes.
+func TestUnavailableIsNotTheGenericMessage(t *testing.T) {
+	generic := errorMessage(errors.New("some ordinary Go error"))
+
+	unavailable := errorMessage(connect.NewError(connect.CodeUnavailable, errors.New("connection refused")))
+	if unavailable == generic {
+		t.Errorf("errorMessage(Unavailable) = %q, which is the generic message; "+
+			"a transient outage must be distinguishable from an unexplained failure", unavailable)
+	}
+}
+
+// TestErrorMessageDoesNotLeakTheConnectCodePrefix guards against a regression
+// specific to connect.Error: its Error() method (and therefore fmt formatting
+// of the error) renders as "invalid_argument: <message>", prefixing the code
+// name onto the text. errorMessage must read st.Message() through the typed
+// accessor — never err.Error() — or every InvalidArgument/FailedPrecondition
+// reply shown to a Discord user would carry a leaked "invalid_argument: "
+// prefix that means nothing to them.
+func TestErrorMessageDoesNotLeakTheConnectCodePrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"invalid argument", connect.NewError(connect.CodeInvalidArgument, errors.New("lower must be a whole number"))},
+		{"failed precondition", connect.NewError(connect.CodeFailedPrecondition, errors.New("you are not registered"))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := errorMessage(tt.err)
+			for _, code := range []string{"invalid_argument", "failed_precondition"} {
+				if strings.Contains(got, code) {
+					t.Errorf("errorMessage() = %q, leaks the Connect code prefix %q", got, code)
+				}
 			}
 		})
 	}

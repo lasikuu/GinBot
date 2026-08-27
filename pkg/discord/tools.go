@@ -2,20 +2,31 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
+
+// toolsCallTimeout bounds every outgoing RPC in this file. None of them
+// inherits a deadline of its own: commandContext roots the handler context at
+// context.Background, so without an explicit budget an unresponsive server
+// would hold the handler open indefinitely.
+const toolsCallTimeout = 20 * time.Second
+
+// boundedToolsCall derives the context an RPC in this file is made on, and the
+// cancel its caller must defer.
+func boundedToolsCall(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, toolsCallTimeout)
+}
 
 // startedAt approximates the process start. Package variables are initialised
 // before main runs, so this is a few milliseconds early at worst.
@@ -57,12 +68,15 @@ func pingCommand() command.Command {
 // wsMutex, from two other goroutines. ping runs on a discordgo dispatch
 // goroutine, so both reads race. Taking discordSession.RLock() would only
 // serialise the first of them — wsMutex is not reachable from this package — so
-// the race would remain, just less visibly. The gRPC round trip is what the
+// the race would remain, just less visibly. The Connect round trip is what the
 // requirement asks for, and it is measured correctly.
 func ping(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
 	start := time.Now()
 
-	resp, err := client.UtilityServiceClient.Ping(ctx, pb.PingReq_builder{}.Build())
+	callCtx, cancel := boundedToolsCall(ctx)
+	defer cancel()
+
+	resp, err := clientsFrom(ctx).Utility.Ping(callCtx, connect.NewRequest(pb.PingReq_builder{}.Build()))
 	if err != nil {
 		log.Z.Error("failed to call Ping.", zap.Error(err))
 		return nil, err
@@ -70,7 +84,7 @@ func ping(ctx context.Context, _ *command.Invocation) (*command.Response, error)
 
 	roundTrip := time.Since(start)
 
-	content := fmt.Sprintf("%s — gRPC round trip %s", resp.GetMessage(), formatLatency(roundTrip))
+	content := fmt.Sprintf("%s — round trip %s", resp.Msg.GetMessage(), formatLatency(roundTrip))
 
 	return &command.Response{Content: content}, nil
 }
@@ -158,7 +172,7 @@ func help(_ context.Context, inv *command.Invocation) (*command.Response, error)
 			// argument, and errorMessage only passes InvalidArgument and
 			// FailedPrecondition through verbatim. Under NotFound the user is told
 			// "Not found." and never learns which command was unknown.
-			return nil, status.Errorf(codes.InvalidArgument, "there is no %q command", name)
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("there is no %q command", name))
 		}
 
 		return &command.Response{Content: describeCommand(cmd), Ephemeral: true}, nil
@@ -279,13 +293,14 @@ func registerCommand() command.Command {
 	}
 }
 
-// register takes no arguments on purpose. The platform identity goes over gRPC
-// metadata, and the display name is read from the invoking Discord user, so
-// there is nothing for the caller to type — and nothing for them to falsify.
+// register takes no arguments on purpose. The platform identity goes over a
+// request header, and the display name is read from the invoking Discord
+// user, so there is nothing for the caller to type — and nothing for them to
+// falsify.
 func register(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
 	user, ok := invokerFromContext(ctx)
 	if !ok {
-		return nil, status.Error(codes.Internal, "cannot identify the invoking user")
+		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot identify the invoking user"))
 	}
 
 	username := user.Username
@@ -293,8 +308,11 @@ func register(ctx context.Context, _ *command.Invocation) (*command.Response, er
 		Username: &username,
 	}.Build()
 
-	if _, err := client.UserServiceClient.Register(ctx, req); err != nil {
-		if status.Code(err) == codes.AlreadyExists {
+	callCtx, cancel := boundedToolsCall(ctx)
+	defer cancel()
+
+	if _, err := clientsFrom(ctx).User.Register(callCtx, connect.NewRequest(req)); err != nil {
+		if connect.CodeOf(err) == connect.CodeAlreadyExists {
 			return &command.Response{Content: "You are already registered.", Ephemeral: true}, nil
 		}
 		log.Z.Error("failed to call Register.", zap.Error(err))
@@ -326,18 +344,21 @@ func userInfoCommand() command.Command {
 // enforces the moderator floor for a lookup of someone else, for whatever
 // client can name one.
 func userInfo(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
-	// An empty request means "me": the server takes the caller from metadata.
-	resp, err := client.UserServiceClient.GetUser(ctx, pb.GetUserReq_builder{}.Build())
+	callCtx, cancel := boundedToolsCall(ctx)
+	defer cancel()
+
+	// An empty request means "me": the server takes the caller from a header.
+	resp, err := clientsFrom(ctx).User.GetUser(callCtx, connect.NewRequest(pb.GetUserReq_builder{}.Build()))
 	if err != nil {
 		log.Z.Error("failed to call GetUser.", zap.Error(err))
 		return nil, err
 	}
 
-	return &command.Response{Content: formatUserInfo(resp.GetUser()), Ephemeral: true}, nil
+	return &command.Response{Content: formatUserInfo(resp.Msg.GetUser()), Ephemeral: true}, nil
 }
 
 // formatUserInfo renders the /userinfo view. Pure so it can be unit-tested
-// without a gRPC client.
+// without a Connect client.
 //
 // The account line used to be a whole-day age computed here. It is now a
 // relative Discord timestamp tag on the creation instant, which is strictly more
@@ -395,7 +416,10 @@ func setLocale(ctx context.Context, inv *command.Invocation) (*command.Response,
 		Locale: &locale,
 	}.Build()
 
-	if _, err := client.UserServiceClient.SetLocale(ctx, req); err != nil {
+	callCtx, cancel := boundedToolsCall(ctx)
+	defer cancel()
+
+	if _, err := clientsFrom(ctx).User.SetLocale(callCtx, connect.NewRequest(req)); err != nil {
 		log.Z.Error("failed to call SetLocale.", zap.Error(err))
 		return nil, err
 	}
@@ -430,7 +454,10 @@ func setTimezone(ctx context.Context, inv *command.Invocation) (*command.Respons
 		Timezone: &timezone,
 	}.Build()
 
-	if _, err := client.UserServiceClient.SetTimezone(ctx, req); err != nil {
+	callCtx, cancel := boundedToolsCall(ctx)
+	defer cancel()
+
+	if _, err := clientsFrom(ctx).User.SetTimezone(callCtx, connect.NewRequest(req)); err != nil {
 		log.Z.Error("failed to call SetTimezone.", zap.Error(err))
 		return nil, err
 	}

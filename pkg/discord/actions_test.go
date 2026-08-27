@@ -23,10 +23,12 @@ import (
 // touching it would panic here, and no fake session is built for the branches
 // that do (see the note on postNotification below).
 //
-// client.ReminderServiceClient is left nil for exactly the same reason. It is a
-// nil INTERFACE, so confirmDelivery calling ConfirmDelivery on it panics — which
-// is what makes "this action must not be confirmed" an assertion rather than a
-// hope.
+// Service clients travel through the context now (client.Clients, attached by
+// withClients), not through a package-level global — see grpcClientsWithNoReminder
+// below for the equivalent seam under the Connect port: a *client.Clients whose
+// Reminder field is a nil interface, so confirmDelivery calling ConfirmDelivery
+// on it panics — which is what makes "this action must not be confirmed" an
+// assertion rather than a hope.
 func TestMain(m *testing.M) {
 	log.Z = zap.NewNop()
 	log.S = log.Z.Sugar()
@@ -200,6 +202,18 @@ func TestThePayloadArmsAreExactlyTheOnesTheSwitchHandles(t *testing.T) {
 
 // ── handleSendNotification ───────────────────────────────────────────────────
 
+// grpcClientsWithNoReminder builds the context seam
+// TestHandleSendNotificationDropsUnusableActionsWithoutPostingOrConfirming
+// relies on: a *client.Clients whose Reminder field is left at its zero
+// value, a nil ginbotv1connect.ReminderServiceClient interface. Calling a
+// method on that nil interface panics exactly the way calling one on the
+// old package-level client.ReminderServiceClient global did when it was left
+// unassigned, so it still makes "this action must not be confirmed" an
+// assertion the test fails on rather than a hope.
+func grpcClientsWithNoReminder(ctx context.Context) context.Context {
+	return withClients(ctx, &client.Clients{})
+}
+
 // TestHandleSendNotificationDropsUnusableActionsWithoutPostingOrConfirming.
 //
 // Three things are asserted at once, and all three are enforced by what is NOT
@@ -207,8 +221,9 @@ func TestThePayloadArmsAreExactlyTheOnesTheSwitchHandles(t *testing.T) {
 //
 //   - It must not panic. The test installs no recover(), so one fails the test.
 //   - It must not post. discordSession is nil, so any send nil-derefs.
-//   - It must not confirm. client.ReminderServiceClient is a nil interface, so
-//     ConfirmDelivery on it panics.
+//   - It must not confirm. The context carries a *client.Clients with a nil
+//     Reminder interface (grpcClientsWithNoReminder), so ConfirmDelivery on it
+//     panics.
 //
 // The last one is the reason the empty-id case matters and is not merely
 // defensive: without an id there is nothing to confirm, so posting the reminder
@@ -219,8 +234,10 @@ func TestHandleSendNotificationDropsUnusableActionsWithoutPostingOrConfirming(t 
 	if discordSession != nil {
 		t.Fatal("discordSession must stay nil for this test to mean anything")
 	}
-	if client.ReminderServiceClient != nil {
-		t.Fatal("client.ReminderServiceClient must stay nil for this test to mean anything")
+
+	ctx := grpcClientsWithNoReminder(context.Background())
+	if clientsFrom(ctx).Reminder != nil {
+		t.Fatal("Reminder must stay a nil interface for this test to mean anything")
 	}
 
 	tests := []struct {
@@ -253,7 +270,7 @@ func TestHandleSendNotificationDropsUnusableActionsWithoutPostingOrConfirming(t 
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handleSendNotification(context.Background(), tt.in)
+			handleSendNotification(ctx, tt.in)
 		})
 	}
 }

@@ -5,24 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"github.com/lasikuu/GinBot/pkg/grpc/server"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
 )
 
 func TestMain(m *testing.M) {
@@ -69,17 +64,6 @@ func actionWithoutPayload(t *testing.T, clientAction pb.ClientAction) *pb.OpenCl
 	}.Build()
 }
 
-// withReverseClient installs a client for one test and restores whatever was
-// there. ReverseServiceClient is a package-level variable and several tests here
-// write it, so an un-restored assignment leaks into whichever test runs next.
-func withReverseClient(t *testing.T, c pb.ReverseServiceClient) {
-	t.Helper()
-
-	previous := ReverseServiceClient
-	ReverseServiceClient = c
-	t.Cleanup(func() { ReverseServiceClient = previous })
-}
-
 // observeLogs installs a recording logger for one test and restores the previous
 // one.
 //
@@ -120,76 +104,46 @@ func durationFields(entry observer.LoggedEntry) []time.Duration {
 	return durations
 }
 
-// streamAttempt scripts one connection attempt: whether the stream opens, whether
-// the registration message gets through, and how the stream then ends.
-//
-// All three are separate because the outcome runOnce reports — and so the delay
-// the loop goes on to take — depends on which of them failed.
-type streamAttempt struct {
-	// openErr fails OpenClientActionStream outright: a server that is not there.
-	openErr error
-	// sendErr breaks the registration message on a stream that did open.
-	sendErr error
-	// recvErr is the stream's terminal status, which is what recvOutcome
-	// classifies. Left unset it is io.EOF, an orderly close by the server.
-	recvErr error
+// testIdentity is the StreamIdentity every reconnect-loop test in this file
+// drives the loop with. Below runOnce's ensure/open seam, nothing but a stubbed
+// ensure func or a real ensureRegistered call ever reads these fields, so a
+// single fixed value is enough everywhere the ensure func itself is faked out
+// directly.
+var testIdentity = StreamIdentity{
+	Platform:    pb.Platform_PLATFORM_DISCORD,
+	PlatformUID: "caller-uid",
+	Username:    "caller",
 }
 
-// scriptedReverseClient is the seam runOnce reaches the server through. It plays
-// one streamAttempt per connection attempt, repeating the last entry once the
-// script runs out.
-//
-// Repeating rather than exhausting is what lets a test describe "every attempt
-// fails" as a single entry, and it means the number of attempts is bounded by the
-// caller's context rather than by the length of the script — so a loop that runs
-// away fails on the caller's deadline instead of on an index panic here.
-type scriptedReverseClient struct {
-	script []streamAttempt
+// alwaysEnsure is an `ensure` that always succeeds, standing in for a
+// successful ensureRegistered call in every test that is not itself about
+// registration.
+func alwaysEnsure(context.Context) error { return nil }
 
-	mu       sync.Mutex
-	attempts int
-}
-
-// withScript installs a scripted client for one test and hands it back so the
-// test can assert on how many attempts the loop made.
-func withScript(t *testing.T, script ...streamAttempt) *scriptedReverseClient {
+// waitForCount blocks until count() reports at least want, so a test can act on
+// the loop being parked in its wait rather than guessing.
+func waitForCount(t *testing.T, count func() int, want int) {
 	t.Helper()
 
-	client := &scriptedReverseClient{script: script}
-	withReverseClient(t, client)
-
-	return client
-}
-
-func (c *scriptedReverseClient) OpenClientActionStream(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[pb.OpenClientActionStreamReq, pb.OpenClientActionStreamResp], error) {
-	c.mu.Lock()
-	attempt := c.script[min(c.attempts, len(c.script)-1)]
-	c.attempts++
-	c.mu.Unlock()
-
-	if attempt.openErr != nil {
-		return nil, attempt.openErr
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if count() >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
 	}
 
-	// A fresh stream per attempt: actions are consumed as they are delivered, so
-	// a shared one would replay a truncated script on the second reconnect.
-	return &fakeClientStream{sendErr: attempt.sendErr, recvErr: attempt.recvErr}, nil
+	t.Fatalf("count reached %d within the deadline, want at least %d", count(), want)
 }
 
-func (c *scriptedReverseClient) attemptCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.attempts
-}
-
-// fakeClientStream is the client side of the bidi stream in memory. The embedded
-// interface is left nil deliberately: only Send and Recv are part of what runOnce
-// is being tested against, and a nil dereference on anything else is a louder
-// failure than a silently plausible default.
-type fakeClientStream struct {
-	grpc.ClientStream
-
-	// sendErr breaks the initial registration message.
+// fakeActionStream is the in-memory double for actionStream — the seam runOnce
+// reaches the transport through now that Connect's own
+// *connect.BidiStreamForClient cannot be constructed outside
+// connectrpc.com/connect (its only constructor is reached by dialing a real
+// HTTP endpoint; see reverse_h2c_test.go for the one test in this package that
+// does that instead of faking this interface).
+type fakeActionStream struct {
+	// sendErr breaks the registration message on a stream that did open.
 	sendErr error
 
 	mu   sync.Mutex
@@ -198,9 +152,12 @@ type fakeClientStream struct {
 	// what runOnce has to classify.
 	actions []*pb.OpenClientActionStreamResp
 	recvErr error
+
+	closeRequestCalls  int
+	closeResponseCalls int
 }
 
-func (f *fakeClientStream) Send(req *pb.OpenClientActionStreamReq) error {
+func (f *fakeActionStream) Send(req *pb.OpenClientActionStreamReq) error {
 	if f.sendErr != nil {
 		return f.sendErr
 	}
@@ -212,7 +169,7 @@ func (f *fakeClientStream) Send(req *pb.OpenClientActionStreamReq) error {
 	return nil
 }
 
-func (f *fakeClientStream) Recv() (*pb.OpenClientActionStreamResp, error) {
+func (f *fakeActionStream) Receive() (*pb.OpenClientActionStreamResp, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -233,7 +190,123 @@ func (f *fakeClientStream) Recv() (*pb.OpenClientActionStreamResp, error) {
 	return nil, f.recvErr
 }
 
-func (f *fakeClientStream) Context() context.Context { return context.Background() }
+func (f *fakeActionStream) CloseRequest() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeRequestCalls++
+	return nil
+}
+
+func (f *fakeActionStream) CloseResponse() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeResponseCalls++
+	return nil
+}
+
+func (f *fakeActionStream) sentMessages() []*pb.OpenClientActionStreamReq {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.sent)
+}
+
+// streamAttempt scripts one connection attempt: whether the registration
+// message gets through, and how the stream then ends.
+//
+// There is deliberately no field for "the open call itself failed". Connect's
+// OpenClientActionStream(ctx) returns a *connect.BidiStreamForClient directly
+// with no error at all — the stream is opened lazily, and a transport failure
+// only ever surfaces later, from Send or Receive. That is the one seam the move
+// to connectrpc.com/connect actually changed here: streamUnreachable is now
+// reached only through ensureRegistered failing (before open is even attempted)
+// or through Send failing on a stream that did open. See
+// TestRunOnceReportsAnUnreachableServerWhenEnsureRegisteredFails and
+// TestRunOnceReportsAnUnreachableServerWhenSendFails.
+type streamAttempt struct {
+	// sendErr breaks the registration message on a stream that did open.
+	sendErr error
+	// recvErr is the stream's terminal status, which is what recvOutcome
+	// classifies. Left unset it is io.EOF, an orderly close by the server.
+	recvErr error
+	// actions are delivered by Receive, in order, before recvErr ends the
+	// stream.
+	actions []*pb.OpenClientActionStreamResp
+}
+
+// scriptedStreams is the seam runOnce reaches the server through. It plays one
+// streamAttempt per connection attempt, repeating the last entry once the
+// script runs out.
+//
+// Repeating rather than exhausting is what lets a test describe "every attempt
+// fails" as a single entry, and it means the number of attempts is bounded by
+// the caller's context rather than by the length of the script — so a loop
+// that runs away fails on the caller's deadline instead of on an index panic
+// here.
+type scriptedStreams struct {
+	script []streamAttempt
+
+	mu       sync.Mutex
+	attempts int
+	streams  []*fakeActionStream
+}
+
+// opener returns an actionStreamOpener backed by this script. A fresh
+// *fakeActionStream is returned per call: actions are consumed as they are
+// delivered, so a shared stream would replay a truncated script on the second
+// reconnect.
+func (s *scriptedStreams) opener() actionStreamOpener {
+	return func(context.Context) actionStream {
+		s.mu.Lock()
+		attempt := s.script[min(s.attempts, len(s.script)-1)]
+		s.attempts++
+		stream := &fakeActionStream{sendErr: attempt.sendErr, recvErr: attempt.recvErr, actions: attempt.actions}
+		s.streams = append(s.streams, stream)
+		s.mu.Unlock()
+
+		return stream
+	}
+}
+
+func (s *scriptedStreams) attemptCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
+
+func (s *scriptedStreams) lastStream() *fakeActionStream {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.streams) == 0 {
+		return nil
+	}
+	return s.streams[len(s.streams)-1]
+}
+
+// countingEnsure is a scriptable `ensure` func: it always reports how many
+// times it was called, and either always succeeds or always fails with err.
+type countingEnsure struct {
+	err error
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingEnsure) fn() func(context.Context) error {
+	return func(context.Context) error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.calls++
+		return c.err
+	}
+}
+
+func (c *countingEnsure) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// ── dispatch ──────────────────────────────────────────────────────────────────
 
 func TestDispatchInvokesRegisteredHandler(t *testing.T) {
 	var got *pb.OpenClientActionStreamResp
@@ -355,23 +428,6 @@ func TestDispatchRoutesEachActionToItsOwnHandler(t *testing.T) {
 	}
 }
 
-// waitForAttempts blocks until the loop has opened at least want streams, so a
-// test can act on the loop being parked in its wait rather than guessing.
-func waitForAttempts(t *testing.T, client *scriptedReverseClient, want int) {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if client.attemptCount() >= want {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-
-	t.Fatalf("the loop made %d connection attempts within the deadline, want at least %d",
-		client.attemptCount(), want)
-}
-
 // RunClientActionStream must return on cancellation rather than sleeping out the
 // delay it is parked in, so a client shutting down does not hold the process open
 // for up to reconnectMaxBackoff.
@@ -383,24 +439,27 @@ func waitForAttempts(t *testing.T, client *scriptedReverseClient, want int) {
 // recover() swallowed it, done closed, and the select this test is named after
 // was never reached. Deleting the ctx.Done() arm outright still passed it.
 //
-// Hence the real client below, and hence no recover(): a panic here is a defect
-// and must fail rather than be absorbed.
+// Hence the scripted ensure func below, and hence no recover(): a panic here is
+// a defect and must fail rather than be absorbed. ensureRegistered failing
+// (rather than a stream failing to open) is what drives runOnce to return an
+// error without ever calling open — Connect's OpenClientActionStream(ctx) has
+// no error return of its own to fail with.
 func TestRunClientActionStreamStopsOnContextCancel(t *testing.T) {
-	// Fails to OPEN, so runOnce returns an error and the loop reaches its wait.
-	client := withScript(t, streamAttempt{openErr: errors.New("connection refused")})
+	ensure := &countingEnsure{err: errors.New("registration refused")}
+	streams := &scriptedStreams{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunClientActionStream(ctx, pb.Platform_PLATFORM_DISCORD, nil)
+		runClientActionStream(ctx, streams.opener(), ensure.fn(), testIdentity, nil, time.After)
 	}()
 
-	// Cancelled only once a connection has actually been attempted. Cancelling
-	// first would return through the ctx.Err() check at the top of the loop, a
+	// Cancelled only once an attempt has actually been made. Cancelling first
+	// would return through the ctx.Err() check at the top of the loop, a
 	// different and much weaker path.
-	waitForAttempts(t, client, 1)
+	waitForCount(t, ensure.callCount, 1)
 	cancel()
 
 	// Measured against the delay the loop is actually sitting in. "Returned
@@ -426,9 +485,14 @@ func TestRunClientActionStreamStopsOnContextCancel(t *testing.T) {
 	}
 
 	// One attempt, not two: a loop that waited its delay out and went round
-	// again would have opened a second stream on the way past.
-	if got := client.attemptCount(); got != 1 {
-		t.Errorf("the loop made %d connection attempts after one cancellation, want 1", got)
+	// again would have called ensure a second time on the way past.
+	if got := ensure.callCount(); got != 1 {
+		t.Errorf("ensureRegistered was attempted %d times after one cancellation, want 1", got)
+	}
+	// And no stream was ever opened: ensureRegistered failing must short-circuit
+	// before runOnce reaches open at all.
+	if got := streams.attemptCount(); got != 0 {
+		t.Errorf("a stream was opened %d times despite ensureRegistered failing first", got)
 	}
 }
 
@@ -475,8 +539,9 @@ func (c *recordingClock) recorded() []time.Duration {
 	return slices.Clone(c.delays)
 }
 
-// driveReconnects runs the reconnect loop over a scripted sequence of outcomes
-// and returns the delays it actually waited, in order.
+// driveReconnects runs the reconnect loop over a scripted sequence of stream
+// outcomes (registration always succeeds via alwaysEnsure) and returns the
+// delays it actually waited, in order.
 func driveReconnects(t *testing.T, script []streamAttempt, delays int) []time.Duration {
 	t.Helper()
 
@@ -484,12 +549,12 @@ func driveReconnects(t *testing.T, script []streamAttempt, delays int) []time.Du
 	defer cancel()
 
 	clock := &recordingClock{stopAfter: delays, stop: cancel}
-	withReverseClient(t, &scriptedReverseClient{script: script})
+	streams := &scriptedStreams{script: script}
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runClientActionStream(ctx, pb.Platform_PLATFORM_DISCORD, nil, clock.wait)
+		runClientActionStream(ctx, streams.opener(), alwaysEnsure, testIdentity, nil, clock.wait)
 	}()
 
 	select {
@@ -511,9 +576,13 @@ func driveReconnects(t *testing.T, script []streamAttempt, delays int) []time.Du
 // What changed unnoticed was WHICH delay each attempt got, and only the literal
 // sequence catches that.
 func TestTheReconnectDelaysTheLoopWaits(t *testing.T) {
-	unreachable := streamAttempt{openErr: errors.New("connection refused")}
-	dropped := streamAttempt{recvErr: status.Error(codes.Unavailable, "transport is closing")}
-	refused := streamAttempt{recvErr: status.Error(codes.ResourceExhausted, "too many client action streams")}
+	// unreachable: the stream "opened" (fakeActionStream always does — Connect's
+	// OpenClientActionStream has no error return of its own) but the
+	// registration Send failed, exactly as a connection that never really came
+	// up would.
+	unreachable := streamAttempt{sendErr: errors.New("connection refused")}
+	dropped := streamAttempt{recvErr: connect.NewError(connect.CodeUnavailable, errors.New("transport is closing"))}
+	refused := streamAttempt{recvErr: connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams"))}
 
 	tests := []struct {
 		name   string
@@ -598,7 +667,7 @@ func TestTheReconnectDelaysTheLoopWaits(t *testing.T) {
 // retuned to. Stated separately from the exact schedule above so that a failure
 // says "the refusal reset the backoff" rather than "delay 4 differs".
 func TestARefusedClientsDelaysNeverReturnToTheFloor(t *testing.T) {
-	refused := streamAttempt{recvErr: status.Error(codes.ResourceExhausted, "too many client action streams")}
+	refused := streamAttempt{recvErr: connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams"))}
 
 	for i, delay := range driveReconnects(t, []streamAttempt{refused}, 6) {
 		if delay <= reconnectMinBackoff {
@@ -621,8 +690,8 @@ func TestARefusedClientsDelaysNeverReturnToTheFloor(t *testing.T) {
 func TestTheLoggedRetryDelayIsTheDelayThenWaited(t *testing.T) {
 	logs := observeLogs(t)
 
-	unreachable := streamAttempt{openErr: errors.New("connection refused")}
-	dropped := streamAttempt{recvErr: status.Error(codes.Unavailable, "transport is closing")}
+	unreachable := streamAttempt{sendErr: errors.New("connection refused")}
+	dropped := streamAttempt{recvErr: connect.NewError(connect.CodeUnavailable, errors.New("transport is closing"))}
 
 	delays := driveReconnects(t, []streamAttempt{unreachable, unreachable, dropped, unreachable}, 4)
 
@@ -641,14 +710,7 @@ func TestTheLoggedRetryDelayIsTheDelayThenWaited(t *testing.T) {
 
 // ── The reconnect backoff ────────────────────────────────────────────────────
 //
-// These assert nextBackoff itself. The test they replace defined a local closure
-// mirroring RunClientActionStream's loop and asserted that, so it would have
-// passed with the production transition deleted outright.
-//
-// They also assert properties — grows, saturates, resets — rather than the exact
-// doubling. Reproducing the arithmetic here would be the same mistake in a
-// smaller font, and it would mean the schedule could not be retuned without
-// rewriting the suite.
+// These assert nextBackoff itself, independent of any client seam.
 
 // saturate drives nextBackoff with one outcome until it stops growing, checking
 // on every step that the cap is never exceeded rather than only that the final
@@ -743,22 +805,25 @@ func TestRunOnceClassifiesAnEndedStream(t *testing.T) {
 	}{
 		// The registry cap's refusal. Sorted as established it resets the delay,
 		// which is what made a refused client retry once a second.
-		{"registry at capacity", status.Error(codes.ResourceExhausted, "too many client action streams"), streamRejected},
+		{"registry at capacity", connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams")), streamRejected},
 		// A refusal on the merits. Retrying hard will not change the answer.
-		{"caller refused", status.Error(codes.PermissionDenied, "not a platform client"), streamRejected},
+		{"caller refused", connect.NewError(connect.CodePermissionDenied, errors.New("not a platform client")), streamRejected},
 		// An older peer, or one that never registered ReverseService at all.
-		{"stream not served", status.Error(codes.Unimplemented, "unknown service"), streamRejected},
+		{"stream not served", connect.NewError(connect.CodeUnimplemented, errors.New("unknown service")), streamRejected},
+		// A caller resolved but not yet fit to hold a stream — e.g. not
+		// registered. Retrying sooner does not change that either.
+		{"caller not yet registered", connect.NewError(connect.CodeFailedPrecondition, errors.New("caller is not registered")), streamRejected},
 		// A genuine drop: the connection worked, so the next attempt should not
 		// be penalised for the last one.
-		{"transport dropped", status.Error(codes.Unavailable, "transport is closing"), streamEstablished},
+		{"transport dropped", connect.NewError(connect.CodeUnavailable, errors.New("transport is closing")), streamEstablished},
 		{"server closed the stream", io.EOF, streamEstablished},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			withScript(t, streamAttempt{recvErr: tc.recvErr})
+			streams := &scriptedStreams{script: []streamAttempt{{recvErr: tc.recvErr}}}
 
-			got, err := runOnce(context.Background(), pb.Platform_PLATFORM_DISCORD, nil)
+			got, err := runOnce(context.Background(), streams.opener(), alwaysEnsure, testIdentity, nil)
 			if got != tc.want {
 				t.Errorf("runOnce classified %v as %s (err %v), want %s",
 					tc.recvErr, got, err, tc.want)
@@ -767,35 +832,233 @@ func TestRunOnceClassifiesAnEndedStream(t *testing.T) {
 	}
 }
 
-// A server that is down never established anything, so the attempt must be
-// penalised rather than treated as a healthy connection that happened to drop.
-func TestRunOnceReportsAnUnreachableServer(t *testing.T) {
-	openErr := errors.New("connection refused")
-	withScript(t, streamAttempt{openErr: openErr})
+// A registration that never gets the chance to reach the server — because
+// ensureRegistered refused it first — never established anything, so the
+// attempt must be penalised rather than treated as a healthy connection that
+// happened to drop. This is the first of the two ways streamUnreachable is
+// reached now that OpenClientActionStream itself cannot fail to "open".
+func TestRunOnceReportsAnUnreachableServerWhenEnsureRegisteredFails(t *testing.T) {
+	ensureErr := errors.New("registration refused")
+	ensure := &countingEnsure{err: ensureErr}
+	streams := &scriptedStreams{}
 
-	got, err := runOnce(context.Background(), pb.Platform_PLATFORM_DISCORD, nil)
+	got, err := runOnce(context.Background(), streams.opener(), ensure.fn(), testIdentity, nil)
 	if got != streamUnreachable {
 		t.Errorf("runOnce = %s, want streamUnreachable", got)
 	}
-	if !errors.Is(err, openErr) {
-		t.Errorf("runOnce error = %v, want the open error %v", err, openErr)
+	if !errors.Is(err, ensureErr) {
+		t.Errorf("runOnce error = %v, want the ensure error %v", err, ensureErr)
+	}
+	if got := streams.attemptCount(); got != 0 {
+		t.Errorf("a stream was opened %d times despite ensureRegistered failing first; runOnce must check registration before opening", got)
 	}
 }
 
 // The registration message is what makes the stream usable at all — without it
 // the server does not know which platform to route here — so a stream that
-// opened but could not carry it was never established either.
-func TestRunOnceReportsAFailedRegistrationAsUnreachable(t *testing.T) {
+// opened but could not carry it was never established either. This is the
+// second of the two ways streamUnreachable is reached.
+func TestRunOnceReportsAnUnreachableServerWhenSendFails(t *testing.T) {
 	sendErr := errors.New("broken pipe")
-	withScript(t, streamAttempt{sendErr: sendErr})
+	streams := &scriptedStreams{script: []streamAttempt{{sendErr: sendErr}}}
 
-	got, err := runOnce(context.Background(), pb.Platform_PLATFORM_DISCORD, nil)
+	got, err := runOnce(context.Background(), streams.opener(), alwaysEnsure, testIdentity, nil)
 	if got != streamUnreachable {
 		t.Errorf("runOnce = %s, want streamUnreachable", got)
 	}
 	if !errors.Is(err, sendErr) {
 		t.Errorf("runOnce error = %v, want the send error %v", err, sendErr)
 	}
+}
+
+// TestRunOnceSendsARegistrationCarryingTheIdentityPlatform: the registration
+// message is what tells the server which platform this stream serves, so it
+// has to carry the identity runOnce was actually given, not some other value.
+func TestRunOnceSendsARegistrationCarryingTheIdentityPlatform(t *testing.T) {
+	streams := &scriptedStreams{script: []streamAttempt{{}}}
+
+	// A script entry with no recvErr and no actions ends the stream with
+	// io.EOF, which runOnce reports as streamEstablished but still returns a
+	// non-nil error for ("server closed the action stream") — an orderly
+	// close is still an event worth logging. Only the outcome matters here.
+	outcome, _ := runOnce(context.Background(), streams.opener(), alwaysEnsure, testIdentity, nil)
+	if outcome != streamEstablished {
+		t.Fatalf("runOnce = %s, want streamEstablished for an orderly close", outcome)
+	}
+
+	stream := streams.lastStream()
+	if stream == nil {
+		t.Fatal("no stream was opened")
+	}
+	sent := stream.sentMessages()
+	if len(sent) != 1 {
+		t.Fatalf("%d registration messages were sent, want exactly 1", len(sent))
+	}
+	if got := sent[0].GetPlatformEnum(); got != testIdentity.Platform {
+		t.Errorf("registration platform_enum = %v, want %v", got, testIdentity.Platform)
+	}
+}
+
+// ── ensureRegistered ─────────────────────────────────────────────────────────
+
+// fakeUserClient is a ginbotv1connect.UserServiceClient double whose only
+// implemented method is Register; anything else calling through the embedded
+// nil interface panics loudly rather than returning a zero value.
+type fakeUserClient struct {
+	ginbotv1connect.UserServiceClient
+
+	err error
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *fakeUserClient) Register(_ context.Context, _ *connect.Request[pb.RegisterReq]) (*connect.Response[pb.RegisterResp], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	id := "0192f000-0000-7000-8000-0000000000aa"
+	return connect.NewResponse(pb.RegisterResp_builder{UserId: &id}.Build()), nil
+}
+
+func (f *fakeUserClient) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// TestEnsureRegisteredTreatsAlreadyExistsAsSuccess: a client whose account was
+// created on a previous run must not treat that as a failure to reconnect over.
+func TestEnsureRegisteredTreatsAlreadyExistsAsSuccess(t *testing.T) {
+	fake := &fakeUserClient{err: connect.NewError(connect.CodeAlreadyExists, errors.New("this platform identity is already registered"))}
+	c := &Clients{User: fake}
+
+	if err := c.ensureRegistered(context.Background(), testIdentity); err != nil {
+		t.Fatalf("ensureRegistered = %v, want nil for CodeAlreadyExists", err)
+	}
+	if got := fake.callCount(); got != 1 {
+		t.Errorf("Register called %d times, want 1", got)
+	}
+}
+
+// TestEnsureRegisteredRunsOnEveryAttempt pins the deliberate absence of a
+// "already registered" latch.
+//
+// The latch is the obvious optimisation and an earlier version had one. It is
+// wrong, and the failure it produces is silent and permanent: the account can
+// go away underneath a long-lived client — `docker compose down -v`, a
+// database restore, an operator deleting the row — after which the server
+// refuses the stream with FailedPrecondition, recvOutcome correctly stops the
+// reconnect loop hot-looping, and a latched client never re-registers. This
+// was reproduced against a real server: four stream refusals, one Register
+// call, backoff pinned at its 30s ceiling, reminder delivery dead until
+// someone restarted the process.
+//
+// Re-registering costs one unary call per stream ATTEMPT, and attempts only
+// happen when the stream drops.
+func TestEnsureRegisteredRunsOnEveryAttempt(t *testing.T) {
+	fake := &fakeUserClient{}
+	c := &Clients{User: fake}
+
+	for i := 0; i < 3; i++ {
+		if err := c.ensureRegistered(context.Background(), testIdentity); err != nil {
+			t.Fatalf("call %d: ensureRegistered = %v, want nil", i, err)
+		}
+	}
+
+	if got := fake.callCount(); got != 3 {
+		t.Errorf("Register called %d times across 3 calls, want 3: a client whose "+
+			"account was deleted must be able to re-register on its next reconnect", got)
+	}
+}
+
+// TestARecoveredRegistrationReopensTheStream is the end-to-end statement of
+// the property above, through runOnce rather than ensureRegistered alone: a
+// server that refuses the stream because the caller's row went away must be
+// reconnectable once registration is redone, with no process restart.
+func TestARecoveredRegistrationReopensTheStream(t *testing.T) {
+	fake := &fakeUserClient{}
+	c := &Clients{User: fake}
+
+	// First attempt: registered, but the server has forgotten the account and
+	// refuses the stream exactly as ClearanceInterceptor.resolveCaller does.
+	// ensureRegistered takes the identity; runOnce's seam does not, so bind it
+	// the way RunClientActionStream does.
+	ensure := func(ctx context.Context) error { return c.ensureRegistered(ctx, testIdentity) }
+
+	refused := connect.NewError(connect.CodeFailedPrecondition, errors.New("caller is not registered"))
+	streams := &scriptedStreams{script: []streamAttempt{
+		{recvErr: refused},
+		{actions: []*pb.OpenClientActionStreamResp{action(t, pb.ClientAction_CLIENT_ACTION_SEND_TEST)}},
+	}}
+	open := streams.opener()
+
+	outcome, _ := runOnce(context.Background(), open, ensure, testIdentity, ActionHandlers{})
+	if outcome != streamRejected {
+		t.Fatalf("first attempt outcome = %v, want %v", outcome, streamRejected)
+	}
+
+	// Second attempt: ensureRegistered must run AGAIN — that is the whole
+	// recovery mechanism — and the stream must then open.
+	handled := make(chan struct{}, 1)
+	handlers := ActionHandlers{
+		pb.ClientAction_CLIENT_ACTION_SEND_TEST: func(context.Context, *pb.OpenClientActionStreamResp) {
+			handled <- struct{}{}
+		},
+	}
+	if _, err := runOnce(context.Background(), open, ensure, testIdentity, handlers); err == nil {
+		t.Fatal("second attempt returned no error; the scripted stream always ends")
+	}
+
+	select {
+	case <-handled:
+	default:
+		t.Error("the second attempt delivered no action, so the stream never reopened")
+	}
+
+	if got := fake.callCount(); got != 2 {
+		t.Errorf("Register called %d times over two attempts, want 2", got)
+	}
+}
+
+// TestEnsureRegisteredRetriesAfterAFailure: a failure is not "registered", so
+// the NEXT call must try again rather than silently treating an unregistered
+// client as done — the no-op memoisation above must only latch on success.
+func TestEnsureRegisteredRetriesAfterAFailure(t *testing.T) {
+	fake := &fakeUserClient{err: connect.NewError(connect.CodeUnavailable, errors.New("no route to server"))}
+	c := &Clients{User: fake}
+
+	err := c.ensureRegistered(context.Background(), testIdentity)
+	if err == nil {
+		t.Fatal("ensureRegistered succeeded, want the scripted failure to propagate")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Errorf("code = %v, want %v", got, connect.CodeUnavailable)
+	}
+
+	fake.err = nil
+	if err := c.ensureRegistered(context.Background(), testIdentity); err != nil {
+		t.Fatalf("second call = %v, want nil once the server accepts", err)
+	}
+
+	if got := fake.callCount(); got != 2 {
+		t.Errorf("Register called %d times, want 2 (the failed attempt and the retry that succeeded)", got)
+	}
+}
+
+// TestClientsCloseOnALiteralConstructedValueDoesNotPanic: a *Clients built as
+// a literal with only some fields set — the supported construction Options
+// documents for injecting fakes — must be safe to Close even though it never
+// went through Dial and therefore never built whatever unexported transport
+// state a dialled *Clients would carry.
+func TestClientsCloseOnALiteralConstructedValueDoesNotPanic(t *testing.T) {
+	c := &Clients{}
+	c.Close()
 }
 
 // ── A panicking action handler ───────────────────────────────────────────────
@@ -879,206 +1142,5 @@ func TestDispatchReportsARecoveredPanic(t *testing.T) {
 	// silence: it is the value that says which handler to go and look at.
 	if recorded := fmt.Sprint(logs.All()); !strings.Contains(recorded, panicValue) {
 		t.Errorf("the recovered panic value %q is absent from the log record: %s", panicValue, recorded)
-	}
-}
-
-// ── The refusal, end to end ──────────────────────────────────────────────────
-//
-// The two halves are asserted separately elsewhere: pkg/grpc/server asserts that
-// a full registry refuses with ResourceExhausted, and
-// TestRunOnceClassifiesAnEndedStream asserts that ResourceExhausted is a
-// rejection. Neither is worth much alone — the classification is only correct if
-// it matches the code the server actually puts on the wire — so this ties them
-// together over a real transport.
-
-// registryProbeCeiling bounds the fill loop. maxStreamClients is unexported in
-// pkg/grpc/server, so the cap is discovered by hitting it rather than assumed;
-// this exists only so a cap that is not enforced fails the test instead of
-// hanging it.
-const registryProbeCeiling = 256
-
-// refusalGrace bounds how long fillServerRegistry waits for a refusal before
-// treating the stream it just opened as admitted.
-//
-// There is no positive admission signal on the wire — an admitted client is
-// simply one that was not refused — so admission has to be inferred from the
-// absence of a refusal, and inferring it takes a wait. That wait is paid once per
-// admitted stream, so the value is a real cost: it is roughly maxStreamClients
-// times this, or about a third of a second, on the whole package's runtime.
-//
-// 5ms against a measured sub-millisecond round trip over an in-process bufconn
-// under -race. Too short would not cause a false pass — the next iteration blocks
-// on its own refusal just the same — only a few extra probe streams, which
-// registryProbeCeiling bounds.
-const refusalGrace = 5 * time.Millisecond
-
-// gracefulStopDeadline bounds the teardown below so a regression in it fails this
-// test rather than hanging the whole suite for its default timeout.
-//
-// Draining 64 handlers this way measures at about 2ms, so this is three orders of
-// magnitude of headroom. It is deliberately not tighter: the failure mode being
-// bounded is a deadlock, which no amount of waiting resolves, so the only thing a
-// tighter bound buys is a flakier test on a loaded machine.
-const gracefulStopDeadline = 10 * time.Second
-
-// fillServerRegistry opens streams until the server refuses one, keeping every
-// admitted stream open for the rest of the test. The refused stream never
-// occupied a slot, so the registry is still full when this returns.
-//
-// The refusal is BLOCKED on after each open rather than checked at the top of the
-// next iteration. Polling it non-blockingly meant nothing waited for the refusal
-// goroutine to be scheduled, so the loop opened an indeterminate number of extra
-// streams past the cap before noticing — with only registryProbeCeiling minus the
-// cap of slack, and an overshoot surfacing as a fatal claiming the cap is not
-// enforced over the wire, which is not the defect that happened.
-func fillServerRegistry(t *testing.T, ctx context.Context, reverse pb.ReverseServiceClient) {
-	t.Helper()
-
-	registration := pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()
-
-	for i := 0; i < registryProbeCeiling; i++ {
-		stream, err := reverse.OpenClientActionStream(ctx)
-		if err != nil {
-			t.Fatalf("open stream %d: %v", i, err)
-		}
-		if err := stream.Send(registration); err != nil {
-			t.Fatalf("register stream %d: %v", i, err)
-		}
-
-		// An admitted stream blocks in Recv for the rest of the test, holding its
-		// slot exactly as a connected platform client does. A refused one reports
-		// its terminal status here. The channel is buffered so this goroutine
-		// cannot be left parked on a send once the loop has moved on.
-		ended := make(chan error, 1)
-		go func() {
-			for {
-				if _, err := stream.Recv(); err != nil {
-					ended <- err
-					return
-				}
-			}
-		}()
-
-		select {
-		case err := <-ended:
-			if status.Code(err) == codes.ResourceExhausted {
-				return
-			}
-			t.Fatalf("stream %d ended with %v; want it either held open (admitted) or refused with ResourceExhausted",
-				i, err)
-		case <-time.After(refusalGrace):
-		}
-	}
-
-	t.Fatalf("the server admitted %d streams without refusing one; the registry cap is not enforced over the wire",
-		registryProbeCeiling)
-}
-
-// TestARefusedClientBacksOffRatherThanRetryingEverySecond drives a real
-// ReverseServer to its cap and asserts the refused client's next delay grows.
-//
-// Its teardown carries a second, unrelated assertion, because nothing else in the
-// repository covers it: see the cleanup below.
-func TestARefusedClientBacksOffRatherThanRetryingEverySecond(t *testing.T) {
-	// Registered before the teardown so it runs AFTER it. The teardown depends on
-	// the admitted streams still being live: a handler whose stream context was
-	// already cancelled returns on its own, which would make ReverseServer.
-	// Shutdown() a no-op and quietly void the ordering assertion below.
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	grpcServer := grpc.NewServer()
-	// Kept in a variable rather than inlined into the Register call, because the
-	// teardown has to reach it.
-	reverseServer := server.NewReverseServer()
-	pb.RegisterReverseServiceServer(grpcServer, reverseServer)
-
-	listener := bufconn.Listen(1024 * 1024)
-	served := make(chan struct{})
-	go func() {
-		defer close(served)
-		// Serve returns ErrServerStopped on Stop, which is the normal path here.
-		_ = grpcServer.Serve(listener)
-	}()
-
-	// passthrough is required: grpc.NewClient defaults to the DNS resolver, and
-	// "bufnet" is not a hostname.
-	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return listener.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-
-	t.Cleanup(func() {
-		// This ordering is cmd/ginbot-server/main.go's, and this cleanup is the
-		// only thing in the repository that exercises it end to end.
-		//
-		// It is load-bearing, not stylistic. GracefulStop waits for every handler
-		// to return before it closes transports, and a reverse-stream handler
-		// parked waiting for a client message never returns on its own — so
-		// GracefulStop first DEADLOCKS, until the go test timeout here and until
-		// the container runtime SIGKILLs the container in production. Shutdown
-		// first releases the handlers, giving GracefulStop something that
-		// finishes. If that ordering regresses, this cleanup is what hangs.
-		//
-		// Draining also fixes what this test used to do to the rest of the
-		// package. It tore down with Stop(), and grpc-go's Server.stop waits on
-		// handlersWG only when stopping gracefully or when WaitForHandlers(true)
-		// was set — so Stop() returned while all 64 handlers admitted by
-		// fillServerRegistry were still unwinding through deregister(), which
-		// logs through the package-global log.Z that the next test in this file
-		// assigns. A deterministic data race at -count=2, and the reason
-		// -count=5 failed. WaitForHandlers(true) would silence it too, and prove
-		// nothing.
-		reverseServer.Shutdown()
-
-		stopped := make(chan struct{})
-		go func() {
-			defer close(stopped)
-			grpcServer.GracefulStop()
-		}()
-
-		select {
-		case <-stopped:
-		case <-time.After(gracefulStopDeadline):
-			t.Errorf("GracefulStop did not finish within %v of Shutdown; the reverse-stream handlers are not being released",
-				gracefulStopDeadline)
-			// Forced, so a failure here is one failing test rather than a suite
-			// that hangs until its default timeout.
-			grpcServer.Stop()
-			<-stopped
-		}
-
-		if err := conn.Close(); err != nil {
-			t.Errorf("close client connection: %v", err)
-		}
-		<-served
-	})
-
-	reverse := pb.NewReverseServiceClient(conn)
-	fillServerRegistry(t, ctx, reverse)
-
-	withReverseClient(t, reverse)
-
-	// A bounded context so a probe that is wrongly ADMITTED fails this test
-	// rather than blocking in Recv until the whole suite times out.
-	probeCtx, cancelProbe := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelProbe()
-
-	outcome, err := runOnce(probeCtx, pb.Platform_PLATFORM_DISCORD, nil)
-	if outcome != streamRejected {
-		t.Fatalf("a client refused by a full registry was classified %s (err %v), want streamRejected",
-			outcome, err)
-	}
-
-	if got := nextBackoff(reconnectMinBackoff, outcome); got <= reconnectMinBackoff {
-		t.Errorf("a refused client's next delay = %v, want it longer than %v rather than pinned there",
-			got, reconnectMinBackoff)
 	}
 }

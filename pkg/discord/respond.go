@@ -2,14 +2,14 @@ package discord
 
 import (
 	"bytes"
+	"errors"
 	"unicode/utf8"
 
+	"connectrpc.com/connect"
 	"github.com/bwmarrin/discordgo"
 	"github.com/lasikuu/GinBot/pkg/command"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // errorMessage maps a failed command onto a message for the caller.
@@ -20,20 +20,38 @@ import (
 //
 // Both invocation paths share this mapping: a slash command and a chat command
 // must not explain the same failure differently.
+//
+// connect.CodeOf(nil) reports CodeUnknown, which falls through to the generic
+// message below like any other unrecognised code — so errorMessage(nil), which
+// respondDeferred calls deliberately, still answers sensibly.
 func errorMessage(err error) string {
 	message := "Something went wrong."
 
-	if st, ok := status.FromError(err); ok {
-		switch st.Code() {
-		case codes.InvalidArgument, codes.FailedPrecondition:
-			message = st.Message()
-		case codes.PermissionDenied:
-			message = "You are not allowed to do that."
-		case codes.NotFound:
-			message = "Not found."
-		case codes.Unimplemented:
-			message = "That is not implemented yet."
+	// A *connect.Error's own Error() string is prefixed with its code (e.g.
+	// "invalid_argument: ..."), so the two message-bearing cases below read
+	// connectErr.Message() rather than err.Error() — showing the caller the
+	// prefix would leak wire-protocol vocabulary into a chat reply.
+	switch connect.CodeOf(err) {
+	case connect.CodeInvalidArgument, connect.CodeFailedPrecondition:
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			message = connectErr.Message()
 		}
+	case connect.CodePermissionDenied:
+		message = "You are not allowed to do that."
+	case connect.CodeNotFound:
+		message = "Not found."
+	case connect.CodeUnimplemented:
+		message = "That is not implemented yet."
+	case connect.CodeUnavailable:
+		// Distinct from the generic message on purpose, and the distinction is
+		// the whole point of the case: a backend the bot cannot reach is the
+		// one failure here that is both transient and the caller's to act on,
+		// so telling them to retry is actionable where "something went wrong"
+		// invites a bug report about a working command. It leaks no
+		// implementation detail — that ginbot-server exists and can be down is
+		// not a secret the chat reply is keeping.
+		message = "The bot's backend is unreachable right now. Try again in a moment."
 	}
 
 	return message

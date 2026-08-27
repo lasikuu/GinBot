@@ -7,33 +7,17 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/metadata"
 )
 
-// metadataFromHeaderForTest builds the incoming gRPC context
-// FromIncomingContext expects, from the same http.Header values FromHeader
-// was given, so TestFromHeaderAndFromIncomingContextAgree drives both parsers
-// off one shared fixture rather than two that could quietly diverge.
-func metadataFromHeaderForTest(header http.Header) context.Context {
-	pairs := make([]string, 0, len(header)*2)
-	for key, values := range header {
-		for _, value := range values {
-			pairs = append(pairs, key, value)
-		}
-	}
-	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(pairs...))
-}
+// FromHeader and OriginFromHeader parse Connect request headers: a Connect
+// handler only ever sees identity on the request or connection object itself,
+// never folded into ctx the way gRPC metadata used to be. This file pins the
+// decode side; callermeta_test.go pins the encode side
+// (NewOutgoingContext/NewOutgoingOrigin/WriteHeader) and the two are tied
+// together by TestEncodeThenDecodeAgreesWithWhatWasAttached below.
 
-// FromHeader and OriginFromHeader are the Connect (http.Header) counterparts
-// of FromIncomingContext and OriginFromIncomingContext, added for stage 3:
-// a Connect handler only ever sees headers on the request or connection
-// object, never folded into ctx the way gRPC metadata was. TestRoundTrip and
-// friends in callermeta_test.go already pin the gRPC-metadata half; this file
-// is the same set of properties pinned against the header-based API instead,
-// so a producer/consumer disagreement on THIS path is caught the same way the
-// original enum-name-vs-number bug would have been.
-
-// TestFromHeaderRoundTrip is the header-based counterpart of TestRoundTrip.
+// TestFromHeaderRoundTrip exercises FromHeader directly against hand-built
+// headers, independent of the encode side.
 func TestFromHeaderRoundTrip(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -83,8 +67,7 @@ func TestFromHeaderRoundTrip(t *testing.T) {
 	}
 }
 
-// TestFromHeaderErrors is the header-based counterpart of
-// TestFromIncomingContextErrors: every malformed shape must produce
+// TestFromHeaderErrors: every malformed shape must produce
 // connect.CodeInvalidArgument, not an anonymous caller.
 func TestFromHeaderErrors(t *testing.T) {
 	tests := []struct {
@@ -149,8 +132,8 @@ func TestFromHeaderErrors(t *testing.T) {
 	}
 }
 
-// TestOriginFromHeaderRoundTrip is the header-based counterpart of
-// TestOriginRoundTrip.
+// TestOriginFromHeaderRoundTrip exercises OriginFromHeader directly against
+// hand-built headers, independent of the encode side.
 func TestOriginFromHeaderRoundTrip(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -207,56 +190,96 @@ func TestOriginFromHeaderRoundTrip(t *testing.T) {
 	}
 }
 
-// TestFromHeaderAndFromIncomingContextAgree pins the promise in FromHeader's
-// own doc comment: "a caller cannot tell which transport parsed its request
-// from the response alone." Both parsers are fed byte-identical header values
-// and must produce the same verdict.
-func TestFromHeaderAndFromIncomingContextAgree(t *testing.T) {
+// TestEncodeThenDecodeAgreesWithWhatWasAttached replaces
+// TestFromHeaderAndFromIncomingContextAgree.
+//
+// The old test drove two independent parsers — FromHeader and
+// FromIncomingContext — off one shared http.Header fixture and asserted they
+// agreed, because both existed side by side during the Connect port and a
+// producer/consumer disagreement between them would have been exactly the
+// class of bug callermeta exists to prevent (the original enum-name-vs-number
+// break). FromIncomingContext is now deleted: there is only one parser left,
+// so "two parsers agree" is no longer a meaningful property to pin.
+//
+// What replaced it is the genuine round trip: NewOutgoingContext and
+// NewOutgoingOrigin attach identity to an outgoing context, WriteHeader
+// materialises that context onto the http.Header a real Connect client would
+// send, and FromHeader/OriginFromHeader must decode back exactly what was
+// attached. This is the same property the old test was protecting — producer
+// and consumer must not silently diverge — pinned against the one code path
+// that now exists end to end instead of against two parsers that no longer
+// both exist.
+func TestEncodeThenDecodeAgreesWithWhatWasAttached(t *testing.T) {
 	tests := []struct {
-		name        string
-		platform    string
-		uid         string
-		setPlatform bool
-		setUID      bool
+		name           string
+		attachIdentity bool
+		platform       pb.Platform
+		uid            string
+		wantErr        bool
 	}{
-		{"well formed", pb.Platform_PLATFORM_DISCORD.String(), "123", true, true},
-		{"no uid", pb.Platform_PLATFORM_DISCORD.String(), "", true, false},
-		{"missing platform", "", "123", false, true},
-		{"unspecified platform", pb.Platform_PLATFORM_UNSPECIFIED.String(), "123", true, true},
-		{"unknown platform name", "PLATFORM_CARRIER_PIGEON", "123", true, true},
+		{name: "well formed", attachIdentity: true, platform: pb.Platform_PLATFORM_DISCORD, uid: "123"},
+		{name: "no uid", attachIdentity: true, platform: pb.Platform_PLATFORM_DISCORD},
+		{
+			// NewOutgoingContext has no way to omit the platform — it is a
+			// required, typed parameter — so "missing platform" is
+			// represented the only way it can be reached through the encode
+			// side: a context nothing ever attached identity to at all.
+			name:    "identity never attached",
+			wantErr: true,
+		},
+		{
+			name:           "unspecified platform",
+			attachIdentity: true,
+			platform:       pb.Platform_PLATFORM_UNSPECIFIED,
+			uid:            "123",
+			wantErr:        true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tt.attachIdentity {
+				ctx = NewOutgoingContext(ctx, tt.platform, tt.uid)
+			}
+			ctx = NewOutgoingOrigin(ctx, Origin{InstanceUID: "guild-1", DestinationUID: "channel-1"})
+
 			header := make(http.Header)
-			if tt.setPlatform {
-				header.Set(HeaderPlatformEnum, tt.platform)
-			}
-			if tt.setUID {
-				header.Set(HeaderUserID, tt.uid)
-			}
+			WriteHeader(ctx, header)
 
-			headerCaller, headerErr := FromHeader(header)
-
-			ctx := metadataFromHeaderForTest(header)
-			ctxCaller, ctxErr := FromIncomingContext(ctx)
-
-			if (headerErr == nil) != (ctxErr == nil) {
-				t.Fatalf("FromHeader err = %v, FromIncomingContext err = %v; the two transports disagree", headerErr, ctxErr)
-			}
-			if headerErr != nil {
+			caller, err := FromHeader(header)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("FromHeader succeeded, want an error")
+				}
+				if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+					t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
+				}
 				return
 			}
-			if headerCaller.PlatformEnum != ctxCaller.PlatformEnum {
-				t.Errorf("platform: header = %v, context = %v", headerCaller.PlatformEnum, ctxCaller.PlatformEnum)
+			if err != nil {
+				t.Fatalf("FromHeader: %v", err)
 			}
-			headerHasUID := headerCaller.PlatformUID != nil
-			ctxHasUID := ctxCaller.PlatformUID != nil
-			if headerHasUID != ctxHasUID {
-				t.Fatalf("PlatformUID presence: header = %v, context = %v", headerHasUID, ctxHasUID)
+			if caller.PlatformEnum != tt.platform {
+				t.Errorf("platform: decoded %v, attached %v", caller.PlatformEnum, tt.platform)
 			}
-			if headerHasUID && *headerCaller.PlatformUID != *ctxCaller.PlatformUID {
-				t.Errorf("PlatformUID: header = %q, context = %q", *headerCaller.PlatformUID, *ctxCaller.PlatformUID)
+			hasUID := caller.PlatformUID != nil
+			wantUID := tt.uid != ""
+			if hasUID != wantUID {
+				t.Fatalf("PlatformUID presence: decoded %v, attached uid %q", hasUID, tt.uid)
+			}
+			if hasUID && *caller.PlatformUID != tt.uid {
+				t.Errorf("PlatformUID: decoded %q, attached %q", *caller.PlatformUID, tt.uid)
+			}
+
+			// The origin was always attached in this fixture, so it must
+			// always come back, whatever happened to identity.
+			origin, ok := OriginFromHeader(header)
+			if !ok {
+				t.Fatal("origin was attached but did not decode")
+			}
+			if origin.InstanceUID != "guild-1" || origin.DestinationUID != "channel-1" {
+				t.Errorf("origin = %+v, want {guild-1 channel-1}", origin)
 			}
 		})
 	}
