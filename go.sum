@@ -4,6 +4,8 @@ buf.build/go/protovalidate v1.3.0 h1:8ITcnZGkAHx6TyhZvro+iET/AyqU8gEWQJK2WsT62ms
 buf.build/go/protovalidate v1.3.0/go.mod h1:82s5g+rFRj1CZPiLv6OTA31jBu2fpq7mLXHwa9mZfEs=
 cel.dev/expr v0.25.3 h1:A2jO8jwOugrrovveCWfj0KEZOfqiLgAcwjpHPhzIGw0=
 cel.dev/expr v0.25.3/go.mod h1:hrXvqGP6G6gyx8UAHSHJ5RGk//1Oj5nXQ2NI02Nrsg4=
+connectrpc.com/connect v1.20.0 h1:6TNDAB+WeNd2uolWNlYczB5E0KNNaVMNUEx8JEUsPmQ=
+connectrpc.com/connect v1.20.0/go.mod h1:A2ygJrukXwWy32vkCAAHNVguZrqZ+jeZ9rGRnGR4dN4=
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
 github.com/AlekSi/pointer v1.2.0 h1:glcy/gc4h8HnG2Z3ZECSzZ1IX1x2JxRVuDzaJwQE0+w=

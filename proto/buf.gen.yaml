@@ -10,10 +10,29 @@ managed:
 # this repository passes CI stay pinned by the `go install` lines in
 # .github/workflows/ci.yml and docs/SETUP.md, not by a BSR plugin's own release
 # cadence. Both must be on PATH.
+#
+# Why every go_package carries an explicit `;ginbotv1` package name.
+#
+# protoc-gen-connect-go names its output package after the GO package name plus
+# "connect", not after the proto package. Left implicit, the Go name is inferred
+# from the import path's last element — `v1` — so the stubs landed in a directory
+# called `v1connect` holding `package v1connect`, and every call site read
+# `v1connect.NewUserServiceHandler`. Naming it makes both halves say what they
+# are: `ginbotv1` and `ginbotv1connect`, which is also what buf's own generated
+# SDKs look like. Nothing hand-written moved, because every import of the
+# generated package is already aliased to `pb`.
+#
+# protoc-gen-connect-go replaced protoc-gen-go-grpc rather than joining it.
+# Carrying both would mean two sets of stubs for every service with no consumer
+# for the gRPC half, and the exact-diff check in CI cannot tell a stale
+# unused stub from a stale used one. Its version must stay in step with the
+# connectrpc.com/connect requirement in go.mod: the generated files assert the
+# runtime is new enough with a `connect.IsAtLeastVersion...` constant, so a
+# mismatch is a compile error rather than a subtle one.
 plugins:
   - local: protoc-gen-go
     out: ../pkg/gen
     opt: paths=source_relative
-  - local: protoc-gen-go-grpc
+  - local: protoc-gen-connect-go
     out: ../pkg/gen
     opt: paths=source_relative

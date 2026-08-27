@@ -145,14 +145,39 @@ jobs:
       run: go install github.com/bufbuild/buf/cmd/buf@v1.72.0
 
     # Pinned to the versions that produced the committed output.
+    #
+    # protoc-gen-connect-go must stay in step with the connectrpc.com/connect
+    # requirement in go.mod. The generated files assert the runtime is new enough
+    # with a connect.IsAtLeastVersion... constant, so a plugin newer than the
+    # module breaks the build rather than degrading quietly — and the reverse
+    # drift is invisible until a newer generator feature is needed.
     - name: Install protoc plugins
       run: |
         go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.1
-        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+        go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.20.0
 
     # proto/buf.yaml has configured lint since it was added, but nothing ran it.
     - name: Lint protos
       run: cd proto && buf lint
+
+    # The same class of silent drift as the protovalidate pin below, one layer
+    # up: the generator and the runtime it generates against are two independent
+    # pins that have to agree. Asserted against the INSTALLED plugin rather than
+    # against the `go install` line above, so the check cannot be satisfied by
+    # editing the line it is checking.
+    - name: Verify the connect plugin matches the connect runtime
+      run: |
+        go_version="$(sed -n 's|^[[:space:]]*connectrpc\.com/connect v\([0-9.]*\).*|\1|p' go.mod)"
+        plugin_version="$(protoc-gen-connect-go --version)"
+        if [ -z "$go_version" ]; then
+          echo "::error::could not read the connectrpc.com/connect version from go.mod"
+          exit 1
+        fi
+        if [ "$go_version" != "$plugin_version" ]; then
+          echo "::error::protoc-gen-connect-go is ${plugin_version} but go.mod requires connect ${go_version}."
+          echo "Move both together: the 'Install protoc plugins' step above and the go.mod requirement."
+          exit 1
+        fi
 
     # The protovalidate schema that codegen reads (pinned in proto/buf.lock) and
     # the generated Go that registers its extensions (required in go.mod) have to

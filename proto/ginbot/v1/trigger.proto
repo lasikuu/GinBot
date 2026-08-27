@@ -2,7 +2,7 @@ edition = "2023";
 
 package ginbot.v1;
 
-option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1";
+option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1;ginbotv1";
 
 import "ginbot/v1/analytics.proto";
 import "ginbot/v1/platform.proto";

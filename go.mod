@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260709200747-435963d16310.1
 	buf.build/go/protovalidate v1.3.0
+	connectrpc.com/connect v1.20.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/corona10/goimagehash v1.1.0
 	github.com/google/uuid v1.6.0
