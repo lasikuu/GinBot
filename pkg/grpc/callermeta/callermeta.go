@@ -26,35 +26,51 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
+// The header names identity and origin travel under.
+//
+// They are hyphenated and prefixed rather than snake_cased because that is what
+// they actually are: gRPC metadata keys are HTTP/2 header fields, lowercased on
+// the wire, and any transport in front of them treats them as ordinary headers —
+// where an underscore is legal but unidiomatic and is dropped outright by some
+// proxies. The ginbot- prefix keeps them from colliding with anything standard.
+//
+// This is a WIRE contract and renaming it is safe: server and clients are
+// deployed together, and both ends of the encoding live in this package. Renaming
+// the jsonb group below is not safe — see the comment there.
 const (
-	// KeyPlatformEnum carries the pb.Platform enum *name*, e.g. "PLATFORM_DISCORD".
+	// HeaderPlatformEnum carries the pb.Platform enum *name*, e.g. "PLATFORM_DISCORD".
 	// Names are used rather than numbers because they are stable across proto
 	// changes and legible when debugging the wire.
-	KeyPlatformEnum = "platform_enum"
+	HeaderPlatformEnum = "ginbot-platform-enum"
 
-	// KeyUserID carries the platform-scoped user id, e.g. a Discord snowflake.
+	// HeaderUserID carries the platform-scoped user id, e.g. a Discord snowflake.
 	// It is the platform's identifier, not the GinBot user_account UUID.
-	KeyUserID = "user_id"
+	HeaderUserID = "ginbot-user-id"
 
-	// KeyInstanceUID carries the platform's identifier for the space a call came
-	// from: a Discord guild, a Matrix homeserver's room space, and so on.
-	KeyInstanceUID = "instance_uid"
+	// HeaderInstanceUID carries the platform's identifier for the space a call
+	// came from: a Discord guild, a Matrix homeserver's room space, and so on.
+	HeaderInstanceUID = "ginbot-instance-uid"
 
-	// KeyDestinationUID carries the platform's identifier for the channel or room
-	// a call came from.
-	KeyDestinationUID = "destination_uid"
+	// HeaderDestinationUID carries the platform's identifier for the channel or
+	// room a call came from.
+	HeaderDestinationUID = "ginbot-destination-uid"
 )
 
 // The jsonb field names used inside instance.instance_meta and
 // destination.destination_meta.
 //
-// They spell the same words as the metadata headers above and are deliberately
-// not defined in terms of them. The headers are a wire contract between the
-// clients and this server, changeable by deploying both at once; these are a
-// storage contract, indexed by uq_instance_platform_meta and matched by jsonb
-// equality against rows already written. Renaming a header while the two shared
-// a constant would orphan every existing instance row and silently start
-// creating duplicates for guilds the bot already knows.
+// They name the same two things as the headers above and are deliberately not
+// defined in terms of them. The headers are a wire contract between the clients
+// and this server, changeable by deploying both at once; these are a STORAGE
+// contract, indexed by uq_instance_platform_meta and matched by jsonb equality
+// against rows already written.
+//
+// The header rename above is exactly the event this separation exists for. Had
+// the two shared a constant, that rename would have orphaned every existing
+// instance row and silently started creating duplicates for guilds the bot
+// already knows — no error, no log line, triggers and reminders simply stopping
+// resolving. DO NOT rename these, and do not "tidy up" the duplication by
+// deriving one group from the other.
 const (
 	FieldInstanceUID    = "instance_uid"
 	FieldDestinationUID = "destination_uid"
@@ -104,9 +120,9 @@ func (o Origin) DestinationMeta() *structpb.Struct {
 
 // NewOutgoingContext attaches caller identity to an outgoing gRPC context.
 func NewOutgoingContext(ctx context.Context, platform pb.Platform, platformUID string) context.Context {
-	pairs := []string{KeyPlatformEnum, platform.String()}
+	pairs := []string{HeaderPlatformEnum, platform.String()}
 	if platformUID != "" {
-		pairs = append(pairs, KeyUserID, platformUID)
+		pairs = append(pairs, HeaderUserID, platformUID)
 	}
 
 	return metadata.NewOutgoingContext(ctx, metadata.Pairs(pairs...))
@@ -120,22 +136,22 @@ func FromIncomingContext(ctx context.Context) (*Caller, error) {
 		return nil, status.Error(codes.InvalidArgument, "missing gRPC metadata")
 	}
 
-	platformValues := md.Get(KeyPlatformEnum)
+	platformValues := md.Get(HeaderPlatformEnum)
 	if len(platformValues) == 0 || platformValues[0] == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "%s is required", KeyPlatformEnum)
+		return nil, status.Errorf(codes.InvalidArgument, "%s is required", HeaderPlatformEnum)
 	}
 
 	platformNumber, ok := pb.Platform_value[platformValues[0]]
 	if !ok {
-		return nil, status.Errorf(codes.InvalidArgument, "unknown %s %q", KeyPlatformEnum, platformValues[0])
+		return nil, status.Errorf(codes.InvalidArgument, "unknown %s %q", HeaderPlatformEnum, platformValues[0])
 	}
 	platform := pb.Platform(platformNumber)
 	if platform == pb.Platform_PLATFORM_UNSPECIFIED {
-		return nil, status.Errorf(codes.InvalidArgument, "%s must not be unspecified", KeyPlatformEnum)
+		return nil, status.Errorf(codes.InvalidArgument, "%s must not be unspecified", HeaderPlatformEnum)
 	}
 
 	var platformUID *string
-	if userValues := md.Get(KeyUserID); len(userValues) > 0 && userValues[0] != "" {
+	if userValues := md.Get(HeaderUserID); len(userValues) > 0 && userValues[0] != "" {
 		platformUID = &userValues[0]
 	}
 
@@ -158,9 +174,9 @@ func NewOutgoingOrigin(ctx context.Context, origin Origin) context.Context {
 		return ctx
 	}
 
-	pairs := []string{KeyInstanceUID, origin.InstanceUID}
+	pairs := []string{HeaderInstanceUID, origin.InstanceUID}
 	if origin.DestinationUID != "" {
-		pairs = append(pairs, KeyDestinationUID, origin.DestinationUID)
+		pairs = append(pairs, HeaderDestinationUID, origin.DestinationUID)
 	}
 
 	return metadata.AppendToOutgoingContext(ctx, pairs...)
@@ -176,13 +192,13 @@ func OriginFromIncomingContext(ctx context.Context) (Origin, bool) {
 		return Origin{}, false
 	}
 
-	instanceValues := md.Get(KeyInstanceUID)
+	instanceValues := md.Get(HeaderInstanceUID)
 	if len(instanceValues) == 0 || instanceValues[0] == "" {
 		return Origin{}, false
 	}
 
 	origin := Origin{InstanceUID: instanceValues[0]}
-	if destinationValues := md.Get(KeyDestinationUID); len(destinationValues) > 0 {
+	if destinationValues := md.Get(HeaderDestinationUID); len(destinationValues) > 0 {
 		origin.DestinationUID = destinationValues[0]
 	}
 

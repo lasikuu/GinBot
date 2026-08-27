@@ -42,7 +42,7 @@ func (s *UserServer) Register(ctx context.Context, req *pb.RegisterReq) (*pb.Reg
 	}
 
 	if meta.PlatformUID == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%s metadata is required", callermeta.KeyUserID)
+		return nil, status.Errorf(codes.InvalidArgument, "%s metadata is required", callermeta.HeaderUserID)
 	}
 
 	if !req.HasUsername() {

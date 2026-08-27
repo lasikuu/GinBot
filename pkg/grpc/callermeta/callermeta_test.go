@@ -2,6 +2,7 @@ package callermeta
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
@@ -24,6 +25,16 @@ func incoming(t *testing.T, ctx context.Context) context.Context {
 
 // This is the regression test for the original break: the client sent the enum
 // name while the server parsed it as an integer, so nothing round-tripped.
+//
+// It is also the guard for the header rename. This package owns both ends of
+// the encoding, so a rename that touched only the producer or only the consumer
+// would fail here — and nowhere else, until every RPC needing caller identity
+// started answering InvalidArgument in production, which is exactly how the
+// original break was found.
+//
+// The wire form is asserted alongside the decoded result: a round trip that
+// only checked what came back out would still pass if both ends had moved to
+// some third spelling together.
 func TestRoundTrip(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -33,12 +44,35 @@ func TestRoundTrip(t *testing.T) {
 	}{
 		{"discord with user", pb.Platform_PLATFORM_DISCORD, "123456789", true},
 		{"matrix with user", pb.Platform_PLATFORM_MATRIX_PROTOCOL, "@a:example.org", true},
+		// No user id: the client is acting on its own behalf, which is normal
+		// for cron-driven and health traffic. The header must simply be absent,
+		// not present and empty.
 		{"discord without user", pb.Platform_PLATFORM_DISCORD, "", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := NewOutgoingContext(context.Background(), tt.platform, tt.uid)
+
+			md, ok := metadata.FromOutgoingContext(ctx)
+			if !ok {
+				t.Fatal("no outgoing metadata attached")
+			}
+			if got := md.Get(HeaderPlatformEnum); len(got) != 1 || got[0] != tt.platform.String() {
+				t.Errorf("outgoing %q = %v, want [%q]", HeaderPlatformEnum, got, tt.platform.String())
+			}
+			if userValues := md.Get(HeaderUserID); tt.wantUID {
+				if len(userValues) != 1 || userValues[0] != tt.uid {
+					t.Errorf("outgoing %q = %v, want [%q]", HeaderUserID, userValues, tt.uid)
+				}
+			} else if len(userValues) != 0 {
+				t.Errorf("outgoing %q = %v, want it absent entirely", HeaderUserID, userValues)
+			}
+
+			// No origin was attached, and none must appear.
+			if got, ok := OriginFromIncomingContext(incoming(t, ctx)); ok {
+				t.Errorf("origin = %+v on a call that carried none", got)
+			}
 
 			caller, err := FromIncomingContext(incoming(t, ctx))
 			if err != nil {
@@ -100,6 +134,21 @@ func TestOriginRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, "uid")
 			ctx = NewOutgoingOrigin(ctx, tt.origin)
+
+			// The wire form, for the same reason as in TestRoundTrip: both ends
+			// of this encoding live here, so agreeing with each other on the
+			// wrong header name would otherwise go unnoticed.
+			md, hasMetadata := metadata.FromOutgoingContext(ctx)
+			if !hasMetadata {
+				t.Fatal("no outgoing metadata attached")
+			}
+			if values := md.Get(HeaderInstanceUID); tt.wantOK {
+				if len(values) != 1 || values[0] != tt.wantInstance {
+					t.Errorf("outgoing %q = %v, want [%q]", HeaderInstanceUID, values, tt.wantInstance)
+				}
+			} else if len(values) != 0 {
+				t.Errorf("outgoing %q = %v, want it absent entirely", HeaderInstanceUID, values)
+			}
 
 			got, ok := OriginFromIncomingContext(incoming(t, ctx))
 			if ok != tt.wantOK {
@@ -199,22 +248,59 @@ func TestMetaShapesAreCanonical(t *testing.T) {
 	}
 }
 
-// The jsonb keys and the gRPC header names are two independent contracts that
-// happen to spell the same words. Pinned as literals: a rename of either must
-// be a deliberate, visible change here rather than something a shared constant
-// carries across silently.
-func TestStorageAndHeaderKeysArePinned(t *testing.T) {
+// The jsonb field names are a STORAGE contract and are pinned as literals here
+// on purpose. See the comment block above them in callermeta.go.
+//
+// instance.instance_meta and destination.destination_meta are matched by jsonb
+// equality against rows that already exist, indexed by
+// uq_instance_platform_meta. Renaming either key does not fail: it silently
+// stops matching. Every guild the bot already knows gets a second instance row,
+// its triggers and reminders stop resolving, nothing logs an error, and the
+// Ruby-bot migration currently in flight keeps writing the old shape the whole
+// time.
+//
+// This is deliberately cheap insurance against a tidy-up pass — exactly the
+// kind that just renamed the header group two constants above. The next person
+// doing one needs a test that stops them, not a comment they might read.
+// pkg/grpc/server/origin_storage_integration_test.go is the other half: it
+// proves a row already on disk still resolves.
+func TestJSONBFieldNamesAreFrozen(t *testing.T) {
 	tests := []struct {
 		name string
 		got  string
 		want string
 	}{
-		{"header instance_uid", KeyInstanceUID, "instance_uid"},
-		{"header destination_uid", KeyDestinationUID, "destination_uid"},
-		{"header platform_enum", KeyPlatformEnum, "platform_enum"},
-		{"header user_id", KeyUserID, "user_id"},
-		{"jsonb instance_uid", FieldInstanceUID, "instance_uid"},
-		{"jsonb destination_uid", FieldDestinationUID, "destination_uid"},
+		{"instance_meta key", FieldInstanceUID, "instance_uid"},
+		{"destination_meta key", FieldDestinationUID, "destination_uid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("= %q, want %q. This is a storage contract, not a wire one: "+
+					"renaming it orphans every instance row already written and silently "+
+					"creates duplicates for guilds the bot already knows. See callermeta.go.",
+					tt.got, tt.want)
+			}
+		})
+	}
+}
+
+// The header names are a WIRE contract: server and clients ship together, so
+// they are renamable — and were, to the HTTP-idiomatic hyphenated form. They
+// are pinned all the same, because both ends of the encoding live in this
+// package and a producer and consumer disagreeing about it was previously the
+// single worst bug in this project.
+func TestHeaderNamesArePinned(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"platform_enum", HeaderPlatformEnum, "ginbot-platform-enum"},
+		{"user_id", HeaderUserID, "ginbot-user-id"},
+		{"instance_uid", HeaderInstanceUID, "ginbot-instance-uid"},
+		{"destination_uid", HeaderDestinationUID, "ginbot-destination-uid"},
 	}
 
 	for _, tt := range tests {
@@ -223,6 +309,91 @@ func TestStorageAndHeaderKeysArePinned(t *testing.T) {
 				t.Errorf("= %q, want %q", tt.got, tt.want)
 			}
 		})
+	}
+}
+
+// The two groups spell related things and must never be defined in terms of
+// each other. A shared constant is what would carry a header rename into the
+// storage layer, which is the failure this whole arrangement exists to prevent.
+func TestHeaderAndJSONBNamesAreIndependent(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		field  string
+	}{
+		{"instance", HeaderInstanceUID, FieldInstanceUID},
+		{"destination", HeaderDestinationUID, FieldDestinationUID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.header == tt.field {
+				t.Errorf("header and jsonb key are both %q; they are two contracts with "+
+					"different lifetimes and must not be one constant", tt.header)
+			}
+		})
+	}
+}
+
+// gRPC lowercases metadata keys on the wire, so a constant containing an
+// uppercase letter is written under one name and read under another — a
+// silently anonymous caller rather than an error. Cheap to assert, and the
+// rename is exactly when it could have been introduced.
+func TestHeaderNamesAreValidMetadataKeys(t *testing.T) {
+	headers := map[string]string{
+		"HeaderPlatformEnum":   HeaderPlatformEnum,
+		"HeaderUserID":         HeaderUserID,
+		"HeaderInstanceUID":    HeaderInstanceUID,
+		"HeaderDestinationUID": HeaderDestinationUID,
+	}
+
+	for name, header := range headers {
+		t.Run(name, func(t *testing.T) {
+			if header != strings.ToLower(header) {
+				t.Errorf("%s = %q is not lowercase; gRPC will lowercase it on the wire "+
+					"and md.Get with this constant will then never match", name, header)
+			}
+			// -bin is gRPC's marker for base64-encoded binary values. A key
+			// ending in it changes how the value is transported.
+			if strings.HasSuffix(header, "-bin") {
+				t.Errorf("%s = %q ends in -bin, which makes gRPC treat the value as binary", name, header)
+			}
+
+			md := metadata.Pairs(header, "value")
+			if got := md.Get(header); len(got) != 1 || got[0] != "value" {
+				t.Errorf("%s = %q does not round-trip through metadata.Pairs/Get: %v", name, header, got)
+			}
+		})
+	}
+}
+
+// A client still sending the pre-rename header names must be REFUSED, not
+// silently treated as having no identity.
+//
+// This is the same class of bug as the original break — the Discord client sent
+// the enum's name while the server parsed it with strconv.ParseInt — and it is
+// what a partial rollout produces: an old client against a new server. An
+// InvalidArgument tells an operator what happened; an anonymous caller does not.
+func TestPreRenameHeaderNamesAreNotAccepted(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		"platform_enum", pb.Platform_PLATFORM_DISCORD.String(),
+		"user_id", "123456789",
+	))
+
+	if _, err := FromIncomingContext(ctx); err == nil {
+		t.Fatal("the old header names were accepted; the server is reading two spellings, " +
+			"so a rename of either is no longer observable")
+	} else if got := status.Code(err); got != codes.InvalidArgument {
+		t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
+	}
+
+	// And the origin half, which reports "no origin" rather than an error.
+	originCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		"instance_uid", "guild-1",
+		"destination_uid", "channel-1",
+	))
+	if got, ok := OriginFromIncomingContext(originCtx); ok {
+		t.Errorf("the old origin header names produced %+v; they must not be read", got)
 	}
 }
 
@@ -237,24 +408,24 @@ func TestFromIncomingContextErrors(t *testing.T) {
 		},
 		{
 			name: "platform_enum missing",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(KeyUserID, "1")),
+			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderUserID, "1")),
 		},
 		{
 			name: "platform_enum empty",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(KeyPlatformEnum, "")),
+			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderPlatformEnum, "")),
 		},
 		{
 			name: "platform_enum unknown name",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(KeyPlatformEnum, "PLATFORM_CARRIER_PIGEON")),
+			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderPlatformEnum, "PLATFORM_CARRIER_PIGEON")),
 		},
 		{
 			// The pre-fix client/server mismatch: a numeric value is not a valid name.
 			name: "platform_enum sent as a number",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(KeyPlatformEnum, "1")),
+			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderPlatformEnum, "1")),
 		},
 		{
 			name: "platform_enum unspecified",
-			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(KeyPlatformEnum, pb.Platform_PLATFORM_UNSPECIFIED.String())),
+			ctx:  metadata.NewIncomingContext(context.Background(), metadata.Pairs(HeaderPlatformEnum, pb.Platform_PLATFORM_UNSPECIFIED.String())),
 		},
 	}
 

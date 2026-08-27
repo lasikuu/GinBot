@@ -86,7 +86,7 @@ func resolveCaller(ctx context.Context, resolve CallerResolver) (*model.User, er
 	}
 
 	if meta.PlatformUID == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%s metadata is required", callermeta.KeyUserID)
+		return nil, status.Errorf(codes.InvalidArgument, "%s metadata is required", callermeta.HeaderUserID)
 	}
 
 	caller, err := resolve(ctx, meta.PlatformEnum, *meta.PlatformUID)

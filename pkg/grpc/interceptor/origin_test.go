@@ -449,8 +449,8 @@ func TestBootstrapIsSkippedWithoutPlatformMetadata(t *testing.T) {
 	origin := testOrigin()
 	ctx := withCaller(
 		metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-			callermeta.KeyInstanceUID, origin.InstanceUID,
-			callermeta.KeyDestinationUID, origin.DestinationUID,
+			callermeta.HeaderInstanceUID, origin.InstanceUID,
+			callermeta.HeaderDestinationUID, origin.DestinationUID,
 		)),
 		callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED)),
 	)
