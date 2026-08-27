@@ -65,9 +65,17 @@ message Reminder {
 
 // Destination to send the reminder to
 message ReminderDestination {
-  // Platform to send the reminder to
+  // Platform to send the reminder to.
+  //
+  // required alone was not enough: it is a presence check, so an explicit
+  // PLATFORM_UNSPECIFIED satisfied it and reached the handler, where the
+  // destination resolves against no platform at all. See
+  // OpenClientActionStreamReq.platform_enum in reverse.proto for why all three
+  // rules are needed.
   Platform platform_enum = 1 [
-    (buf.validate.field).required = true
+    (buf.validate.field).required = true,
+    (buf.validate.field).enum.defined_only = true,
+    (buf.validate.field).enum.not_in = 0
   ];
   // Platform meta information such as Server ID etc.
   google.protobuf.Struct instance_meta = 2 [

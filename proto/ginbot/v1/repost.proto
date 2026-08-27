@@ -69,8 +69,15 @@ message MessageRef {
 
 // One thing extracted from a message and offered for checking.
 message RepostCandidate {
+  // required alone was not enough: it is a presence check, so an explicit
+  // REPOST_KIND_UNSPECIFIED satisfied it and arrived at a handler that has to
+  // switch on the kind to decide whether to fetch bytes or canonicalise a URL.
+  // See OpenClientActionStreamReq.platform_enum in reverse.proto for why all
+  // three rules are needed.
   RepostKind kind = 1 [
-    (buf.validate.field).required = true
+    (buf.validate.field).required = true,
+    (buf.validate.field).enum.defined_only = true,
+    (buf.validate.field).enum.not_in = 0
   ];
   // For REPOST_KIND_LINK, the URL exactly as it was posted; the server
   // canonicalises it. For every other kind, the platform CDN URL the server

@@ -146,32 +146,29 @@ func TestAMissingPlatformIsRejectedByTheInterceptor(t *testing.T) {
 //
 // PLATFORM_UNSPECIFIED is the registration the server has no route for: there is
 // no platform to fan actions out to, so admitting one costs a registry slot and
-// a goroutine to deliver nothing. The schema comment on platform_enum states
-// that required plus enum.defined_only is what refuses it.
+// a goroutine to deliver nothing.
 //
 // InvalidArgument is the assertion because it is attributable. The handler's own
 // PLATFORM_UNSPECIFIED check does not produce an error at all — it logs and
 // continues, leaving the stream open — so this code can only have come from the
 // interceptor.
 //
-// THIS TEST FAILS AGAINST THE CURRENT SCHEMA, and the assertion is deliberately
-// not softened to accommodate that. Neither declared rule rejects an explicitly
-// set zero enum:
+// What this test actually guards is the THIRD rule on platform_enum, which is
+// the only one that does any work here. Neither of the other two rejects an
+// explicitly set zero enum:
 //
 //   - required is a PRESENCE check. platform_enum has explicit presence, so a
 //     client that sets it to PLATFORM_UNSPECIFIED serialises it, the server sees
 //     it as present, and required is satisfied. Only an ABSENT field fails it,
 //     which is what TestAMissingPlatformIsRejectedByTheInterceptor covers.
 //   - enum.defined_only rejects numbers the enum does not declare. 0 IS declared
-//     — it is PLATFORM_UNSPECIFIED — so it passes.
+//     — it is PLATFORM_UNSPECIFIED — so it passes. That rule is covered by
+//     TestAnUndefinedPlatformNumberIsRejectedByTheInterceptor.
 //
-// So the comment on platform_enum in reverse.proto describes an intent the rules
-// do not implement, and the handler's own check is currently the ONLY thing
-// refusing an unspecified registration. A one-line schema addition closes it:
-//
-//	(buf.validate.field).enum.not_in = [0]
-//
-// Until that lands, this failing test is the record of the gap.
+// So deleting `(buf.validate.field).enum.not_in = 0` from reverse.proto would
+// leave the other two rules in place, the whole reverse-stream suite passing,
+// and this the only test that noticed. It was written while that rule was
+// missing and failing on purpose; it is the regression guard now.
 func TestAnUnspecifiedPlatformIsRejectedByTheInterceptor(t *testing.T) {
 	h := newHarness(t)
 
@@ -182,7 +179,8 @@ func TestAnUnspecifiedPlatformIsRejectedByTheInterceptor(t *testing.T) {
 		t.Fatal("the interceptor accepted a PLATFORM_UNSPECIFIED registration: " +
 			"required is a presence check and an explicitly set zero enum is present, " +
 			"and enum.defined_only allows 0 because PLATFORM_UNSPECIFIED is a defined value. " +
-			"Add (buf.validate.field).enum.not_in = [0] to OpenClientActionStreamReq.platform_enum")
+			"(buf.validate.field).enum.not_in = 0 on OpenClientActionStreamReq.platform_enum " +
+			"is the only rule that refuses this; check it is still there")
 	}
 	requireCode(t, err, codes.InvalidArgument)
 }
