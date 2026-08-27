@@ -1,7 +1,6 @@
 package server
 
 import (
-	"sync"
 	"testing"
 
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
@@ -44,9 +43,9 @@ func deliveryFor(
 }
 
 // TestReminderNotificationReachesClientWithItsWholeTypedPayload drives the
-// reverse stream end to end without Discord: a fake client opens a stream, the
-// server pushes a reminder notification through SendAction, and the client must
-// receive it with every field intact.
+// reverse stream end to end without Discord: a real client opens a stream
+// against the harness, the server pushes a reminder notification through
+// SendAction, and the client must receive it with every field intact.
 //
 // All four fields are asserted, not just the id and the message. The three
 // optional ones are what decide where the reminder is posted and who may be
@@ -54,20 +53,8 @@ func deliveryFor(
 // it silently becomes a DM-less, channel-less reminder that the client then
 // reports as a failed delivery.
 func TestReminderNotificationReachesClientWithItsWholeTypedPayload(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = s.OpenClientActionStream(stream)
-	}()
-
-	stream.recv <- pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()
-	waitFor(t, func() bool { return s.clientCount() == 1 })
+	h := reverseHarness(t)
+	c := openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_DISCORD)
 
 	const (
 		reminderID     = "0192f000-0000-7000-8000-000000000001"
@@ -75,13 +62,11 @@ func TestReminderNotificationReachesClientWithItsWholeTypedPayload(t *testing.T)
 		destinationUID = "1234567890"
 		ownerUID       = "9876543210"
 	)
-	s.SendAction(deliveryFor(pb.Platform_PLATFORM_DISCORD, reminderID, message, destinationUID, ownerUID))
+	h.reverseServer.SendAction(deliveryFor(pb.Platform_PLATFORM_DISCORD, reminderID, message, destinationUID, ownerUID))
 
-	waitFor(t, func() bool { return stream.sentCount() >= 1 })
+	waitFor(t, func() bool { return c.rec.count() >= 1 })
 
-	stream.mu.Lock()
-	got := stream.sent[0]
-	stream.mu.Unlock()
+	got := c.rec.at(0)
 
 	if got.GetClientAction() != pb.ClientAction_CLIENT_ACTION_SEND_NOTIFICATION {
 		t.Errorf("client action = %v, want SEND_NOTIFICATION", got.GetClientAction())

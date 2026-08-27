@@ -3,10 +3,9 @@ package config
 import "os"
 
 type MatrixOptions struct {
-	GRPCClientOptions GRPCClientOptions
-	HomeServerURL     string
-	AccessToken       string
-	UserID            string
+	HomeServerURL string
+	AccessToken   string
+	UserID        string
 }
 
 func homeServerUrl() string {

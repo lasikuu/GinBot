@@ -10,7 +10,6 @@ import (
 
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/credentials"
 )
 
 // DefaultCertsDir is used when GINBOT_CERTS_PATH is unset. It is relative to the
@@ -56,8 +55,13 @@ func loadCredentials(certsDir, caCertPEM, keyPEM, certPEM string) (tls.Certifica
 	return cert, certPool, nil
 }
 
-// serverTLSConfig builds the server's mutual TLS configuration from certsDir.
-func serverTLSConfig(certsDir string) (*tls.Config, error) {
+// ServerTLSConfig builds the server's mutual TLS configuration from certsDir.
+//
+// NextProtos is deliberately left unset: Go's http2.ConfigureServer (invoked
+// indirectly by cmd/ginbot-server when it enables TLS) sets it to advertise
+// "h2" over ALPN itself, and hardcoding it here as well would only create a
+// second place that has to agree with the first.
+func ServerTLSConfig(certsDir string) (*tls.Config, error) {
 	tlsCert, certPool, err := loadCredentials(certsDir, "ca-cert.pem", "server-key.pem", "server-cert.pem")
 	if err != nil {
 		return nil, err
@@ -71,8 +75,13 @@ func serverTLSConfig(certsDir string) (*tls.Config, error) {
 	}, nil
 }
 
-// clientTLSConfig builds a client's mutual TLS configuration from certsDir.
-func clientTLSConfig(certsDir string) (*tls.Config, error) {
+// ClientTLSConfig builds a client's mutual TLS configuration from certsDir.
+//
+// Stage 4 of the Connect port (pkg/grpc/client, pkg/discord, pkg/matrix) is
+// the intended caller: those packages need a *tls.Config to hand to
+// http2.Transport, not a credentials.TransportCredentials — that type was
+// grpc-go's, and has no Connect equivalent.
+func ClientTLSConfig(certsDir string) (*tls.Config, error) {
 	tlsCert, certPool, err := loadCredentials(certsDir, "ca-cert.pem", "client-key.pem", "client-cert.pem")
 	if err != nil {
 		return nil, err
@@ -85,28 +94,18 @@ func clientTLSConfig(certsDir string) (*tls.Config, error) {
 	}, nil
 }
 
-// LoadServerCredentials loads the server's mutual TLS credentials from certsDir.
+// LoadServerTLSConfig loads the server's mutual TLS configuration from
+// certsDir.
 //
 // It is fatal on failure, on purpose: this runs during startup wiring, and a
 // server that came up without the mutual TLS it was configured for would be a
-// silent downgrade. The error-returning half lives in serverTLSConfig so the
+// silent downgrade. The error-returning half lives in ServerTLSConfig so the
 // loading itself stays exercisable.
-func LoadServerCredentials(certsDir string) credentials.TransportCredentials {
-	conf, err := serverTLSConfig(certsDir)
+func LoadServerTLSConfig(certsDir string) *tls.Config {
+	conf, err := ServerTLSConfig(certsDir)
 	if err != nil {
-		log.Z.Fatal("failed to load server credentials", zap.Error(err))
+		log.Z.Fatal("failed to load server TLS configuration", zap.Error(err))
 	}
 
-	return credentials.NewTLS(conf)
-}
-
-// LoadClientCredentials loads the client's mutual TLS credentials from certsDir.
-// Fatal on failure, for the same reason as LoadServerCredentials.
-func LoadClientCredentials(certsDir string) credentials.TransportCredentials {
-	conf, err := clientTLSConfig(certsDir)
-	if err != nil {
-		log.Z.Fatal("failed to load client credentials", zap.Error(err))
-	}
-
-	return credentials.NewTLS(conf)
+	return conf
 }

@@ -5,29 +5,46 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	connectvalidate "connectrpc.com/validate"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// invoke runs a request through the interceptor, reporting whether the handler
-// was reached and what error surfaced.
+// pkg/grpc/interceptor/validate.go — the hand-rolled validation interceptor
+// pair (NewValidationUnaryInterceptor / NewValidationStreamInterceptor) — is
+// deleted as part of the Connect port. Validation is now
+// connectrpc.com/validate's own connect.Interceptor, wired directly into
+// cmd/ginbot-server's chain rather than through anything this package
+// exports. This file is rewritten rather than deleted, because
+// validation_user_test.go (and every other validation_*_test.go in this
+// package) call the invoke helper defined here; deleting it outright would
+// have broken every one of them for a reason that has nothing to do with what
+// they are actually testing. invoke's SIGNATURE is preserved for exactly that
+// reason — only its insides changed, from the deleted hand-rolled interceptor
+// to connectvalidate.NewInterceptor().
+//
+// validation_rules_test.go, validation_trigger_test.go,
+// validation_instance_test.go and validation_enum_test.go do not use invoke
+// at all: they call protovalidate directly, and are untouched by this file.
+
+// invoke runs req through connectvalidate's interceptor, reporting whether the
+// handler was reached and what error surfaced.
 func invoke(t *testing.T, req any) (reached bool, err error) {
 	t.Helper()
 
-	intercept, err := NewValidationUnaryInterceptor()
-	if err != nil {
-		t.Fatalf("NewValidationUnaryInterceptor: %v", err)
-	}
+	intercept := connectvalidate.NewInterceptor()
 
-	handler := func(context.Context, any) (any, error) {
+	handler := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 		reached = true
-		return nil, nil
-	}
+		return newFakeResponse(), nil
+	})
 
-	_, err = intercept(context.Background(), req, &grpc.UnaryServerInfo{}, handler)
+	fake := newFakeRequest(registeredMethod)
+	fake.msg = req
+
+	_, err = intercept.WrapUnary(handler)(context.Background(), fake)
 	return reached, err
 }
 
@@ -66,7 +83,7 @@ func TestPastDatetimeIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected past datetime to be rejected")
 	}
-	if got := status.Code(err); got != codes.InvalidArgument {
+	if got := connect.CodeOf(err); got != connect.Code(uint32(codes.InvalidArgument)) {
 		t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
 	}
 	if reached {
@@ -204,13 +221,13 @@ func TestUnconstrainedMessagePassesThrough(t *testing.T) {
 	}
 }
 
-// Non-protobuf payloads must not blow up the interceptor.
-func TestNonProtoRequestPassesThrough(t *testing.T) {
-	reached, err := invoke(t, "not a proto message")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !reached {
-		t.Error("handler was not reached")
-	}
-}
+// TestNonProtoRequestPassesThrough from the hand-rolled interceptor is
+// deliberately NOT ported. That interceptor special-cased a non-proto.Message
+// payload as a pass-through; connectvalidate.Interceptor does not — it type-
+// asserts req.Any() and returns a bare error when it fails, which is
+// observably DIFFERENT behaviour on the exact same input. That is not this
+// project's decision to pin: every real Connect request handled through
+// generated stubs always carries an actual proto.Message, so the case cannot
+// occur outside a test harness that constructs one on purpose, and testing
+// connectrpc.com/validate's own defensive coding is not this package's job —
+// it is a well-tested third-party dependency, not code this project owns.

@@ -3,27 +3,28 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
+	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"github.com/lasikuu/GinBot/pkg/repost"
 	"github.com/lasikuu/GinBot/pkg/repost/fingerprint"
 	"github.com/lasikuu/GinBot/pkg/repost/urlnorm"
 	"github.com/lasikuu/GinBot/pkg/storage"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // RepostServer implements RepostService (WANHA).
 type RepostServer struct {
-	pb.UnimplementedRepostServiceServer
+	ginbotv1connect.UnimplementedRepostServiceHandler
 
 	fetcher *storage.Fetcher
 	hasher  *fingerprint.Hasher
@@ -95,7 +96,9 @@ type repostIdentity struct {
 // CheckRepost is WANHA's only RPC: it looks candidates up AND remembers them
 // in the same call, because splitting that in two would let a client
 // remember without looking up.
-func (s *RepostServer) CheckRepost(ctx context.Context, req *pb.CheckRepostReq) (*pb.CheckRepostResp, error) {
+func (s *RepostServer) CheckRepost(ctx context.Context, connReq *connect.Request[pb.CheckRepostReq]) (*connect.Response[pb.CheckRepostResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -106,20 +109,20 @@ func (s *RepostServer) CheckRepost(ctx context.Context, req *pb.CheckRepostReq) 
 	// is nothing to check against and nothing to seed.
 	instanceID, ok := callerOriginInstanceID(ctx)
 	if !ok {
-		return nil, status.Errorf(codes.FailedPrecondition, "this action must be used in a server or room")
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("this action must be used in a server or room"))
 	}
 
 	if !req.HasMessageUid() || req.GetMessageUid() == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "message_uid is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("message_uid is required"))
 	}
 	if !req.HasAuthorUid() || req.GetAuthorUid() == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "author_uid is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("author_uid is required"))
 	}
 	if len(req.GetCandidates()) == 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "at least one candidate is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("at least one candidate is required"))
 	}
 
-	origin, _ := callermeta.OriginFromIncomingContext(ctx)
+	origin, _ := interceptor.OriginFromContext(ctx)
 
 	// Best effort: a destination that has not been seen before, or a lookup
 	// failure, must not fail the whole call. The destination is presentation
@@ -188,7 +191,7 @@ func (s *RepostServer) CheckRepost(ctx context.Context, req *pb.CheckRepostReq) 
 	}
 
 	// No matches is an empty response, not an error — the common case.
-	return pb.CheckRepostResp_builder{Matches: matches}.Build(), nil
+	return connect.NewResponse(pb.CheckRepostResp_builder{Matches: matches}.Build()), nil
 }
 
 // postedAtTolerance is how far from the server's clock a client-supplied

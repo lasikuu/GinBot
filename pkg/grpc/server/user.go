@@ -3,15 +3,16 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // localTimezone is the one name time.LoadLocation accepts that means nothing to
@@ -19,7 +20,7 @@ import (
 const localTimezone = "Local"
 
 type UserServer struct {
-	pb.UnimplementedUserServiceServer
+	ginbotv1connect.UnimplementedUserServiceHandler
 }
 
 func NewUserServer() *UserServer {
@@ -27,26 +28,33 @@ func NewUserServer() *UserServer {
 	return s
 }
 
-func (s *UserServer) Register(ctx context.Context, req *pb.RegisterReq) (*pb.RegisterResp, error) {
+func (s *UserServer) Register(ctx context.Context, connReq *connect.Request[pb.RegisterReq]) (*connect.Response[pb.RegisterResp], error) {
+	req := connReq.Msg
+
 	// Platform identity comes from metadata, never from the request. It used to
 	// be available as two request fields as well; those numbers are now reserved
 	// in the proto, so there is one channel for identity instead of two that
 	// could disagree.
 	//
 	// That is not authentication. The client asserts the identity and this server
-	// trusts it, so anything that can reach the gRPC port can register an account
+	// trusts it, so anything that can reach the port can register an account
 	// against any platform uid it likes. See pkg/grpc/callermeta.
-	meta, err := getMetadata(ctx)
+	//
+	// Register is public (see interceptor.DefaultRequirements), so no
+	// interceptor resolves identity for it. It reads the request's own headers
+	// directly rather than through common.go's getMetadata, which is documented
+	// to only serve handlers a guarded call always reaches.
+	meta, err := callermeta.FromHeader(connReq.Header())
 	if err != nil {
 		return nil, err
 	}
 
 	if meta.PlatformUID == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%s metadata is required", callermeta.HeaderUserID)
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s metadata is required", callermeta.HeaderUserID))
 	}
 
 	if !req.HasUsername() {
-		return nil, status.Errorf(codes.InvalidArgument, "username is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("username is required"))
 	}
 
 	userID, err := db.CreateUser(
@@ -58,19 +66,21 @@ func (s *UserServer) Register(ctx context.Context, req *pb.RegisterReq) (*pb.Reg
 		req.GetLocale(),
 	)
 	if errors.Is(err, db.ErrAlreadyExists) {
-		return nil, status.Errorf(codes.AlreadyExists, "this platform identity is already registered")
+		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("this platform identity is already registered"))
 	}
 	if err != nil {
 		log.Z.Error("failed to create user", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to create user")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create user"))
 	}
 
-	return pb.RegisterResp_builder{
+	return connect.NewResponse(pb.RegisterResp_builder{
 		UserId: &userID,
-	}.Build(), nil
+	}.Build()), nil
 }
 
-func (s *UserServer) GetUser(ctx context.Context, req *pb.GetUserReq) (*pb.GetUserResp, error) {
+func (s *UserServer) GetUser(ctx context.Context, connReq *connect.Request[pb.GetUserReq]) (*connect.Response[pb.GetUserResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -80,32 +90,34 @@ func (s *UserServer) GetUser(ctx context.Context, req *pb.GetUserReq) (*pb.GetUs
 	// user_account UUID — identity travels as a platform id — so without this
 	// there is no way for a caller to read its own row.
 	if !req.HasId() || req.GetId() == caller.ID {
-		return pb.GetUserResp_builder{
+		return connect.NewResponse(pb.GetUserResp_builder{
 			User: caller.ToProto(),
-		}.Build(), nil
+		}.Build()), nil
 	}
 
 	// A user row carries locale, timezone and birthday, so reading somebody
 	// else's is a moderator action.
 	if caller.Clearance < int32(pb.Clearance_CLEARANCE_MODERATOR) {
-		return nil, status.Errorf(codes.PermissionDenied, "cannot read another user")
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("cannot read another user"))
 	}
 
 	user, err := db.GetUser(ctx, req.GetId())
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "user not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to get user", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get user")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get user"))
 	}
 
-	return pb.GetUserResp_builder{
+	return connect.NewResponse(pb.GetUserResp_builder{
 		User: user.ToProto(),
-	}.Build(), nil
+	}.Build()), nil
 }
 
-func (s *UserServer) SetLocale(ctx context.Context, req *pb.SetLocaleReq) (*pb.SetLocaleResp, error) {
+func (s *UserServer) SetLocale(ctx context.Context, connReq *connect.Request[pb.SetLocaleReq]) (*connect.Response[pb.SetLocaleResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -116,21 +128,23 @@ func (s *UserServer) SetLocale(ctx context.Context, req *pb.SetLocaleReq) (*pb.S
 	// locale passes that pattern — a rule on a field with presence is skipped
 	// when the field is unset — so the handler has to require it itself.
 	if !req.HasLocale() || req.GetLocale() == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "locale is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("locale is required"))
 	}
 
 	if err := db.SetUserLocale(ctx, caller.ID, req.GetLocale()); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
-			return nil, status.Errorf(codes.NotFound, "user not found")
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
 		}
 		log.Z.Error("failed to set locale", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to set locale")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to set locale"))
 	}
 
-	return pb.SetLocaleResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.SetLocaleResp_builder{}.Build()), nil
 }
 
-func (s *UserServer) SetTimezone(ctx context.Context, req *pb.SetTimezoneReq) (*pb.SetTimezoneResp, error) {
+func (s *UserServer) SetTimezone(ctx context.Context, connReq *connect.Request[pb.SetTimezoneReq]) (*connect.Response[pb.SetTimezoneResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -140,7 +154,7 @@ func (s *UserServer) SetTimezone(ctx context.Context, req *pb.SetTimezoneReq) (*
 	// time.LoadLocation("") succeeds and returns UTC, so an empty name would
 	// otherwise be silently accepted as a valid zone.
 	if !req.HasTimezone() || req.GetTimezone() == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "timezone is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("timezone is required"))
 	}
 
 	timezone := req.GetTimezone()
@@ -150,23 +164,23 @@ func (s *UserServer) SetTimezone(ctx context.Context, req *pb.SetTimezoneReq) (*
 	// against it. "Local" is rejected as well: it loads successfully but means
 	// the server's own zone, which is not what any caller intends.
 	if timezone == localTimezone {
-		return nil, status.Errorf(codes.InvalidArgument, "timezone must be a named IANA zone, such as Europe/Helsinki")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("timezone must be a named IANA zone, such as Europe/Helsinki"))
 	}
 	if _, err := time.LoadLocation(timezone); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unknown timezone %q", timezone)
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown timezone %q", timezone))
 	}
 
 	if err := db.SetUserTimezone(ctx, caller.ID, timezone); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
-			return nil, status.Errorf(codes.NotFound, "user not found")
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
 		}
 		log.Z.Error("failed to set timezone", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to set timezone")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to set timezone"))
 	}
 
-	return pb.SetTimezoneResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.SetTimezoneResp_builder{}.Build()), nil
 }
 
-func (s *UserServer) GetCongratulableBirthdays(_ context.Context, _ *pb.GetCongratulableBirthdaysReq) (*pb.GetCongratulableBirthdaysResp, error) {
-	return nil, status.Error(codes.Unimplemented, "GetCongratulableBirthdays is not implemented yet")
+func (s *UserServer) GetCongratulableBirthdays(_ context.Context, _ *connect.Request[pb.GetCongratulableBirthdaysReq]) (*connect.Response[pb.GetCongratulableBirthdaysResp], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("GetCongratulableBirthdays is not implemented yet"))
 }

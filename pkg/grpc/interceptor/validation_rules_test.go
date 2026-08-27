@@ -28,7 +28,7 @@ import (
 // about, by rule id, on the ONE field it is about.
 //
 // The end-to-end half is not skipped: pkg/grpc/server/trigger_validation_test.go
-// drives the instances bound and a malformed id through the bufconn harness and
+// drives the instances bound and a malformed id through the server harness and
 // the production interceptor chain, so the rules are also proven to be reachable
 // by a real client.
 

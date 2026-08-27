@@ -3,14 +3,14 @@ package interceptor
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/internal/model"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -67,52 +67,57 @@ type originResult struct {
 	err     error
 }
 
-// callOrigin runs one request through the origin interceptor.
-func callOrigin(ctx context.Context, resolve OriginResolver) originResult {
+// originTestCtx builds the context OriginInterceptor actually sees in
+// production: a resolved caller (stashed by ClearanceInterceptor) AND the
+// caller's raw asserted identity under metaContextKey (also stashed by
+// ClearanceInterceptor, for every call whose headers parsed — see
+// clearance.go). bootstrap() reads the platform through MetaFromContext, not
+// by re-parsing headers itself, so a standalone OriginInterceptor test has to
+// populate that key by hand rather than relying on ClearanceInterceptor
+// having run first, which none of these tests install it to do.
+func originTestCtx(header http.Header, caller *model.User) context.Context {
+	ctx := context.Background()
+	if caller != nil {
+		ctx = context.WithValue(ctx, callerContextKey{}, caller)
+	}
+	if meta, err := callermeta.FromHeader(header); err == nil {
+		ctx = context.WithValue(ctx, metaContextKey{}, meta)
+	}
+	return ctx
+}
+
+// callOrigin runs one request through the origin interceptor, carrying header.
+func callOrigin(header http.Header, resolve OriginResolver, caller *model.User) originResult {
 	var result originResult
 
-	handler := func(context.Context, any) (any, error) {
+	handler := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 		result.reached = true
-		return "handled", nil
+		return newFakeResponse(), nil
+	})
+
+	req := newFakeRequest(publicMethod)
+	for key, values := range header {
+		req.Header()[key] = values
 	}
 
-	intercept := NewOriginUnaryInterceptor(resolve)
-	_, result.err = intercept(ctx, struct{}{},
-		&grpc.UnaryServerInfo{FullMethod: publicMethod}, handler)
+	intercept := NewOriginInterceptor(resolve)
+	_, result.err = intercept.WrapUnary(handler)(originTestCtx(header, caller), req)
 
 	return result
 }
 
-// originCtx builds the incoming context a platform client produces: identity
-// and origin, round-tripped through callermeta so the test cannot disagree with
-// the production encoding.
-func originCtx(t *testing.T, platform pb.Platform, platformUID string, origin callermeta.Origin) context.Context {
-	t.Helper()
-
-	ctx := callermeta.NewOutgoingContext(context.Background(), platform, platformUID)
-	// After NewOutgoingContext, never before: see TestOriginIsLostWhenAttachedBeforeIdentity.
-	ctx = callermeta.NewOutgoingOrigin(ctx, origin)
-
-	return incomingFromOutgoing(t, ctx)
-}
-
-// incomingFromOutgoing turns a client's outgoing context into the incoming one
-// the server sees.
-func incomingFromOutgoing(t *testing.T, ctx context.Context) context.Context {
-	t.Helper()
-
-	md, ok := metadata.FromOutgoingContext(ctx)
-	if !ok {
-		t.Fatal("no outgoing metadata attached")
+// originHeader builds the header a platform client produces: identity and
+// origin, both via callermeta so the test cannot disagree with the production
+// encoding.
+func originHeader(platform pb.Platform, platformUID string, origin callermeta.Origin) http.Header {
+	header := wellFormedHeader(platform, platformUID)
+	if origin.InstanceUID != "" {
+		header.Set(callermeta.HeaderInstanceUID, origin.InstanceUID)
 	}
-
-	return metadata.NewIncomingContext(context.Background(), md)
-}
-
-// withCaller puts a resolved caller in the context, which is what the clearance
-// interceptor does for a guarded method.
-func withCaller(ctx context.Context, caller *model.User) context.Context {
-	return context.WithValue(ctx, callerContextKey{}, caller)
+	if origin.DestinationUID != "" {
+		header.Set(callermeta.HeaderDestinationUID, origin.DestinationUID)
+	}
+	return header
 }
 
 // testOrigin is a Discord guild and channel.
@@ -120,16 +125,16 @@ func testOrigin() callermeta.Origin {
 	return callermeta.Origin{InstanceUID: "guild-1", DestinationUID: "channel-1"}
 }
 
-// A call with no origin metadata has nothing to bootstrap. A direct message is
+// A call with no origin header has nothing to bootstrap. A direct message is
 // the normal case.
-func TestOriginIsNotBootstrappedWithoutOriginMetadata(t *testing.T) {
+func TestOriginIsNotBootstrappedWithoutOriginHeader(t *testing.T) {
 	tests := []struct {
 		name   string
 		origin callermeta.Origin
 	}{
 		{"no origin at all", callermeta.Origin{}},
-		// callermeta drops an origin with no instance, so this never reaches the
-		// wire; a direct message produces exactly this.
+		// A real client drops an origin with no instance, so this never
+		// reaches the wire; a direct message produces exactly this.
 		{"destination but no instance", callermeta.Origin{DestinationUID: "dm-channel"}},
 		// Half an origin is not worth a row: destination is what would be created.
 		{"instance but no destination", callermeta.Origin{InstanceUID: "guild-1"}},
@@ -138,12 +143,10 @@ func TestOriginIsNotBootstrappedWithoutOriginMetadata(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resolver := &fakeOriginResolver{}
-			ctx := withCaller(
-				originCtx(t, pb.Platform_PLATFORM_DISCORD, "uid", tt.origin),
-				callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED)),
-			)
+			header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", tt.origin)
+			caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
 
-			got := callOrigin(ctx, resolver.resolve)
+			got := callOrigin(header, resolver.resolve, caller)
 
 			if got.err != nil {
 				t.Fatalf("unexpected error: %v", got.err)
@@ -165,11 +168,11 @@ func TestOriginIsNotBootstrappedWithoutOriginMetadata(t *testing.T) {
 func TestOriginIsNotBootstrappedWithoutAResolvedCaller(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 
-	// Full, well-formed identity and origin metadata — the only thing missing is
-	// the caller the clearance interceptor would have put in the context.
-	ctx := originCtx(t, pb.Platform_PLATFORM_DISCORD, "stranger", testOrigin())
+	// Full, well-formed identity and origin headers — the only thing missing
+	// is the caller the clearance interceptor would have put in the context.
+	header := originHeader(pb.Platform_PLATFORM_DISCORD, "stranger", testOrigin())
 
-	got := callOrigin(ctx, resolver.resolve)
+	got := callOrigin(header, resolver.resolve, nil)
 
 	if got.err != nil {
 		t.Fatalf("unexpected error: %v", got.err)
@@ -184,12 +187,10 @@ func TestOriginIsNotBootstrappedWithoutAResolvedCaller(t *testing.T) {
 
 func TestOriginIsBootstrappedForAResolvedCaller(t *testing.T) {
 	resolver := &fakeOriginResolver{}
-	ctx := withCaller(
-		originCtx(t, pb.Platform_PLATFORM_DISCORD, "uid", testOrigin()),
-		callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED)),
-	)
+	header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
+	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
 
-	got := callOrigin(ctx, resolver.resolve)
+	got := callOrigin(header, resolver.resolve, caller)
 
 	if got.err != nil {
 		t.Fatalf("unexpected error: %v", got.err)
@@ -209,12 +210,10 @@ func TestOriginIsBootstrappedForAResolvedCaller(t *testing.T) {
 func TestBootstrapPassesTheCanonicalMetaShapes(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	origin := testOrigin()
-	ctx := withCaller(
-		originCtx(t, pb.Platform_PLATFORM_MATRIX_PROTOCOL, "@a:example.org", origin),
-		callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED)),
-	)
+	header := originHeader(pb.Platform_PLATFORM_MATRIX_PROTOCOL, "@a:example.org", origin)
+	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
 
-	if got := callOrigin(ctx, resolver.resolve); got.err != nil {
+	if got := callOrigin(header, resolver.resolve, caller); got.err != nil {
 		t.Fatalf("unexpected error: %v", got.err)
 	}
 
@@ -255,18 +254,28 @@ func TestBootstrapPassesTheCanonicalMetaShapes(t *testing.T) {
 
 // The upsert is meant to run on first contact, not on every request. Without
 // the cache every message in a busy channel would cost a transaction.
+//
+// One interceptor instance is reused across every call, not rebuilt through
+// callOrigin each time: the cache this test is about lives ON the
+// interceptor, and a fresh one per call would trivially pass regardless of
+// whether the cache works at all.
 func TestBootstrapRunsOncePerOrigin(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
-	intercept := NewOriginUnaryInterceptor(resolver.resolve)
+	intercept := NewOriginInterceptor(resolver.resolve)
 
-	handler := func(context.Context, any) (any, error) { return "handled", nil }
-	info := &grpc.UnaryServerInfo{FullMethod: publicMethod}
+	handler := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return newFakeResponse(), nil
+	})
 
 	const requests = 5
 	for range requests {
-		ctx := withCaller(originCtx(t, pb.Platform_PLATFORM_DISCORD, "uid", testOrigin()), caller)
-		if _, err := intercept(ctx, struct{}{}, info, handler); err != nil {
+		req := newFakeRequest(publicMethod)
+		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
+		for key, values := range header {
+			req.Header()[key] = values
+		}
+		if _, err := intercept.WrapUnary(handler)(originTestCtx(header, caller), req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
@@ -278,13 +287,18 @@ func TestBootstrapRunsOncePerOrigin(t *testing.T) {
 
 // The cache key carries the platform and both identifiers, so origins that
 // differ in any of them are bootstrapped separately.
+//
+// Every request runs through the SAME interceptor instance rather than a
+// fresh one per call, because the cache the property depends on lives on the
+// interceptor.
 func TestBootstrapDistinguishesOrigins(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
-	intercept := NewOriginUnaryInterceptor(resolver.resolve)
+	intercept := NewOriginInterceptor(resolver.resolve)
 
-	handler := func(context.Context, any) (any, error) { return "handled", nil }
-	info := &grpc.UnaryServerInfo{FullMethod: publicMethod}
+	handler := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return newFakeResponse(), nil
+	})
 
 	calls := []struct {
 		platform pb.Platform
@@ -301,9 +315,14 @@ func TestBootstrapDistinguishesOrigins(t *testing.T) {
 		{pb.Platform_PLATFORM_DISCORD, callermeta.Origin{InstanceUID: "g1", DestinationUID: "c1"}},
 	}
 
-	for _, call := range calls {
-		ctx := withCaller(originCtx(t, call.platform, "uid", call.origin), caller)
-		if _, err := intercept(ctx, struct{}{}, info, handler); err != nil {
+	for _, tt := range calls {
+		req := newFakeRequest(publicMethod)
+		header := originHeader(tt.platform, "uid", tt.origin)
+		for key, values := range header {
+			req.Header()[key] = values
+		}
+
+		if _, err := intercept.WrapUnary(handler)(originTestCtx(header, caller), req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
@@ -318,17 +337,24 @@ func TestBootstrapDistinguishesOrigins(t *testing.T) {
 func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
-	intercept := NewOriginUnaryInterceptor(resolver.resolve)
+	intercept := NewOriginInterceptor(resolver.resolve)
 
-	handler := func(context.Context, any) (any, error) { return "handled", nil }
-	info := &grpc.UnaryServerInfo{FullMethod: publicMethod}
+	handler := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return newFakeResponse(), nil
+	})
 
 	const concurrency = 32
-	// Contexts are built up front: callermeta is not what is under test here,
-	// and t.Fatal from a goroutine is not allowed.
-	contexts := make([]context.Context, concurrency)
-	for i := range contexts {
-		contexts[i] = withCaller(originCtx(t, pb.Platform_PLATFORM_DISCORD, "uid", testOrigin()), caller)
+	// Requests are built up front: header construction is not what is under
+	// test here, and t.Fatal from a goroutine is not allowed.
+	reqs := make([]*fakeRequest, concurrency)
+	ctxs := make([]context.Context, concurrency)
+	for i := range reqs {
+		reqs[i] = newFakeRequest(publicMethod)
+		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
+		for key, values := range header {
+			reqs[i].Header()[key] = values
+		}
+		ctxs[i] = originTestCtx(header, caller)
 	}
 
 	errs := make([]error, concurrency)
@@ -341,7 +367,7 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 		go func(i int) {
 			defer done.Done()
 			start.Wait() // release together to maximise contention
-			_, errs[i] = intercept(contexts[i], struct{}{}, info, handler)
+			_, errs[i] = intercept.WrapUnary(handler)(ctxs[i], reqs[i])
 		}(i)
 	}
 	start.Done()
@@ -369,8 +395,19 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 	// Convergence is the property that matters and it is deterministic: once the
 	// burst is over the origin is known, so no later request bootstraps again.
 	for range concurrency {
-		ctx := withCaller(originCtx(t, pb.Platform_PLATFORM_DISCORD, "uid", testOrigin()), caller)
-		if _, err := intercept(ctx, struct{}{}, info, handler); err != nil {
+		req := newFakeRequest(publicMethod)
+		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
+		for key, values := range header {
+			req.Header()[key] = values
+		}
+		// originTestCtx, not a bare callerContextKey: bootstrap reads the
+		// platform through MetaFromContext and returns before it ever consults
+		// the cache when that is absent. A context carrying only the caller
+		// makes the resolver unreachable for a reason that has nothing to do
+		// with the cache, so this loop would report convergence even with
+		// caching removed entirely.
+		ctx := originTestCtx(header, caller)
+		if _, err := intercept.WrapUnary(handler)(ctx, req); err != nil {
 			t.Fatalf("post-burst request failed: %v", err)
 		}
 	}
@@ -385,17 +422,27 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 func TestFailedBootstrapIsRetriedAndDoesNotFailTheCall(t *testing.T) {
 	resolver := &fakeOriginResolver{err: errors.New("dial tcp: connection refused")}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
-	intercept := NewOriginUnaryInterceptor(resolver.resolve)
+	intercept := NewOriginInterceptor(resolver.resolve)
 
-	handler := func(context.Context, any) (any, error) { return "handled", nil }
-	info := &grpc.UnaryServerInfo{FullMethod: publicMethod}
+	handler := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return newFakeResponse(), nil
+	})
+
+	call := func() error {
+		req := newFakeRequest(publicMethod)
+		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
+		for key, values := range header {
+			req.Header()[key] = values
+		}
+		_, err := intercept.WrapUnary(handler)(originTestCtx(header, caller), req)
+		return err
+	}
 
 	const attempts = 3
 	for i := range attempts {
-		ctx := withCaller(originCtx(t, pb.Platform_PLATFORM_DISCORD, "uid", testOrigin()), caller)
-		// Bootstrap is best effort: a guild that cannot be recorded must not stop
-		// someone rolling dice.
-		if _, err := intercept(ctx, struct{}{}, info, handler); err != nil {
+		// Bootstrap is best effort: a guild that cannot be recorded must not
+		// stop someone rolling dice.
+		if err := call(); err != nil {
 			t.Fatalf("attempt %d failed the RPC: %v", i, err)
 		}
 	}
@@ -410,8 +457,7 @@ func TestFailedBootstrapIsRetriedAndDoesNotFailTheCall(t *testing.T) {
 	resolver.mu.Unlock()
 
 	for range 2 {
-		ctx := withCaller(originCtx(t, pb.Platform_PLATFORM_DISCORD, "uid", testOrigin()), caller)
-		if _, err := intercept(ctx, struct{}{}, info, handler); err != nil {
+		if err := call(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
@@ -422,14 +468,12 @@ func TestFailedBootstrapIsRetriedAndDoesNotFailTheCall(t *testing.T) {
 }
 
 // A server built without an origin resolver must still serve. This is the
-// wiring guard: NewOriginUnaryInterceptor(nil) is a pass-through, not a panic.
+// wiring guard: NewOriginInterceptor(nil) is a pass-through, not a panic.
 func TestNilResolverIsAPassThrough(t *testing.T) {
-	ctx := withCaller(
-		originCtx(t, pb.Platform_PLATFORM_DISCORD, "uid", testOrigin()),
-		callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED)),
-	)
+	header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
+	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
 
-	got := callOrigin(ctx, nil)
+	got := callOrigin(header, nil, caller)
 
 	if got.err != nil {
 		t.Fatalf("unexpected error: %v", got.err)
@@ -439,23 +483,20 @@ func TestNilResolverIsAPassThrough(t *testing.T) {
 	}
 }
 
-// A caller in the context but no platform metadata cannot be stored: the
+// A caller in the context but no platform header cannot be stored: the
 // platform is half the instance key. It must not fail the call either.
-func TestBootstrapIsSkippedWithoutPlatformMetadata(t *testing.T) {
+func TestBootstrapIsSkippedWithoutPlatformHeader(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 
-	// Origin headers with no platform_enum — something no real client sends, but
-	// the interceptor must not assume that.
+	// Origin headers with no platform_enum — something no real client sends,
+	// but the interceptor must not assume that.
 	origin := testOrigin()
-	ctx := withCaller(
-		metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-			callermeta.HeaderInstanceUID, origin.InstanceUID,
-			callermeta.HeaderDestinationUID, origin.DestinationUID,
-		)),
-		callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED)),
-	)
+	header := make(http.Header)
+	header.Set(callermeta.HeaderInstanceUID, origin.InstanceUID)
+	header.Set(callermeta.HeaderDestinationUID, origin.DestinationUID)
+	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
 
-	got := callOrigin(ctx, resolver.resolve)
+	got := callOrigin(header, resolver.resolve, caller)
 
 	if got.err != nil {
 		t.Fatalf("unexpected error: %v", got.err)

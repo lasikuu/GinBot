@@ -6,6 +6,9 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260709200747-435963d16310.1
 	buf.build/go/protovalidate v1.3.0
 	connectrpc.com/connect v1.20.0
+	connectrpc.com/grpchealth v1.5.0
+	connectrpc.com/grpcreflect v1.3.0
+	connectrpc.com/validate v0.6.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/corona10/goimagehash v1.1.0
 	github.com/google/uuid v1.6.0
@@ -15,6 +18,7 @@ require (
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/robfig/cron/v3 v3.0.1
 	go.uber.org/zap v1.28.0
+	golang.org/x/net v0.58.0
 	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
 	maunium.net/go/mautrix v0.30.0
@@ -46,7 +50,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp v0.0.0-20260820142414-ca536658362e // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect

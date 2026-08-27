@@ -5,12 +5,9 @@ import (
 	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/lasikuu/GinBot/internal/auth"
 	"github.com/lasikuu/GinBot/pkg/enum"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type OptionsModel struct {
@@ -41,11 +38,6 @@ func LoadEnv() {
 
 // SetEnv sets the environment variables into Options and Credentials
 func SetEnv() {
-	// Loaded once and shared: building it per client parsed the same key pair twice.
-	clientOptions := GRPCClientOptions{
-		DialOptions: dialOptions(),
-	}
-
 	// GINBOT_WEB_URL is deliberately NOT carried on OptionsModel. Nothing reads
 	// the raw URL; the only thing derived from it is the repost exclusion
 	// below, and an exported field that is written and never read is invisible
@@ -55,19 +47,17 @@ func SetEnv() {
 
 	Options = &OptionsModel{
 		Matrix: MatrixOptions{
-			GRPCClientOptions: clientOptions,
-			HomeServerURL:     homeServerUrl(),
-			AccessToken:       accessToken(),
-			UserID:            userId(),
+			HomeServerURL: homeServerUrl(),
+			AccessToken:   accessToken(),
+			UserID:        userId(),
 		},
 		Discord: DiscordOptions{
-			GRPCClientOptions: clientOptions,
-			OwnerId:           ownerId(),
-			BotToken:          botToken(),
-			ClientId:          clientId(),
-			EraseCommands:     eraseCommands(),
-			CommandPrefixes:   commandPrefixes(),
-			MessageContent:    messageContent(),
+			OwnerId:         ownerId(),
+			BotToken:        botToken(),
+			ClientId:        clientId(),
+			EraseCommands:   eraseCommands(),
+			CommandPrefixes: commandPrefixes(),
+			MessageContent:  messageContent(),
 		},
 		GRPC: GRPCServerOptions{
 			Host:      gRPCHost(),
@@ -98,25 +88,6 @@ func SetEnv() {
 			FFmpegPath:    repostFFmpegPath(),
 		},
 	}
-}
-
-func dialOptions() []grpc.DialOption {
-	gRPCDialOptions := []grpc.DialOption{
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(MaxGRPCMessageBytes),
-			grpc.MaxCallSendMsgSize(MaxGRPCMessageBytes),
-		),
-	}
-
-	if !gRPCTLS() {
-		gRPCDialOptions = append(gRPCDialOptions, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		return gRPCDialOptions
-	}
-
-	tlsCredentials := auth.LoadClientCredentials(certsPath())
-
-	gRPCDialOptions = append(gRPCDialOptions, grpc.WithTransportCredentials(tlsCredentials))
-	return gRPCDialOptions
 }
 
 // webURL returns the bot's own public web address, raw and unnormalised.

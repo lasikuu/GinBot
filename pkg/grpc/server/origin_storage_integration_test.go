@@ -138,7 +138,7 @@ func TestPreExistingInstanceRowStillResolves(t *testing.T) {
 
 	// Any guarded RPC will do: the origin interceptor runs on all of them, and
 	// only after clearance has resolved a caller.
-	callCtx := callermeta.NewOutgoingOrigin(callerCtx(pb.Platform_PLATFORM_DISCORD, callerUID), origin)
+	callCtx := originCtx(callerCtx(pb.Platform_PLATFORM_DISCORD, callerUID), origin)
 	if _, err := h.Trigger.ListTriggers(callCtx, pb.ListTriggersReq_builder{}.Build()); err != nil {
 		t.Fatalf("ListTriggers: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestRepeatedCallsDoNotDuplicateAPreExistingInstance(t *testing.T) {
 		withOriginResolver(db.GetOrCreateDestinationByMeta),
 	)
 	callerUID, _ := registeredCaller(t, h, pool, "originrepeat")
-	callCtx := callermeta.NewOutgoingOrigin(callerCtx(pb.Platform_PLATFORM_DISCORD, callerUID), origin)
+	callCtx := originCtx(callerCtx(pb.Platform_PLATFORM_DISCORD, callerUID), origin)
 
 	const calls = 3
 	for i := range calls {

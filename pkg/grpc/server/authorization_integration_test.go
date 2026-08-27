@@ -1,6 +1,6 @@
 //go:build integration
 
-// Authorization tests that need real rows, driven through the bufconn harness
+// Authorization tests that need real rows, driven through the harness
 // with the real interceptor chain and a real database.
 //
 //	docker compose -f docker-compose.psql.yml up -d

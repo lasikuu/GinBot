@@ -2,6 +2,7 @@ package interceptor
 
 import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 )
 
 // DefaultRequirements is the minimum clearance for every guarded RPC.
@@ -14,13 +15,9 @@ import (
 //   - UtilityService/Ping — liveness, exposes no user data.
 //   - EntertainmentService/GetRandomNumber — reads nothing and stores nothing.
 //
-// ReverseService/OpenClientActionStream is absent for a different reason: it is
-// a stream, and this map only drives the unary interceptor. Adding it here
-// would read as protection that does not exist.
-//
-// Every key is a generated constant. Never write one out by hand: a key that no
-// longer matches the generated method name compiles fine and quietly turns the
-// RPC public.
+// Every key is a generated ginbotv1connect.*Procedure constant. Never write one
+// out by hand: a key that no longer matches the generated procedure string
+// compiles fine and quietly turns the RPC public.
 //
 // Known gap: nothing in the product grants clearance above CLEARANCE_REGISTERED.
 // Registration sets that level and there is no promotion RPC, command or admin
@@ -37,51 +34,57 @@ func DefaultRequirements() Requirements {
 	)
 
 	return Requirements{
-		pb.AnalyticsService_CreateActionRecord_FullMethodName: registered,
-		pb.AnalyticsService_ListActionRecords_FullMethodName:  registered,
+		ginbotv1connect.AnalyticsServiceCreateActionRecordProcedure: registered,
+		ginbotv1connect.AnalyticsServiceListActionRecordsProcedure:  registered,
 
 		// Above the CLEARANCE_REGISTERED baseline on purpose: this changes the
 		// bot's presence for everyone who can see it, so it is not a per-user
 		// setting however cheap the call looks. The service is not registered on
 		// the server yet, so the floor is in place before the method exists.
-		pb.DiscordService_SetDiscordActivityType_FullMethodName: administrator,
+		ginbotv1connect.DiscordServiceSetDiscordActivityTypeProcedure: administrator,
 
-		pb.EntertainmentService_SetBirthday_FullMethodName: registered,
+		ginbotv1connect.EntertainmentServiceSetBirthdayProcedure: registered,
 
-		pb.InstanceService_GetInstance_FullMethodName:   registered,
-		pb.InstanceService_ListInstances_FullMethodName: registered,
+		ginbotv1connect.InstanceServiceGetInstanceProcedure:   registered,
+		ginbotv1connect.InstanceServiceListInstancesProcedure: registered,
 		// Instance administration reconfigures a whole guild or room, so it is
 		// held to the highest bar in this map.
-		pb.InstanceService_CreateInstance_FullMethodName: administrator,
-		pb.InstanceService_UpdateInstance_FullMethodName: administrator,
-		pb.InstanceService_DeleteInstance_FullMethodName: administrator,
+		ginbotv1connect.InstanceServiceCreateInstanceProcedure: administrator,
+		ginbotv1connect.InstanceServiceUpdateInstanceProcedure: administrator,
+		ginbotv1connect.InstanceServiceDeleteInstanceProcedure: administrator,
 
-		pb.ReminderService_GetReminder_FullMethodName:    registered,
-		pb.ReminderService_ListReminders_FullMethodName:  registered,
-		pb.ReminderService_CreateReminder_FullMethodName: registered,
-		pb.ReminderService_UpdateReminder_FullMethodName: registered,
-		pb.ReminderService_DeleteReminder_FullMethodName: registered,
+		ginbotv1connect.ReminderServiceGetReminderProcedure:    registered,
+		ginbotv1connect.ReminderServiceListRemindersProcedure:  registered,
+		ginbotv1connect.ReminderServiceCreateReminderProcedure: registered,
+		ginbotv1connect.ReminderServiceUpdateReminderProcedure: registered,
+		ginbotv1connect.ReminderServiceDeleteReminderProcedure: registered,
 		// ConfirmDelivery is a client->server callback carrying the reminder
 		// owner's identity. It is default-open unless listed here, which would be
 		// a silent security hole, so it is held to the same floor as the rest of
 		// the reminder surface.
-		pb.ReminderService_ConfirmDelivery_FullMethodName: registered,
+		ginbotv1connect.ReminderServiceConfirmDeliveryProcedure: registered,
 
-		pb.RepostService_CheckRepost_FullMethodName: registered,
+		ginbotv1connect.RepostServiceCheckRepostProcedure: registered,
 
-		pb.TriggerService_TryTrigger_FullMethodName:      registered,
-		pb.TriggerService_ExecTrigger_FullMethodName:     registered,
-		pb.TriggerService_GetTrigger_FullMethodName:      registered,
-		pb.TriggerService_ListTriggers_FullMethodName:    registered,
-		pb.TriggerService_CreateTrigger_FullMethodName:   registered,
-		pb.TriggerService_UpdateTrigger_FullMethodName:   registered,
-		pb.TriggerService_DeleteTrigger_FullMethodName:   registered,
-		pb.TriggerService_GetTriggerStats_FullMethodName: registered,
-		pb.TriggerService_GetFile_FullMethodName:         registered,
+		// A stream, not a unary call, but it goes through exactly the same
+		// ClearanceInterceptor.WrapStreamingHandler and is held to exactly the
+		// same map — see ADR-0012 and the comment on maxStreamClients in
+		// pkg/grpc/server/reverse.go for what this closes.
+		ginbotv1connect.ReverseServiceOpenClientActionStreamProcedure: registered,
 
-		pb.UserService_GetUser_FullMethodName:                   registered,
-		pb.UserService_GetCongratulableBirthdays_FullMethodName: registered,
-		pb.UserService_SetLocale_FullMethodName:                 registered,
-		pb.UserService_SetTimezone_FullMethodName:               registered,
+		ginbotv1connect.TriggerServiceTryTriggerProcedure:      registered,
+		ginbotv1connect.TriggerServiceExecTriggerProcedure:     registered,
+		ginbotv1connect.TriggerServiceGetTriggerProcedure:      registered,
+		ginbotv1connect.TriggerServiceListTriggersProcedure:    registered,
+		ginbotv1connect.TriggerServiceCreateTriggerProcedure:   registered,
+		ginbotv1connect.TriggerServiceUpdateTriggerProcedure:   registered,
+		ginbotv1connect.TriggerServiceDeleteTriggerProcedure:   registered,
+		ginbotv1connect.TriggerServiceGetTriggerStatsProcedure: registered,
+		ginbotv1connect.TriggerServiceGetFileProcedure:         registered,
+
+		ginbotv1connect.UserServiceGetUserProcedure:                   registered,
+		ginbotv1connect.UserServiceGetCongratulableBirthdaysProcedure: registered,
+		ginbotv1connect.UserServiceSetLocaleProcedure:                 registered,
+		ginbotv1connect.UserServiceSetTimezoneProcedure:               registered,
 	}
 }

@@ -3,20 +3,20 @@ package interceptor
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 )
 
 func TestMain(m *testing.M) {
@@ -27,22 +27,23 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
-// Method names used by the pure tests. They are the generated constants rather
-// than string literals so a proto rename breaks compilation here instead of
-// silently turning a guarded method into a public one.
+// Procedures used by the pure tests. They are the generated
+// ginbotv1connect.*Procedure constants rather than string literals so a proto
+// rename breaks compilation here instead of silently turning a guarded method
+// into a public one.
 const (
 	// registeredMethod needs at least CLEARANCE_REGISTERED in testRequirements.
-	registeredMethod = pb.UserService_GetUser_FullMethodName
+	registeredMethod = ginbotv1connect.UserServiceGetUserProcedure
 	// moderatorMethod needs exactly CLEARANCE_MODERATOR.
-	moderatorMethod = pb.TriggerService_DeleteTrigger_FullMethodName
+	moderatorMethod = ginbotv1connect.TriggerServiceDeleteTriggerProcedure
 	// adminMethod needs CLEARANCE_ADMINISTRATOR.
-	adminMethod = pb.InstanceService_CreateInstance_FullMethodName
+	adminMethod = ginbotv1connect.InstanceServiceCreateInstanceProcedure
 	// publicMethod is absent from testRequirements.
-	publicMethod = pb.UtilityService_Ping_FullMethodName
+	publicMethod = ginbotv1connect.UtilityServicePingProcedure
 )
 
-// testRequirements mirrors the shape of the production map without depending on
-// it: some public methods (absent) and three tiers of guarded method.
+// testRequirements mirrors the shape of the production map without depending
+// on it: some public methods (absent) and three tiers of guarded method.
 func testRequirements() Requirements {
 	return Requirements{
 		registeredMethod: pb.Clearance_CLEARANCE_REGISTERED,
@@ -64,7 +65,7 @@ func callerAt(clearance int32) *model.User {
 
 // recordingResolver is a CallerResolver with a fixed outcome that records how
 // it was called, so tests can assert both that public methods resolve nobody
-// and that the metadata reaches the resolver intact.
+// and that the header identity reaches the resolver intact.
 type recordingResolver struct {
 	user *model.User
 	err  error
@@ -106,38 +107,40 @@ type callResult struct {
 	err      error
 }
 
-// call runs a request for method through the clearance interceptor. The request
-// payload is deliberately not a protobuf message: clearance must not care.
-func call(ctx context.Context, method string, reqs Requirements, resolve CallerResolver) callResult {
+// call runs a request for procedure, carrying header, through the clearance
+// interceptor.
+func call(procedure string, header http.Header, reqs Requirements, resolve CallerResolver) callResult {
 	var result callResult
 
-	handler := func(handlerCtx context.Context, _ any) (any, error) {
+	handler := connect.UnaryFunc(func(handlerCtx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
 		result.reached = true
 		result.caller, result.callerOK = CallerFromContext(handlerCtx)
-		return "handled", nil
+		return newFakeResponse(), nil
+	})
+
+	req := newFakeRequest(procedure)
+	for key, values := range header {
+		req.Header()[key] = values
 	}
 
-	intercept := NewClearanceUnaryInterceptor(reqs, resolve)
-	_, result.err = intercept(ctx, struct{}{}, &grpc.UnaryServerInfo{FullMethod: method}, handler)
+	intercept := NewClearanceInterceptor(reqs, resolve)
+	_, result.err = intercept.WrapUnary(handler)(context.Background(), req)
 
 	return result
 }
 
-// incomingCtx builds the incoming context that a client's outgoing metadata
-// produces. It round-trips through callermeta so the test cannot disagree with
-// the production encoding the way the Discord client once did.
-func incomingCtx(t *testing.T, platform pb.Platform, platformUID string) context.Context {
-	t.Helper()
-
-	md, ok := metadata.FromOutgoingContext(callermeta.NewOutgoingContext(context.Background(), platform, platformUID))
-	if !ok {
-		t.Fatal("callermeta attached no outgoing metadata")
+// wellFormedHeader builds the header a real platform client sends, via
+// callermeta itself so the test cannot disagree with the production encoding.
+func wellFormedHeader(platform pb.Platform, platformUID string) http.Header {
+	header := make(http.Header)
+	header.Set(callermeta.HeaderPlatformEnum, platform.String())
+	if platformUID != "" {
+		header.Set(callermeta.HeaderUserID, platformUID)
 	}
-
-	return metadata.NewIncomingContext(context.Background(), md)
+	return header
 }
 
-// requireCode asserts the exact gRPC code carried by err.
+// requireCode asserts the exact Connect code carried by err.
 func requireCode(t *testing.T, err error, want codes.Code) {
 	t.Helper()
 
@@ -145,27 +148,22 @@ func requireCode(t *testing.T, err error, want codes.Code) {
 		t.Fatalf("expected an error with code %v, got nil", want)
 	}
 
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("error is not a gRPC status: %v", err)
-	}
-	if st.Code() != want {
-		t.Fatalf("code = %v, want %v (message: %q)", st.Code(), want, st.Message())
+	got := connect.CodeOf(err)
+	wantConnect := connect.Code(uint32(want))
+	if got != wantConnect {
+		t.Fatalf("code = %v, want %v (error: %v)", got, wantConnect, err)
 	}
 }
 
 // The error mapping is the contract platform clients render to users: an
 // unregistered caller must be told to register, not shown a permissions error.
 func TestClearanceErrorMapping(t *testing.T) {
-	// rawMetadata builds an incoming context bypassing callermeta, which is the
-	// only way to produce metadata a real client could never send.
-	rawMetadata := func(pairs ...string) func(*testing.T) context.Context {
-		return func(*testing.T) context.Context {
-			return metadata.NewIncomingContext(context.Background(), metadata.Pairs(pairs...))
+	rawHeader := func(pairs ...string) http.Header {
+		header := make(http.Header)
+		for i := 0; i+1 < len(pairs); i += 2 {
+			header.Set(pairs[i], pairs[i+1])
 		}
-	}
-	wellFormed := func(t *testing.T) context.Context {
-		return incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "platform-uid")
+		return header
 	}
 
 	owner := func() *recordingResolver {
@@ -175,14 +173,14 @@ func TestClearanceErrorMapping(t *testing.T) {
 	tests := []struct {
 		name     string
 		method   string
-		ctx      func(*testing.T) context.Context
+		header   http.Header
 		resolver *recordingResolver
 		want     codes.Code
 	}{
 		{
-			name:     "no metadata at all",
+			name:     "no header at all",
 			method:   registeredMethod,
-			ctx:      func(*testing.T) context.Context { return context.Background() },
+			header:   make(http.Header),
 			resolver: owner(),
 			want:     codes.InvalidArgument,
 		},
@@ -190,43 +188,43 @@ func TestClearanceErrorMapping(t *testing.T) {
 			// The pre-callermeta client sent the enum number; the server reads names.
 			name:     "platform_enum sent as a number",
 			method:   registeredMethod,
-			ctx:      rawMetadata(callermeta.HeaderPlatformEnum, "1", callermeta.HeaderUserID, "platform-uid"),
+			header:   rawHeader(callermeta.HeaderPlatformEnum, "1", callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
 			want:     codes.InvalidArgument,
 		},
 		{
 			name:     "platform_enum is not a known name",
 			method:   registeredMethod,
-			ctx:      rawMetadata(callermeta.HeaderPlatformEnum, "PLATFORM_CARRIER_PIGEON", callermeta.HeaderUserID, "platform-uid"),
+			header:   rawHeader(callermeta.HeaderPlatformEnum, "PLATFORM_CARRIER_PIGEON", callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
 			want:     codes.InvalidArgument,
 		},
 		{
 			name:     "platform_enum is empty",
 			method:   registeredMethod,
-			ctx:      rawMetadata(callermeta.HeaderPlatformEnum, "", callermeta.HeaderUserID, "platform-uid"),
+			header:   rawHeader(callermeta.HeaderPlatformEnum, "", callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
 			want:     codes.InvalidArgument,
 		},
 		{
 			name:     "platform_enum is missing",
 			method:   registeredMethod,
-			ctx:      rawMetadata(callermeta.HeaderUserID, "platform-uid"),
+			header:   rawHeader(callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
 			want:     codes.InvalidArgument,
 		},
 		{
 			name:     "platform_enum is unspecified",
 			method:   registeredMethod,
-			ctx:      rawMetadata(callermeta.HeaderPlatformEnum, pb.Platform_PLATFORM_UNSPECIFIED.String(), callermeta.HeaderUserID, "platform-uid"),
+			header:   rawHeader(callermeta.HeaderPlatformEnum, pb.Platform_PLATFORM_UNSPECIFIED.String(), callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
 			want:     codes.InvalidArgument,
 		},
 		{
 			// A guarded method cannot run without knowing who is calling.
-			name:     "clearance required but no user_id metadata",
+			name:     "clearance required but no user_id header",
 			method:   registeredMethod,
-			ctx:      func(t *testing.T) context.Context { return incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "") },
+			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, ""),
 			resolver: owner(),
 			want:     codes.InvalidArgument,
 		},
@@ -235,14 +233,14 @@ func TestClearanceErrorMapping(t *testing.T) {
 			// missing row with ErrNotFound.
 			name:     "caller has no user_account row",
 			method:   registeredMethod,
-			ctx:      wellFormed,
+			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"),
 			resolver: &recordingResolver{err: db.ErrNotFound},
 			want:     codes.FailedPrecondition,
 		},
 		{
 			name:     "clearance below the minimum",
 			method:   adminMethod,
-			ctx:      wellFormed,
+			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"),
 			resolver: &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))},
 			want:     codes.PermissionDenied,
 		},
@@ -251,7 +249,7 @@ func TestClearanceErrorMapping(t *testing.T) {
 			// must not masquerade as "you are not registered".
 			name:     "resolver fails",
 			method:   registeredMethod,
-			ctx:      wellFormed,
+			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"),
 			resolver: &recordingResolver{err: errors.New("connection refused")},
 			want:     codes.Internal,
 		},
@@ -259,7 +257,7 @@ func TestClearanceErrorMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := call(tt.ctx(t), tt.method, testRequirements(), tt.resolver.resolve)
+			got := call(tt.method, tt.header, testRequirements(), tt.resolver.resolve)
 
 			requireCode(t, got.err, tt.want)
 			if got.reached {
@@ -273,20 +271,20 @@ func TestClearanceErrorMapping(t *testing.T) {
 func TestUnregisteredCallerIsToldToRegister(t *testing.T) {
 	resolver := &recordingResolver{err: db.ErrNotFound}
 
-	got := call(incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "unknown"), registeredMethod, testRequirements(), resolver.resolve)
+	got := call(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "unknown"), testRequirements(), resolver.resolve)
 
 	requireCode(t, got.err, codes.FailedPrecondition)
-	if message := status.Convert(got.err).Message(); !strings.Contains(strings.ToLower(message), "regist") {
+	if message := got.err.Error(); !strings.Contains(strings.ToLower(message), "regist") {
 		t.Errorf("message = %q, want it to mention registration", message)
 	}
 }
 
 // A public method that resolves the caller anyway defeats the point of the map:
 // /ping would start failing for anyone who has not registered.
-func TestPublicMethodNeedsNoMetadataAndResolvesNobody(t *testing.T) {
+func TestPublicMethodNeedsNoHeaderAndResolvesNobody(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
-	got := call(context.Background(), publicMethod, testRequirements(), resolver.resolve)
+	got := call(publicMethod, make(http.Header), testRequirements(), resolver.resolve)
 
 	if got.err != nil {
 		t.Fatalf("public method rejected: %v", got.err)
@@ -302,10 +300,10 @@ func TestPublicMethodNeedsNoMetadataAndResolvesNobody(t *testing.T) {
 	}
 }
 
-func TestPublicMethodWithMetadataStillSucceeds(t *testing.T) {
+func TestPublicMethodWithHeaderStillSucceeds(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
-	got := call(incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "platform-uid"), publicMethod, testRequirements(), resolver.resolve)
+	got := call(publicMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"), testRequirements(), resolver.resolve)
 
 	if got.err != nil {
 		t.Fatalf("public method rejected: %v", got.err)
@@ -319,11 +317,11 @@ func TestPublicMethodWithMetadataStillSucceeds(t *testing.T) {
 }
 
 // A method nobody declared must not be guarded by accident, and equally must
-// not blow up: gRPC rejects unknown methods itself.
+// not blow up: Connect rejects unknown procedures itself.
 func TestUnknownMethodIsTreatedAsPublic(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
-	got := call(context.Background(), "/ginbot.v1.NoSuchService/NoSuchMethod", testRequirements(), resolver.resolve)
+	got := call("/ginbot.v1.NoSuchService/NoSuchMethod", make(http.Header), testRequirements(), resolver.resolve)
 
 	if got.err != nil {
 		t.Fatalf("unknown method rejected: %v", got.err)
@@ -342,7 +340,7 @@ func TestUnknownMethodIsTreatedAsPublic(t *testing.T) {
 func TestNilRequirementsMakesEverythingPublic(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
-	got := call(context.Background(), adminMethod, nil, resolver.resolve)
+	got := call(adminMethod, make(http.Header), nil, resolver.resolve)
 
 	if got.err != nil {
 		t.Fatalf("call rejected with no requirements declared: %v", got.err)
@@ -359,7 +357,7 @@ func TestSufficientClearanceReachesTheHandler(t *testing.T) {
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_ADMINISTRATOR))
 	resolver := &recordingResolver{user: caller}
 
-	got := call(incomingCtx(t, pb.Platform_PLATFORM_MATRIX_PROTOCOL, "@a:example.org"), adminMethod, testRequirements(), resolver.resolve)
+	got := call(adminMethod, wellFormedHeader(pb.Platform_PLATFORM_MATRIX_PROTOCOL, "@a:example.org"), testRequirements(), resolver.resolve)
 
 	if got.err != nil {
 		t.Fatalf("unexpected error: %v", got.err)
@@ -439,7 +437,7 @@ func TestClearanceBoundaries(t *testing.T) {
 			reqs := Requirements{registeredMethod: tt.required}
 			resolver := &recordingResolver{user: callerAt(tt.caller)}
 
-			got := call(incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "platform-uid"), registeredMethod, reqs, resolver.resolve)
+			got := call(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"), reqs, resolver.resolve)
 
 			if tt.allow {
 				if got.err != nil {
@@ -471,7 +469,7 @@ func TestResolverReturningNoUserAndNoErrorIsRejectedWithoutPanicking(t *testing.
 
 	resolver := &recordingResolver{user: nil, err: nil}
 
-	got := call(incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "platform-uid"), registeredMethod, testRequirements(), resolver.resolve)
+	got := call(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"), testRequirements(), resolver.resolve)
 
 	if got.err == nil {
 		t.Fatal("a resolver that produced no caller was allowed through")
@@ -484,8 +482,8 @@ func TestResolverReturningNoUserAndNoErrorIsRejectedWithoutPanicking(t *testing.
 	// resolver contract violation that the specification does not map, and both
 	// FailedPrecondition (treat as unregistered) and Internal (treat as a bug)
 	// are defensible. What matters is that it is neither a success nor a panic.
-	switch code := status.Code(got.err); code {
-	case codes.FailedPrecondition, codes.Internal:
+	switch code := connect.CodeOf(got.err); code {
+	case connect.CodeFailedPrecondition, connect.CodeInternal:
 	default:
 		t.Errorf("code = %v, want FailedPrecondition or Internal", code)
 	}
@@ -511,7 +509,7 @@ func TestNilResolverFailsClosedOnAGuardedMethod(t *testing.T) {
 		}
 	}()
 
-	guarded := call(incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "platform-uid"), registeredMethod, testRequirements(), nil)
+	guarded := call(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"), testRequirements(), nil)
 
 	// Internal, not PermissionDenied or FailedPrecondition: the caller did
 	// nothing wrong and must not be told to register or to ask for access.
@@ -520,7 +518,7 @@ func TestNilResolverFailsClosedOnAGuardedMethod(t *testing.T) {
 		t.Error("handler ran on a guarded method with no caller resolver configured")
 	}
 
-	public := call(context.Background(), publicMethod, testRequirements(), nil)
+	public := call(publicMethod, make(http.Header), testRequirements(), nil)
 	if public.err != nil {
 		t.Errorf("public method rejected with a nil resolver: %v", public.err)
 	}
@@ -538,7 +536,7 @@ func TestResolverErrorIsRejectedWithoutPanicking(t *testing.T) {
 
 	resolver := &recordingResolver{err: errors.New("dial tcp: connection refused")}
 
-	got := call(incomingCtx(t, pb.Platform_PLATFORM_DISCORD, "platform-uid"), registeredMethod, testRequirements(), resolver.resolve)
+	got := call(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"), testRequirements(), resolver.resolve)
 
 	requireCode(t, got.err, codes.Internal)
 	if got.reached {
@@ -546,7 +544,7 @@ func TestResolverErrorIsRejectedWithoutPanicking(t *testing.T) {
 	}
 
 	// The underlying failure must not leak to the caller.
-	if message := status.Convert(got.err).Message(); strings.Contains(message, "connection refused") {
+	if message := got.err.Error(); strings.Contains(message, "connection refused") {
 		t.Errorf("message = %q, want the internal failure not to be exposed", message)
 	}
 }

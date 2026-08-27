@@ -1,6 +1,6 @@
 //go:build integration
 
-// Integration tests for the trigger surface, driven through the bufconn
+// Integration tests for the trigger surface, driven through the harness
 // harness with the real interceptor chain and a real database.
 //
 //	docker compose -f docker-compose.psql.yml up -d
@@ -26,7 +26,7 @@ import (
 // liveTriggerHarness wires both the caller resolver and the origin resolver to
 // the real database: CreateTrigger's instance-scoping fallback and
 // ListTriggers/GetTrigger's origin-based visibility both need
-// interceptor.NewOriginUnaryInterceptor to have actually bootstrapped the
+// interceptor.NewOriginInterceptor to have actually bootstrapped the
 // instance row for the call's origin.
 func liveTriggerHarness(t *testing.T) (*harness, *pgxpool.Pool) {
 	t.Helper()
@@ -38,10 +38,9 @@ func liveTriggerHarness(t *testing.T) (*harness, *pgxpool.Pool) {
 }
 
 // triggerCtx attaches both caller identity and call origin, in that order:
-// callermeta.NewOutgoingOrigin must run after NewOutgoingContext, which
-// callerCtx already is.
+// originCtx must run after callerCtx.
 func triggerCtx(platformUID string, origin callermeta.Origin) context.Context {
-	return callermeta.NewOutgoingOrigin(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), origin)
+	return originCtx(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), origin)
 }
 
 // triggerInstanceFor builds the *pb.TriggerInstance a request names to match
@@ -390,7 +389,7 @@ func TestGetTriggerStatsReturnsLeaderboardAfterSeedingFires(t *testing.T) {
 }
 
 // bootstrapInstance makes a real call from ctx so its origin instance is
-// created for real by interceptor.NewOriginUnaryInterceptor, rather than being
+// created for real by interceptor.NewOriginInterceptor, rather than being
 // left nonexistent — so a later NotFound is provably about SCOPING and not
 // merely about an instance row that was never created.
 func bootstrapInstance(t *testing.T, h *harness, ctx context.Context) {

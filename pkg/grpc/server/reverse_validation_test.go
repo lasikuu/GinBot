@@ -15,27 +15,35 @@ import (
 // validated a message that could not fail: it was installed, it ran, and no
 // input existed that it would reject. These tests are what make it observable.
 //
-// Everything here goes through newHarness, because the harness is the only place
-// the interceptor chain actually runs — reverse_test.go calls the handler
-// directly over a fakeStream and bypasses it entirely. The two files therefore
-// cover two different lines of defence, and neither substitutes for the other.
+// Everything here goes through reverseHarness, a real HTTP/2 connection with
+// the production interceptor chain in front of it — the only place that chain
+// actually runs. reverse_test.go's registry and fan-out tests exercise
+// ReverseServer's own methods directly and never reach the chain at all; the
+// two files therefore cover two different lines of defence, and neither
+// substitutes for the other.
 
 // registrationVerdictGrace bounds how long a test waits for the stream to be
 // refused before concluding it was accepted.
 //
 // There is no positive admission signal on the wire: a stream the server admits
-// simply blocks in Recv, so "accepted" can only be inferred from the absence of a
-// rejection, and inferring it takes a wait. 250ms against a measured sub-
-// millisecond round trip over an in-process bufconn under -race. Too short would
-// not produce a false PASS on the rejection tests — those block on Recv until the
-// status arrives — only a false pass on the acceptance test, which is why the
-// margin is generous rather than tight.
+// simply blocks in Receive, so "accepted" can only be inferred from the absence
+// of a rejection, and inferring it takes a wait. 250ms against a measured sub-
+// millisecond round trip over a real loopback HTTP/2 connection under -race.
+// Too short would not produce a false PASS on the rejection tests — those
+// block on Receive until the status arrives — only a false pass on the
+// acceptance test, which is why the margin is generous rather than tight.
 const registrationVerdictGrace = 250 * time.Millisecond
 
 // registrationVerdict opens a client action stream, sends one registration and
 // reports how the server answered.
 //
-// The error is read from Recv rather than from Send. A streaming Send is
+// It carries the SAME identity headers as a registered caller — unlike
+// requireCode(err, InvalidArgument) alone can prove, this is what shows
+// validation runs before the stream is otherwise perfectly authorised to
+// open. An unauthenticated caller would be rejected regardless of the
+// message body, which would make these tests pass for the wrong reason.
+//
+// The error is read from Receive rather than from Send. A streaming Send is
 // asynchronous — it hands the message to the transport and returns — so a
 // rejection produced by the interceptor arrives as the stream's terminal status
 // on the receive side, never as the send's return value. Asserting on Send would
@@ -45,15 +53,12 @@ const registrationVerdictGrace = 250 * time.Millisecond
 func registrationVerdict(t *testing.T, h *harness, req *pb.OpenClientActionStreamReq) error {
 	t.Helper()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(callerCtx(pb.Platform_PLATFORM_DISCORD, reverseCallerUID))
 	// Cancelled on the way out so an ACCEPTED stream's handler is released
-	// rather than left parked in Recv for the rest of the binary.
+	// rather than left parked in Receive for the rest of the binary.
 	t.Cleanup(cancel)
 
-	stream, err := h.Reverse.OpenClientActionStream(ctx)
-	if err != nil {
-		t.Fatalf("OpenClientActionStream: %v", err)
-	}
+	stream := h.Reverse.OpenClientActionStream(ctx)
 
 	if err := stream.Send(req); err != nil {
 		// A send that fails outright is not the rejection under test: the
@@ -62,12 +67,12 @@ func registrationVerdict(t *testing.T, h *harness, req *pb.OpenClientActionStrea
 		t.Fatalf("send registration: %v", err)
 	}
 
-	// Buffered so this goroutine cannot be left parked on a send once the grace
-	// period has expired and the test has moved on.
+	// Buffered so this goroutine cannot be left parked on a receive once the
+	// grace period has expired and the test has moved on.
 	ended := make(chan error, 1)
 	go func() {
 		for {
-			if _, err := stream.Recv(); err != nil {
+			if _, err := stream.Receive(); err != nil {
 				ended <- err
 				return
 			}
@@ -95,7 +100,7 @@ func registrationVerdict(t *testing.T, h *harness, req *pb.OpenClientActionStrea
 // InvalidArgument is therefore attributable: the handler returns
 // ResourceExhausted, Internal or a context error, and never this.
 func TestAnUndefinedPlatformNumberIsRejectedByTheInterceptor(t *testing.T) {
-	h := newHarness(t)
+	h := reverseHarness(t)
 
 	// 99 is chosen for being far outside the declared range (0..6) rather than
 	// one past the end, so adding a Platform value cannot quietly make this test
@@ -126,7 +131,7 @@ func TestAnUndefinedPlatformNumberIsRejectedByTheInterceptor(t *testing.T) {
 // simply does not set the field — trivially expressible in Go, and the default in
 // several other languages' builders — sends this.
 func TestAMissingPlatformIsRejectedByTheInterceptor(t *testing.T) {
-	h := newHarness(t)
+	h := reverseHarness(t)
 
 	// Nothing set at all. With explicit presence this is not serialised, so the
 	// server genuinely sees an absent field rather than a zero one.
@@ -170,7 +175,7 @@ func TestAMissingPlatformIsRejectedByTheInterceptor(t *testing.T) {
 // and this the only test that noticed. It was written while that rule was
 // missing and failing on purpose; it is the regression guard now.
 func TestAnUnspecifiedPlatformIsRejectedByTheInterceptor(t *testing.T) {
-	h := newHarness(t)
+	h := reverseHarness(t)
 
 	err := registrationVerdict(t, h, pb.OpenClientActionStreamReq_builder{
 		PlatformEnum: pb.Platform_PLATFORM_UNSPECIFIED.Enum(),
@@ -194,7 +199,7 @@ func TestAValidPlatformStillOpensTheStream(t *testing.T) {
 		pb.Platform_PLATFORM_MATRIX_PROTOCOL,
 	} {
 		t.Run(platform.String(), func(t *testing.T) {
-			h := newHarness(t)
+			h := reverseHarness(t)
 
 			if err := registrationVerdict(t, h, pb.OpenClientActionStreamReq_builder{
 				PlatformEnum: platform.Enum(),

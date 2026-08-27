@@ -169,9 +169,9 @@ func validCertsDir(t *testing.T) string {
 func TestServerTLSConfigRequiresTLS13AndClientCertificates(t *testing.T) {
 	dir := validCertsDir(t)
 
-	conf, err := serverTLSConfig(dir)
+	conf, err := ServerTLSConfig(dir)
 	if err != nil {
-		t.Fatalf("serverTLSConfig: %v", err)
+		t.Fatalf("ServerTLSConfig: %v", err)
 	}
 
 	if len(conf.Certificates) != 1 {
@@ -196,9 +196,9 @@ func TestServerTLSConfigRequiresTLS13AndClientCertificates(t *testing.T) {
 func TestClientTLSConfigRequiresTLS13AndVerifiesTheServer(t *testing.T) {
 	dir := validCertsDir(t)
 
-	conf, err := clientTLSConfig(dir)
+	conf, err := ClientTLSConfig(dir)
 	if err != nil {
-		t.Fatalf("clientTLSConfig: %v", err)
+		t.Fatalf("ClientTLSConfig: %v", err)
 	}
 
 	if len(conf.Certificates) != 1 {
@@ -235,21 +235,31 @@ func TestLoadCredentialsReturnsTheKeyPairAndTheCAPool(t *testing.T) {
 	}
 }
 
-// TestLoadServerAndClientCredentialsReturnTransportCredentials is the only
-// test that touches the two EXPORTED loaders.
+// TestLoadServerTLSConfigReturnsAUsableConfig is the only test that touches
+// the EXPORTED fatal loader. LoadClientCredentials and LoadServerCredentials
+// are gone: stage 3 replaces them with this single fatal-on-failure loader
+// plus the error-returning ServerTLSConfig/ClientTLSConfig pair above, which
+// stage 4 (pkg/grpc/client) is the specified caller of.
 //
-// They are driven with valid fixtures exclusively and never with bad input:
-// every failure path inside them ends at log.Z.Fatal, which calls os.Exit(1)
+// This is driven with a valid fixture exclusively and never with bad input:
+// every failure path inside it ends at log.Z.Fatal, which calls os.Exit(1)
 // and takes the entire test binary down with it — the failure paths are
-// covered through the error-returning seam above instead.
-func TestLoadServerAndClientCredentialsReturnTransportCredentials(t *testing.T) {
+// covered through the error-returning ServerTLSConfig seam instead.
+func TestLoadServerTLSConfigReturnsAUsableConfig(t *testing.T) {
 	dir := validCertsDir(t)
 
-	if got := LoadServerCredentials(dir); got == nil {
-		t.Error("LoadServerCredentials returned nil credentials for a valid certificate directory")
+	got := LoadServerTLSConfig(dir)
+	if got == nil {
+		t.Fatal("LoadServerTLSConfig returned nil for a valid certificate directory")
 	}
-	if got := LoadClientCredentials(dir); got == nil {
-		t.Error("LoadClientCredentials returned nil credentials for a valid certificate directory")
+	if len(got.Certificates) != 1 {
+		t.Errorf("Certificates = %d, want exactly 1", len(got.Certificates))
+	}
+	if got.ClientAuth != tls.RequireAndVerifyClientCert {
+		t.Errorf("ClientAuth = %v, want tls.RequireAndVerifyClientCert", got.ClientAuth)
+	}
+	if got.MinVersion != tls.VersionTLS13 {
+		t.Errorf("MinVersion = %#x, want tls.VersionTLS13 (%#x)", got.MinVersion, tls.VersionTLS13)
 	}
 }
 
@@ -318,12 +328,12 @@ func TestLoadCredentialsReturnsAnErrorRatherThanExiting(t *testing.T) {
 			// The two config builders wrap the same helper, so both must
 			// surface the failure rather than returning a half-built
 			// *tls.Config a caller might use anyway.
-			conf, err := serverTLSConfig(dir)
+			conf, err := ServerTLSConfig(dir)
 			if err == nil {
-				t.Error("serverTLSConfig returned no error for broken material")
+				t.Error("ServerTLSConfig returned no error for broken material")
 			}
 			if conf != nil {
-				t.Errorf("serverTLSConfig returned a non-nil config (%+v) alongside an error", conf)
+				t.Errorf("ServerTLSConfig returned a non-nil config (%+v) alongside an error", conf)
 			}
 		})
 	}
@@ -354,11 +364,11 @@ func TestBothConfigBuildersFailOnTheirOwnMissingKeyPair(t *testing.T) {
 		dir := validCertsDir(t)
 		removeFile(t, dir, serverCertFile)
 
-		if _, err := serverTLSConfig(dir); err == nil {
-			t.Error("serverTLSConfig succeeded without server-cert.pem")
+		if _, err := ServerTLSConfig(dir); err == nil {
+			t.Error("ServerTLSConfig succeeded without server-cert.pem")
 		}
-		if _, err := clientTLSConfig(dir); err != nil {
-			t.Errorf("clientTLSConfig failed over a MISSING SERVER certificate: %v", err)
+		if _, err := ClientTLSConfig(dir); err != nil {
+			t.Errorf("ClientTLSConfig failed over a MISSING SERVER certificate: %v", err)
 		}
 	})
 
@@ -366,11 +376,11 @@ func TestBothConfigBuildersFailOnTheirOwnMissingKeyPair(t *testing.T) {
 		dir := validCertsDir(t)
 		removeFile(t, dir, clientKeyFile)
 
-		if _, err := clientTLSConfig(dir); err == nil {
-			t.Error("clientTLSConfig succeeded without client-key.pem")
+		if _, err := ClientTLSConfig(dir); err == nil {
+			t.Error("ClientTLSConfig succeeded without client-key.pem")
 		}
-		if _, err := serverTLSConfig(dir); err != nil {
-			t.Errorf("serverTLSConfig failed over a MISSING CLIENT key: %v", err)
+		if _, err := ServerTLSConfig(dir); err != nil {
+			t.Errorf("ServerTLSConfig failed over a MISSING CLIENT key: %v", err)
 		}
 	})
 }
@@ -386,14 +396,14 @@ func TestBothConfigBuildersFailOnTheirOwnMissingKeyPair(t *testing.T) {
 func TestAnEmptyCertsDirFallsBackToDefaultCertsDir(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	_, err := serverTLSConfig("")
+	_, err := ServerTLSConfig("")
 	if err == nil {
-		t.Fatal("serverTLSConfig(\"\") succeeded in a directory with no cert/ subdirectory")
+		t.Fatal("ServerTLSConfig(\"\") succeeded in a directory with no cert/ subdirectory")
 	}
 
 	want := filepath.Join(DefaultCertsDir, caFile)
 	if !strings.Contains(err.Error(), want) {
-		t.Errorf("serverTLSConfig(\"\") err = %v, want it to name %q (the DefaultCertsDir fallback)", err, want)
+		t.Errorf("ServerTLSConfig(\"\") err = %v, want it to name %q (the DefaultCertsDir fallback)", err, want)
 	}
 }
 

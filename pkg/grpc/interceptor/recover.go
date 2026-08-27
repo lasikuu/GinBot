@@ -2,71 +2,74 @@ package interceptor
 
 import (
 	"context"
+	"errors"
 	"runtime/debug"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
-// RecoverUnaryInterceptor turns a handler panic into codes.Internal.
+// RecoverInterceptor turns a handler panic into connect.CodeInternal.
 //
-// grpc-go does not recover on behalf of a handler, so a nil dereference in one
-// of them takes the whole server process down with it — every in-flight request
-// and every open reverse stream included. Chain it outermost so it also covers
-// the other interceptors.
+// Connect does not recover on behalf of a handler, so a nil dereference in one
+// of them takes the whole server process down with it — every in-flight
+// request and every open reverse stream included. Chain it outermost so it
+// also covers the other interceptors.
 //
 // The recovered value can carry internal detail, so it goes to the log and the
 // caller gets a bare Internal.
-func RecoverUnaryInterceptor(
-	ctx context.Context,
-	req any,
-	info *grpc.UnaryServerInfo,
-	handler grpc.UnaryHandler,
-) (resp any, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			logRecovered(info.FullMethod, recovered)
-			resp = nil
-			err = status.Error(codes.Internal, "internal error")
-		}
-	}()
+type RecoverInterceptor struct{}
 
-	return handler(ctx, req)
+// WrapUnary implements connect.Interceptor.
+func (RecoverInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (resp connect.AnyResponse, err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logRecovered(req.Spec().Procedure, recovered)
+				resp = nil
+				err = connect.NewError(connect.CodeInternal, errors.New("internal error"))
+			}
+		}()
+
+		return next(ctx, req)
+	}
 }
 
-// RecoverStreamInterceptor is the streaming equivalent. A panic raised while a
+// WrapStreamingClient is a no-op. Recovery is a server-side concern here:
+// wrapping the client half would apply it to outgoing calls this process
+// makes, and this server makes none through its own interceptor chain.
+func (RecoverInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+// WrapStreamingHandler is the streaming equivalent. A panic raised while a
 // reverse action stream is being served would otherwise be just as fatal.
 //
-// It covers the goroutine running handler(srv, stream), and only that one. The
-// qualification is not pedantry: OpenClientActionStream runs its stream.Recv()
-// on a goroutine of its own, which no frame here unwinds, so that goroutine
-// carries its own recover. Anything else a stream handler spawns has to do the
-// same.
-func RecoverStreamInterceptor(
-	srv any,
-	stream grpc.ServerStream,
-	info *grpc.StreamServerInfo,
-	handler grpc.StreamHandler,
-) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			logRecovered(info.FullMethod, recovered)
-			err = status.Error(codes.Internal, "internal error")
-		}
-	}()
+// It covers the goroutine running next(ctx, conn), and only that one. The
+// qualification is not pedantry: OpenClientActionStream runs its own
+// conn.Receive() on a goroutine of its own, which no frame here unwinds, so
+// that goroutine carries its own recover. Anything else a stream handler
+// spawns has to do the same.
+func (RecoverInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) (err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logRecovered(conn.Spec().Procedure, recovered)
+				err = connect.NewError(connect.CodeInternal, errors.New("internal error"))
+			}
+		}()
 
-	return handler(srv, stream)
+		return next(ctx, conn)
+	}
 }
 
 // logRecovered records the panic. The stack is included because the recovered
 // value on its own — often a bare "runtime error: invalid memory address" —
 // does not say which handler produced it.
-func logRecovered(method string, recovered any) {
-	log.Z.Error("recovered from a panic in a gRPC handler",
-		zap.String("method", method),
+func logRecovered(procedure string, recovered any) {
+	log.Z.Error("recovered from a panic in a Connect handler",
+		zap.String("procedure", procedure),
 		zap.Any("panic", recovered),
 		zap.ByteString("stack", debug.Stack()),
 	)

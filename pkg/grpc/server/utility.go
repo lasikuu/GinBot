@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 )
 
 // pongMessage is what Ping answers with. The value is not the measurement: the
@@ -13,30 +15,46 @@ import (
 // latency.
 const pongMessage = "pong"
 
+// HealthProbe reports whether the server can currently serve traffic. It is
+// injected rather than hardcoded to Postgres so UtilityServer stays testable
+// without a database, and so cmd/ginbot-server can share exactly one probe
+// between UtilityService/HealthCheck, the gRPC health protocol and the plain
+// GET /healthz the compose healthcheck polls — three surfaces asking the same
+// question must not be able to disagree about the answer.
+type HealthProbe func(ctx context.Context) error
+
 type UtilityServer struct {
-	pb.UnimplementedUtilityServiceServer
+	ginbotv1connect.UnimplementedUtilityServiceHandler
+
+	probe HealthProbe
 }
 
-func NewUtilityServer() *UtilityServer {
-	s := &UtilityServer{}
-	return s
+// NewUtilityServer returns a UtilityServer backed by probe. A nil probe is
+// accepted and always reports healthy, which keeps existing callers that have
+// no probe to offer (tests, most of all) working without one.
+func NewUtilityServer(probe HealthProbe) *UtilityServer {
+	return &UtilityServer{probe: probe}
 }
 
-func (s *UtilityServer) HealthCheck(context.Context, *pb.HealthCheckReq) (*pb.HealthCheckResp, error) {
-	// TODO: Implement health check for Discord, DB, and other services and return accordingly.
-	status := pb.HealthStatus_HEALTH_STATUS_OK
+func (s *UtilityServer) HealthCheck(ctx context.Context, _ *connect.Request[pb.HealthCheckReq]) (*connect.Response[pb.HealthCheckResp], error) {
+	healthStatus := pb.HealthStatus_HEALTH_STATUS_OK
+	if s.probe != nil {
+		if err := s.probe(ctx); err != nil {
+			healthStatus = pb.HealthStatus_HEALTH_STATUS_ERROR
+		}
+	}
 
-	return pb.HealthCheckResp_builder{
-		Status: &status,
-	}.Build(), nil
+	return connect.NewResponse(pb.HealthCheckResp_builder{
+		Status: &healthStatus,
+	}.Build()), nil
 }
 
 // Ping answers as cheaply as it can, so that what the client measures is the
 // round trip rather than any work done here.
-func (s *UtilityServer) Ping(context.Context, *pb.PingReq) (*pb.PingResp, error) {
+func (s *UtilityServer) Ping(context.Context, *connect.Request[pb.PingReq]) (*connect.Response[pb.PingResp], error) {
 	message := pongMessage
 
-	return pb.PingResp_builder{
+	return connect.NewResponse(pb.PingResp_builder{
 		Message: &message,
-	}.Build(), nil
+	}.Build()), nil
 }

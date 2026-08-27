@@ -78,3 +78,12 @@ func EnsureLatestVersion() {
 func CloseDB() {
 	db().Close()
 }
+
+// Ping reports whether the connection pool can currently reach Postgres. It
+// backs cmd/ginbot-server's health surfaces (UtilityService/HealthCheck, the
+// gRPC health protocol and GET /healthz) — added here rather than composed at
+// the call site because dbpool is package-private by design, so answering
+// "is the database reachable" is only ever askable from inside this package.
+func Ping(ctx context.Context) error {
+	return db().Ping(ctx)
+}

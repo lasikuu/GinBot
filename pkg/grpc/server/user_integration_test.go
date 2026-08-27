@@ -1,6 +1,6 @@
 //go:build integration
 
-// Integration tests for the user surface, driven through the bufconn harness so
+// Integration tests for the user surface, driven through the harness so
 // the real interceptor chain and a real database are both in the picture.
 //
 //	docker compose -f docker-compose.psql.yml up -d

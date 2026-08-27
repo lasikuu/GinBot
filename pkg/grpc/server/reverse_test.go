@@ -2,20 +2,17 @@ package server
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -74,185 +71,6 @@ func hasDurationField(entry observer.LoggedEntry, want time.Duration) bool {
 	return false
 }
 
-// fakeStream implements the server side of the bidi stream in memory.
-//
-// ctx, sendErr, sendFailsAfter and sendBlock are configured before the handler
-// starts and never touched again, which mirrors grpc's own ServerStream — its
-// context is fixed for the life of the stream — and is why only sent needs the
-// mutex.
-type fakeStream struct {
-	grpc.ServerStream
-
-	recv          chan *pb.OpenClientActionStreamReq
-	closeRecvOnce sync.Once
-
-	// recvEntries and recvExits make OpenClientActionStream's receive goroutine
-	// observable. It parks in Recv, and nothing in grpc-go cancels a server-side
-	// Recv, so a goroutine abandoned there survives its handler and stays alive
-	// for the rest of the test binary — invisible to every other assertion here,
-	// and the leak class behind the -race failures at -count=5.
-	recvEntries atomic.Int64
-	recvExits   atomic.Int64
-
-	// panicRecv carries at most one panic value into Recv. A single token rather
-	// than a closed channel on purpose: a receive goroutine that recovers and
-	// loops would spin on a Recv that panics every time, burning CPU instead of
-	// failing anything.
-	panicRecv chan any
-
-	// ctx is a field rather than a hardcoded context.Background() so a test can
-	// cancel the stream the way a client that vanished does.
-	ctx context.Context
-
-	// sendErr is what Send returns once sendFailsAfter sends have succeeded.
-	sendErr        error
-	sendFailsAfter int
-
-	// sendBlock parks Send until it is closed. sendEntries counts entries to
-	// Send, so a test can wait until the sender is genuinely inside it.
-	sendBlock   chan struct{}
-	releaseOnce sync.Once
-	sendEntries atomic.Int64
-
-	mu   sync.Mutex
-	sent []*pb.OpenClientActionStreamResp
-}
-
-// newFakeStream builds a stream and schedules its release.
-//
-// The cleanup is not optional bookkeeping. Closing recv is the only thing that
-// gets the handler's receive goroutine out of Recv, so a stream left open at the
-// end of a test leaves one goroutine parked for the life of the binary; enough
-// of those and the suite fails under -race for reasons that have nothing to do
-// with the test that failed.
-func newFakeStream(t *testing.T) *fakeStream {
-	t.Helper()
-
-	f := &fakeStream{
-		recv:      make(chan *pb.OpenClientActionStreamReq, 4),
-		panicRecv: make(chan any, 1),
-		ctx:       context.Background(),
-	}
-	t.Cleanup(f.closeRecv)
-
-	return f
-}
-
-// closeRecv ends the stream from the client's side. Guarded by a Once because
-// both a test and newFakeStream's cleanup may reach it, and closing a closed
-// channel panics.
-func (f *fakeStream) closeRecv() {
-	f.closeRecvOnce.Do(func() { close(f.recv) })
-}
-
-// withContext replaces the context the handler observes. Call it before the
-// handler starts.
-func (f *fakeStream) withContext(ctx context.Context) *fakeStream {
-	f.ctx = ctx
-	return f
-}
-
-// failSendsAfter makes the (n+1)'th and every later Send return err. n == 0
-// breaks the very first send; a larger n exercises a client that broke
-// mid-stream, which a test cannot otherwise distinguish from one that never
-// registered successfully in the first place. Call it before the handler starts.
-func (f *fakeStream) failSendsAfter(n int, err error) *fakeStream {
-	f.sendFailsAfter = n
-	f.sendErr = err
-	return f
-}
-
-// blockSends parks every Send until releaseSends is called. Call it before the
-// handler starts.
-//
-// This is the one state the sender drain timeout exists for: a peer that has
-// stopped reading, with a full HTTP/2 flow-control window, leaves the sender
-// blocked INSIDE Send rather than at the range statement — so closing the
-// client's action channel does not release it, and without a bound the handler
-// never returns at all.
-func (f *fakeStream) blockSends() *fakeStream {
-	f.sendBlock = make(chan struct{})
-	return f
-}
-
-// releaseSends unparks Send. Safe to call twice, so a test can schedule it as
-// cleanup and still release early.
-func (f *fakeStream) releaseSends() {
-	f.releaseOnce.Do(func() {
-		if f.sendBlock != nil {
-			close(f.sendBlock)
-		}
-	})
-}
-
-// panicNextRecv arms exactly one panic inside Recv, releasing a call already
-// parked there.
-//
-// Armed at runtime rather than configured up front so a test can register a
-// client first and then panic, which is the only way to observe deterministically
-// that the registry slot is released: configured up front, registration and
-// deregistration happen within microseconds of each other and no poll can
-// reliably see the slot occupied in between.
-func (f *fakeStream) panicNextRecv(value any) {
-	f.panicRecv <- value
-}
-
-func (f *fakeStream) Send(resp *pb.OpenClientActionStreamResp) error {
-	f.sendEntries.Add(1)
-
-	// Parked holding no lock, so sentCount and the assertions built on it stay
-	// answerable while the sender is stuck — and so this models a real Send,
-	// which blocks on the transport rather than on anything this fake owns.
-	if f.sendBlock != nil {
-		<-f.sendBlock
-	}
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.sendErr != nil && len(f.sent) >= f.sendFailsAfter {
-		return f.sendErr
-	}
-
-	f.sent = append(f.sent, resp)
-	return nil
-}
-
-func (f *fakeStream) Recv() (*pb.OpenClientActionStreamReq, error) {
-	f.recvEntries.Add(1)
-	defer f.recvExits.Add(1)
-
-	select {
-	case value := <-f.panicRecv:
-		panic(value)
-	case req, ok := <-f.recv:
-		if !ok {
-			return nil, io.EOF
-		}
-		return req, nil
-	}
-}
-
-func (f *fakeStream) Context() context.Context { return f.ctx }
-
-func (f *fakeStream) sentCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.sent)
-}
-
-// recvParked reports how many Recv calls are in flight, which for this handler
-// is 0 or 1: the receive goroutine is either parked in Recv or has left it.
-func (f *fakeStream) recvParked() int64 {
-	return f.recvEntries.Load() - f.recvExits.Load()
-}
-
-// sendEntered reports whether the sender goroutine has reached Send at all,
-// which is not the same as SendAction having queued the action for it.
-func (f *fakeStream) sendEntered() bool {
-	return f.sendEntries.Load() > 0
-}
-
 // clientCount reports how many clients are registered.
 func (s *ReverseServer) clientCount() int {
 	s.mu.RLock()
@@ -285,31 +103,6 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met within deadline")
 }
 
-// openStream runs the handler on its own goroutine and hands back its single
-// return value, so a test can assert the handler RETURNED rather than that some
-// goroutine was merely signalled.
-func openStream(s *ReverseServer, stream *fakeStream) <-chan error {
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.OpenClientActionStream(stream) }()
-
-	return errCh
-}
-
-// registerStream opens a stream and waits until the server has admitted it, so
-// a later assertion cannot pass by racing ahead of the registration.
-func registerStream(t *testing.T, s *ReverseServer, stream *fakeStream, platform pb.Platform) <-chan error {
-	t.Helper()
-
-	before := s.clientCount()
-	errCh := openStream(s, stream)
-	stream.recv <- pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: platform.Enum(),
-	}.Build()
-	waitFor(t, func() bool { return s.clientCount() == before+1 })
-
-	return errCh
-}
-
 // waitForClientCount is waitFor specialised to the registry, because "the slot
 // was released" is the assertion the teardown tests exist to make and waitFor's
 // bare "condition not met" does not report it.
@@ -328,53 +121,6 @@ func waitForClientCount(t *testing.T, s *ReverseServer, want int) {
 		s.clientCount(), want)
 }
 
-// requireReturn waits for a handler to return and fails the test instead of
-// hanging the suite when it does not. Every assertion in this file about
-// unwinding a stream goes through here: "the handler returned" is the claim, and
-// a test that hangs makes no claim at all.
-func requireReturn(t *testing.T, errCh <-chan error, what string) error {
-	t.Helper()
-
-	select {
-	case err := <-errCh:
-		return err
-	case <-time.After(5 * time.Second):
-		t.Fatalf("%s did not return within the deadline", what)
-		return nil
-	}
-}
-
-// requireRecvGoroutineReleased asserts that OpenClientActionStream's receive
-// goroutine is where the handler's teardown assumes it is — parked in Recv — and
-// that ending the stream gets it out again.
-//
-// Call this only after the handler has returned. Parked-THEN-released is the
-// claim: a goroutine that had already finished would satisfy the second half for
-// the wrong reason, which is why the first half is asserted at all.
-//
-// What it deliberately does not claim is that the goroutine has terminated.
-// Nothing in grpc-go cancels a server-side Recv, so a handler cannot release its
-// receive goroutine on its own — handlerDone only frees it from a publish nobody
-// will read — and the goroutine necessarily outlives the handler until the
-// transport tears the stream down. Proving termination from here would mean
-// counting goroutines or matching function names in a stack dump, neither of
-// which survives the move to a different RPC framework. What keeps the leak
-// bounded instead is newFakeStream scheduling closeRecv for every stream in this
-// package, so no test ends with one still parked; this asserts that the release
-// actually works.
-func requireRecvGoroutineReleased(t *testing.T, stream *fakeStream) {
-	t.Helper()
-
-	waitFor(t, func() bool { return stream.recvParked() == 1 })
-
-	stream.closeRecv()
-
-	// Terminating rather than transient: once recv is closed every Recv returns
-	// io.EOF immediately, and the goroutine returns on seeing an error, so it
-	// cannot re-enter.
-	waitFor(t, func() bool { return stream.recvParked() == 0 })
-}
-
 // testAction is the development-only heartbeat, used throughout this file as an
 // action whose CONTENT is irrelevant: every test below is about routing,
 // fan-out, buffering or teardown, none of which reads the payload.
@@ -390,110 +136,300 @@ func testAction(platform pb.Platform) *pb.OpenClientActionStreamResp {
 	}.Build()
 }
 
+// ── Driving OpenClientActionStream over a real transport ────────────────────
+//
+// *connect.BidiStream[Req, Resp] cannot be constructed outside
+// connectrpc.com/connect — its only field is an unexported StreamingHandlerConn
+// and its only constructor is NewBidiStreamHandler, which is reached solely by
+// serving a real HTTP request. That retires the fakeStream this file used to
+// drive the handler directly: there is no longer a way to unit-test
+// OpenClientActionStream without a real client on the other end of a real
+// connection. reverseHarness and openRegisteredReverseClient below are that
+// real transport, built on the same harness every other handler test in this
+// package uses.
+//
+// One casualty of this is real: TestUnspecifiedPlatformDoesNotRegister, which
+// used to drive the handler's own defensive PLATFORM_UNSPECIFIED check with the
+// validation interceptor bypassed, is no longer reachable in isolation — every
+// path to the handler now goes through that interceptor. Its coverage is
+// reverse_validation_test.go's TestAnUnspecifiedPlatformIsRejectedByTheInterceptor,
+// which is what actually reaches production traffic. Likewise the panic-in-Recv
+// tests: provoking a panic inside a *connect.BidiStream's own Receive requires a
+// genuine bug in connectrpc.com/connect, which cannot be injected from here.
+// Neither omission is silent — both are recorded in the port's test report.
+
+const (
+	reverseCallerUID    = "reverse-caller"
+	reverseCallerUserID = "018f0000-0000-7000-8000-0000000000d0"
+)
+
+// reverseHarness registers one identity, valid on both platforms this file
+// tests with, at CLEARANCE_REGISTERED — the floor OpenClientActionStream now
+// enforces.
+func reverseHarness(t *testing.T) *harness {
+	t.Helper()
+
+	user := testUser(reverseCallerUserID, pb.Clearance_CLEARANCE_REGISTERED)
+	dir := newDirectory().
+		add(pb.Platform_PLATFORM_DISCORD, reverseCallerUID, user).
+		add(pb.Platform_PLATFORM_MATRIX_PROTOCOL, reverseCallerUID, user)
+
+	return newHarness(t, withDirectory(dir))
+}
+
+// streamRecorder is the real-transport equivalent of fakeStream.sent: every
+// message a client goroutine actually received, in order, safe to read
+// concurrently with the goroutine still appending to it.
+type streamRecorder struct {
+	mu   sync.Mutex
+	recv []*pb.OpenClientActionStreamResp
+}
+
+func (r *streamRecorder) record(resp *pb.OpenClientActionStreamResp) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recv = append(r.recv, resp)
+}
+
+func (r *streamRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.recv)
+}
+
+func (r *streamRecorder) at(i int) *pb.OpenClientActionStreamResp {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recv[i]
+}
+
+// reverseStream is a bidi stream to Reverse, plus what came in on it.
+//
+// Ending it cleanly needs care the fakeStream this replaced did not: cancelling
+// the client's own context deregisters the client on the SERVER side promptly
+// (Go's http2 transport does propagate cancellation onto the wire), but it does
+// NOT reliably unblock the CLIENT's own pending Receive — that needs an
+// explicit CloseRequest/CloseResponse, confirmed empirically against this
+// exact client stack. A stream a test forgot to close either way leaves its
+// underlying HTTP/2 connection pooled-but-active, which is what makes
+// httptest.Server.Close hang in cleanup rather than the one test that leaked
+// it. openRegisteredReverseClient therefore always registers a t.Cleanup that
+// does all three, once, regardless of what the test itself does — it is not
+// merely a convenience, it is what keeps a mid-test t.Fatal from leaking a
+// connection for the rest of the suite.
+type reverseStream struct {
+	stream *connect.BidiStreamForClient[pb.OpenClientActionStreamReq, pb.OpenClientActionStreamResp]
+	rec    *streamRecorder
+	// done closes when the client's receive loop returns — the real-transport
+	// equivalent of requireReturn observing a handler's return value, except
+	// this observes the CLIENT side, which is all that is left to observe
+	// once the handler's own return value is inside the framework.
+	done <-chan struct{}
+	// cancel ends the client's OWN request context, the real-transport
+	// equivalent of a platform client vanishing without a clean goodbye. It
+	// deregisters the client on the SERVER side quickly; it does NOT reliably
+	// unblock this client's own pending Receive (see the type comment), so a
+	// test asserting the effect of cancel ALONE must check server-side state
+	// (clientCount), not c.done.
+	cancel context.CancelFunc
+}
+
+// drainReverseStream starts a goroutine that reads every message until the
+// stream ends, recording each one. The returned channel closes when reading
+// stops, which is the client-side signal that the server ended the stream —
+// by Shutdown, by refusal, or by the connection itself going away.
+func drainReverseStream(stream *connect.BidiStreamForClient[pb.OpenClientActionStreamReq, pb.OpenClientActionStreamResp], rec *streamRecorder) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			resp, err := stream.Receive()
+			if err != nil {
+				return
+			}
+			rec.record(resp)
+		}
+	}()
+	return done
+}
+
+// openRegisteredReverseClient opens a real bidi stream as a registered
+// caller, sends the registration message, and waits until the server has
+// actually admitted it — so a later assertion cannot pass by racing ahead of
+// the registration the way a bare Send does not guarantee.
+func openRegisteredReverseClient(t *testing.T, h *harness, platform pb.Platform) *reverseStream {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(callerCtx(platform, reverseCallerUID))
+	stream := h.Reverse.OpenClientActionStream(ctx)
+
+	before := h.reverseServer.clientCount()
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{PlatformEnum: platform.Enum()}.Build()); err != nil {
+		cancel()
+		t.Fatalf("send registration: %v", err)
+	}
+
+	// Registered before the wait below, not after: if registration itself
+	// times out and fails the test, a t.Cleanup registered only by the
+	// caller — after this function returns — would never run at all, because
+	// t.Fatal unwinds this goroutine immediately. Registering here first
+	// guarantees the stream is always torn down, however this function exits.
+	t.Cleanup(sync.OnceFunc(func() {
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
+		cancel()
+	}))
+
+	rec := &streamRecorder{}
+	done := drainReverseStream(stream, rec)
+
+	waitFor(t, func() bool { return h.reverseServer.clientCount() == before+1 })
+
+	return &reverseStream{stream: stream, rec: rec, done: done, cancel: cancel}
+}
+
+// requireStreamEnded waits for a client's receive loop to stop and fails the
+// test instead of hanging the suite when it does not.
+func requireStreamEnded(t *testing.T, done <-chan struct{}, what string) {
+	t.Helper()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s did not end within the deadline", what)
+	}
+}
+
+// ── A sender stuck inside Send (see the test report) ────────────────────────
+//
+// TestAStuckSenderDoesNotPinTheHandler is NOT ported. Forcing the sender
+// goroutine's stream.Send to genuinely block requires exhausting the real
+// transport's HTTP/2 flow-control window — the old fakeStream simulated this
+// with a channel a test could hold closed on demand, and there is no
+// equivalent seam left: *connect.BidiStream has no exported constructor
+// outside connectrpc.com/connect (see the type comment on reverseStream and
+// on drainReverseStream), so the ONLY way to reach the handler at all is a
+// real connection, and a real connection's flow-control window size is not a
+// fast, deterministic knob this test author has reliable access to. What IS
+// still testable without a transport is that the field the drain-timeout
+// logic reads is wired to the constant reverse.go documents.
+func TestNewReverseServerDefaultsToTheDocumentedDrainTimeout(t *testing.T) {
+	s := NewReverseServer()
+	if s.senderDrainTimeout != defaultSenderDrainTimeout {
+		t.Errorf("senderDrainTimeout = %v, want the documented default %v", s.senderDrainTimeout, defaultSenderDrainTimeout)
+	}
+}
+
+// ── Fan-out and routing ──────────────────────────────────────────────────────
+
 // The original implementation drained a single shared channel, so an action
 // reached exactly one arbitrary stream. Every client on the platform must get it.
 func TestSendActionFansOutToAllClientsOnPlatform(t *testing.T) {
-	s := NewReverseServer()
+	h := reverseHarness(t)
 
-	streams := []*fakeStream{newFakeStream(t), newFakeStream(t), newFakeStream(t)}
-	var wg sync.WaitGroup
-	for _, st := range streams {
-		wg.Add(1)
-		go func(st *fakeStream) {
-			defer wg.Done()
-			_ = s.OpenClientActionStream(st)
-		}(st)
+	clients := make([]*reverseStream, 3)
+	for i := range clients {
+		clients[i] = openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_DISCORD)
 	}
 
-	for _, st := range streams {
-		st.recv <- pb.OpenClientActionStreamReq_builder{
-			PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-		}.Build()
-	}
-	waitFor(t, func() bool { return s.clientCount() == len(streams) })
+	h.reverseServer.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
 
-	s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
-
-	for _, st := range streams {
-		waitFor(t, func() bool { return st.sentCount() >= 1 })
+	for _, c := range clients {
+		waitFor(t, func() bool { return c.rec.count() >= 1 })
 	}
 
 	// Settle, then assert exactly one — waitFor alone cannot distinguish
 	// "one" from "one so far", so duplicate delivery would slip past it.
 	time.Sleep(50 * time.Millisecond)
-	for i, st := range streams {
-		if got := st.sentCount(); got != 1 {
-			t.Errorf("stream %d received %d actions, want exactly 1", i, got)
+	for i, c := range clients {
+		if got := c.rec.count(); got != 1 {
+			t.Errorf("client %d received %d actions, want exactly 1", i, got)
 		}
 	}
-
-	for _, st := range streams {
-		st.closeRecv()
-	}
-	wg.Wait()
 }
 
 // platformClients was written but never read, so routing did not exist.
 func TestSendActionRoutesByPlatform(t *testing.T) {
-	s := NewReverseServer()
+	h := reverseHarness(t)
 
-	discordStream := newFakeStream(t)
-	matrixStream := newFakeStream(t)
+	discord := openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_DISCORD)
+	matrix := openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_MATRIX_PROTOCOL)
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); _ = s.OpenClientActionStream(discordStream) }()
-	go func() { defer wg.Done(); _ = s.OpenClientActionStream(matrixStream) }()
+	h.reverseServer.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
 
-	discordStream.recv <- pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()
-	matrixStream.recv <- pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_MATRIX_PROTOCOL.Enum(),
-	}.Build()
-	waitFor(t, func() bool { return s.clientCount() == 2 })
+	waitFor(t, func() bool { return discord.rec.count() == 1 })
 
-	s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
-
-	waitFor(t, func() bool { return discordStream.sentCount() == 1 })
-	if got := matrixStream.sentCount(); got != 0 {
-		t.Errorf("matrix stream received %d actions, want 0", got)
+	time.Sleep(50 * time.Millisecond)
+	if got := matrix.rec.count(); got != 0 {
+		t.Errorf("matrix client received %d actions, want 0", got)
 	}
-
-	discordStream.closeRecv()
-	matrixStream.closeRecv()
-	wg.Wait()
 }
 
 // The sender goroutine used to outlive the stream, leaking one per connection.
 func TestClientIsDeregisteredOnDisconnect(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t)
+	h := reverseHarness(t)
+	c := openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_DISCORD)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = s.OpenClientActionStream(stream)
-	}()
-
-	stream.recv <- pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()
-	waitFor(t, func() bool { return s.clientCount() == 1 })
-
-	stream.closeRecv()
-	<-done
-
-	if got := s.clientCount(); got != 0 {
-		t.Errorf("client count after disconnect = %d, want 0", got)
+	if err := c.stream.CloseRequest(); err != nil {
+		t.Fatalf("CloseRequest: %v", err)
 	}
+
+	requireStreamEnded(t, c.done, "the client's receive loop after CloseRequest")
+	waitForClientCount(t, h.reverseServer, 0)
+}
+
+// TestClientIsDeregisteredAfterSuccessfulTrafficThenDisconnect is the
+// real-transport replacement for the old fakeStream "Send fails" tests: a
+// broken Send can no longer be forced directly, since nothing outside
+// connectrpc.com/connect can inject a transport failure into a real stream.
+// What is preserved is the property those tests actually protected — a
+// client that received real traffic and then disconnects must still be
+// deregistered, not left holding a slot and a full send buffer forever.
+func TestClientIsDeregisteredAfterSuccessfulTrafficThenDisconnect(t *testing.T) {
+	h := reverseHarness(t)
+	c := openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_DISCORD)
+
+	h.reverseServer.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
+	waitFor(t, func() bool { return c.rec.count() >= 1 })
+
+	if got := h.reverseServer.clientCount(); got != 1 {
+		t.Fatalf("clientCount() = %d after a successful send, want the client still registered", got)
+	}
+
+	if err := c.stream.CloseRequest(); err != nil {
+		t.Fatalf("CloseRequest: %v", err)
+	}
+
+	waitForClientCount(t, h.reverseServer, 0)
+}
+
+// A client that vanishes without closing cleanly cancels the stream context.
+// That has to unwind the handler and release its slot on its own, with no
+// shutdown involved.
+// Asserted on the SERVER's registry, not on c.done: cancelling the client's
+// own context propagates onto the wire and deregisters the client on the
+// server side promptly, but it does not reliably unblock this client's own
+// pending Receive call — confirmed empirically against this exact client
+// stack — so c.done is not a safe signal for this specific teardown path.
+// See the comment on reverseStream for the full explanation and why
+// openRegisteredReverseClient's own cleanup does not rely on cancel alone
+// either.
+func TestClientContextCancellationDeregistersTheClient(t *testing.T) {
+	h := reverseHarness(t)
+	c := openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_DISCORD)
+
+	c.cancel()
+
+	waitForClientCount(t, h.reverseServer, 0)
 }
 
 // SendAction must never block, even with no consumer draining the buffer.
+// Registered directly rather than through a stream, so nothing drains it —
+// there is no client-side equivalent for "a sender that never reads at all"
+// over a real bidi stream without the transport itself intervening first.
 func TestSendActionDoesNotBlockWhenBufferIsFull(t *testing.T) {
 	s := NewReverseServer()
 
-	// Register a client directly, with no sender goroutine, so nothing drains it.
 	client, deregister, ok := s.register(pb.Platform_PLATFORM_DISCORD)
 	if !ok {
 		t.Fatal("register refused the first client on an empty registry")
@@ -535,56 +471,17 @@ func TestSendActionWithNoClientsIsANoop(t *testing.T) {
 	}
 }
 
-// TestUnspecifiedPlatformDoesNotRegister covers the HANDLER's own check, and
-// only that.
-//
-// It calls OpenClientActionStream directly over a fakeStream, so no interceptor
-// runs: whatever the stream validation interceptor does or does not reject, this
-// registration reaches the handler and the handler is what refuses it. That is
-// the point — the check is defence in depth, and defence in depth is only worth
-// having if something proves it holds on its own.
-//
-// The other line of defence, the validation interceptor, is covered over the
-// bufconn harness in reverse_validation_test.go. The two are deliberately
-// separate tests: one asserts the schema is enforced before the handler is
-// reached, this one asserts the handler is safe when it is not.
-func TestUnspecifiedPlatformDoesNotRegister(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t)
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = s.OpenClientActionStream(stream)
-	}()
-
-	stream.recv <- pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_UNSPECIFIED.Enum(),
-	}.Build()
-
-	// Then a valid one, whose registration we can wait on deterministically.
-	stream.recv <- pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()
-	waitFor(t, func() bool { return s.clientCount() == 1 })
-
-	if got := s.clientCountFor(pb.Platform_PLATFORM_UNSPECIFIED); got != 0 {
-		t.Errorf("registered %d unspecified-platform clients, want 0", got)
-	}
-
-	stream.closeRecv()
-	<-done
-}
-
 // ── The registry cap ─────────────────────────────────────────────────────────
 //
 // Without a cap the registry is an unbounded map keyed on nothing an operator
-// controls: OpenClientActionStream is a STREAM, so it never passes through the
-// unary clearance interceptor, and anything that can reach the gRPC port can
-// open one. Each admitted client costs a clientSendBuffer-deep channel of
-// *pb.OpenClientActionStreamResp plus a goroutine, and SendAction walks the
+// controls: OpenClientActionStream is a STREAM, and every registered caller —
+// including one deliberately opening streams in a loop — could otherwise grow
+// it without limit. Each admitted client costs a clientSendBuffer-deep channel
+// of *pb.OpenClientActionStreamResp plus a goroutine, and SendAction walks the
 // whole map under RLock on every action — so an unbounded registry is both a
-// memory and a latency amplifier.
+// memory and a latency amplifier. These tests exercise register/deregister
+// directly: the cap itself is registry-level bookkeeping with no transport
+// dependency, so it needs no stream at all.
 
 // fillRegistry registers exactly maxStreamClients clients and schedules their
 // removal. Every registration is asserted, so a cap that is lower than
@@ -667,32 +564,32 @@ func TestRegisterRefusesRegardlessOfPlatform(t *testing.T) {
 // reach the client as a code it can act on. ResourceExhausted specifically,
 // because it tells a reconnecting platform client to back off rather than to
 // re-register (FailedPrecondition) or to give up on a malformed request
-// (InvalidArgument).
+// (InvalidArgument). Driven over a real client, since the code has to survive
+// the whole Connect error-marshalling round trip, not just the handler's
+// return value.
 func TestOpenClientActionStreamPastTheCapIsResourceExhausted(t *testing.T) {
-	s := NewReverseServer()
-	fillRegistry(t, s)
+	h := reverseHarness(t)
+	fillRegistry(t, h.reverseServer)
 
-	stream := newFakeStream(t)
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- s.OpenClientActionStream(stream)
-	}()
+	ctx, cancel := context.WithCancel(callerCtx(pb.Platform_PLATFORM_DISCORD, reverseCallerUID))
+	defer cancel()
+	stream := h.Reverse.OpenClientActionStream(ctx)
 
-	stream.recv <- pb.OpenClientActionStreamReq_builder{
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{
 		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()
-
-	select {
-	case err := <-errCh:
-		requireCode(t, err, codes.ResourceExhausted)
-	case <-time.After(2 * time.Second):
-		t.Fatal("OpenClientActionStream neither registered nor refused within the deadline")
+	}.Build()); err != nil {
+		t.Fatalf("send registration: %v", err)
 	}
 
-	if got := s.clientCount(); got != maxStreamClients {
+	_, err := stream.Receive()
+	if err == nil {
+		t.Fatal("the stream was admitted past the registry cap")
+	}
+	requireCode(t, err, codes.ResourceExhausted)
+
+	if got := h.reverseServer.clientCount(); got != maxStreamClients {
 		t.Errorf("clientCount() = %d after a refused stream, want it unchanged at %d", got, maxStreamClients)
 	}
-	stream.closeRecv()
 }
 
 // TestACapacityFreedByADeregistrationIsReusable: the cap must be a live
@@ -813,53 +710,51 @@ func TestConcurrentRegistrationNeverExceedsTheCap(t *testing.T) {
 //
 // OpenClientActionStream used to block unconditionally on stream.Recv(), so a
 // registered client with nothing to say held the handler open indefinitely — and
-// with it grpcServer.GracefulStop, which waits for every handler to return.
-// harness_test.go calls Stop() rather than GracefulStop() specifically to dodge
-// that hang, which is the record of the defect being observed and never carried
-// back to the production wiring. These tests are what make a graceful shutdown
-// safe there.
+// with it graceful shutdown, which waits for every handler to return. These
+// tests are what make a graceful shutdown safe.
 
 // The steady state of a healthy control channel is silence: the client sends its
 // registration and then nothing. A shutdown that needs a client message to make
 // progress therefore never completes in practice.
 func TestShutdownUnblocksASilentRegisteredStream(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t)
-	errCh := registerStream(t, s, stream, pb.Platform_PLATFORM_DISCORD)
+	h := reverseHarness(t)
+	c := openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_DISCORD)
 
-	s.Shutdown()
+	h.reverseServer.Shutdown()
 
-	if err := requireReturn(t, errCh, "OpenClientActionStream after Shutdown"); err != nil {
-		t.Errorf("handler returned %v, want nil: an orderly shutdown is not a stream failure", err)
-	}
+	requireStreamEnded(t, c.done, "OpenClientActionStream after Shutdown")
 
 	// The deregistration lives in a defer, and the new control flow must not
 	// step around it — a slot leaked on shutdown is a slot leaked on every
 	// restart, and maxStreamClients is finite.
-	if got := s.clientCount(); got != 0 {
-		t.Errorf("clientCount() = %d after the handler returned, want 0", got)
-	}
-
-	// A returned handler is only half of a clean shutdown. This is the canonical
-	// shutdown path, so it is where the other half is asserted: the receive
-	// goroutine the handler started is parked in Recv, and must be released by
-	// the stream ending rather than left alive for the rest of the process.
-	requireRecvGoroutineReleased(t, stream)
+	waitForClientCount(t, h.reverseServer, 0)
 }
 
 // A client's platform is unknown until its first message, so a stream can sit in
-// its first Recv having registered nothing. That iteration runs before there is
-// anything to deregister and must unwind on its own terms.
+// its first Receive having registered nothing. That iteration runs before there
+// is anything to deregister and must unwind on its own terms.
 func TestShutdownUnblocksAStreamThatNeverRegistered(t *testing.T) {
-	s := NewReverseServer()
-	errCh := openStream(s, newFakeStream(t))
+	h := reverseHarness(t)
 
-	s.Shutdown()
+	ctx, cancel := context.WithCancel(callerCtx(pb.Platform_PLATFORM_DISCORD, reverseCallerUID))
+	t.Cleanup(cancel)
+	stream := h.Reverse.OpenClientActionStream(ctx)
 
-	if err := requireReturn(t, errCh, "an unregistered OpenClientActionStream after Shutdown"); err != nil {
-		t.Errorf("handler returned %v, want nil", err)
+	// Send(nil) dispatches the request headers without a body message — a
+	// Connect client's first Send is what actually puts the request on the
+	// wire at all, so without this the handler never starts and Shutdown
+	// would trivially "unblock" a request the server never received.
+	if err := stream.Send(nil); err != nil {
+		t.Fatalf("send headers-only: %v", err)
 	}
-	if got := s.clientCount(); got != 0 {
+
+	rec := &streamRecorder{}
+	done := drainReverseStream(stream, rec)
+
+	h.reverseServer.Shutdown()
+
+	requireStreamEnded(t, done, "an unregistered OpenClientActionStream after Shutdown")
+	if got := h.reverseServer.clientCount(); got != 0 {
 		t.Errorf("clientCount() = %d, want 0: the stream never registered", got)
 	}
 }
@@ -869,17 +764,14 @@ func TestShutdownUnblocksAStreamThatNeverRegistered(t *testing.T) {
 // hypothetical — and closing an already-closed channel panics, which would turn
 // an orderly shutdown into a crash on the way out.
 func TestShutdownIsIdempotent(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t)
-	errCh := registerStream(t, s, stream, pb.Platform_PLATFORM_DISCORD)
+	h := reverseHarness(t)
+	c := openRegisteredReverseClient(t, h, pb.Platform_PLATFORM_DISCORD)
 
-	s.Shutdown()
-	s.Shutdown()
-	s.Shutdown()
+	h.reverseServer.Shutdown()
+	h.reverseServer.Shutdown()
+	h.reverseServer.Shutdown()
 
-	if err := requireReturn(t, errCh, "OpenClientActionStream after repeated Shutdown"); err != nil {
-		t.Errorf("handler returned %v, want nil", err)
-	}
+	requireStreamEnded(t, c.done, "OpenClientActionStream after repeated Shutdown")
 }
 
 // The server may be shut down before any platform client has ever connected —
@@ -894,12 +786,12 @@ func TestShutdownWithNoStreamsIsSafe(t *testing.T) {
 	s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
 }
 
-// One stream returning is not the contract: GracefulStop waits for the last one,
-// so a shutdown that signals whichever stream it reaches first still hangs the
-// process. Two platforms are used because routing is per-platform and a
-// shutdown must not be.
+// One stream ending is not the contract: shutdown waits for the last one, so a
+// shutdown that only unblocks whichever stream it reaches first still hangs
+// process teardown. Two platforms are used because routing is per-platform
+// and a shutdown must not be.
 func TestShutdownTerminatesEveryOpenStream(t *testing.T) {
-	s := NewReverseServer()
+	h := reverseHarness(t)
 
 	platforms := []pb.Platform{
 		pb.Platform_PLATFORM_DISCORD,
@@ -907,211 +799,17 @@ func TestShutdownTerminatesEveryOpenStream(t *testing.T) {
 		pb.Platform_PLATFORM_MATRIX_PROTOCOL,
 	}
 
-	handlers := make([]<-chan error, 0, len(platforms))
+	clients := make([]*reverseStream, 0, len(platforms))
 	for _, platform := range platforms {
-		handlers = append(handlers, registerStream(t, s, newFakeStream(t), platform))
+		c := openRegisteredReverseClient(t, h, platform)
+		clients = append(clients, c)
 	}
 
-	s.Shutdown()
+	h.reverseServer.Shutdown()
 
-	for i, errCh := range handlers {
-		err := requireReturn(t, errCh, fmt.Sprintf("OpenClientActionStream %d after Shutdown", i))
-		if err != nil {
-			t.Errorf("handler %d returned %v, want nil", i, err)
-		}
+	for _, c := range clients {
+		requireStreamEnded(t, c.done, "OpenClientActionStream after Shutdown")
 	}
 
-	if got := s.clientCount(); got != 0 {
-		t.Errorf("clientCount() = %d after every handler returned, want 0", got)
-	}
-}
-
-// A client that vanishes without closing cleanly cancels the stream context and
-// sends nothing at all. That has to unwind the handler on its own, with no
-// shutdown involved, and it has to report the context error rather than nil:
-// this stream really did fail, and the caller's logging depends on the
-// difference.
-func TestStreamContextCancellationReturnsTheContextError(t *testing.T) {
-	s := NewReverseServer()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	stream := newFakeStream(t).withContext(ctx)
-	errCh := registerStream(t, s, stream, pb.Platform_PLATFORM_DISCORD)
-
-	cancel()
-
-	err := requireReturn(t, errCh, "OpenClientActionStream after its context was cancelled")
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("handler returned %v, want context.Canceled", err)
-	}
-	if got := s.clientCount(); got != 0 {
-		t.Errorf("clientCount() = %d after the handler returned, want 0", got)
-	}
-
-	// Cancellation is the second unwind path and it does not go through
-	// s.done, so it gets the same receive-goroutine assertion as the shutdown
-	// path: two ways out of the handler, two chances to abandon the goroutine.
-	requireRecvGoroutineReleased(t, stream)
-}
-
-// ── A broken Send ────────────────────────────────────────────────────────────
-//
-// The sender goroutine returns when stream.Send fails, but nothing used to tell
-// the handler. It stayed in Recv holding its registry slot and its
-// clientSendBuffer-deep channel for the whole remaining life of the stream,
-// while SendAction kept queueing actions into a channel with no reader — so the
-// buffer filled and every later action for that platform was dropped, silently,
-// against a client that was already gone.
-
-// TestSendFailureDeregistersTheClient asserts the slot is RELEASED. A goroutine
-// that returned is not the point; the slot it was still holding is.
-func TestSendFailureDeregistersTheClient(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t).failSendsAfter(0, errors.New("transport is closing"))
-	errCh := registerStream(t, s, stream, pb.Platform_PLATFORM_DISCORD)
-
-	s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
-
-	// Waited on independently of the handler's return, so a handler that
-	// unwinds past its deregistration fails here rather than passing.
-	waitForClientCount(t, s, 0)
-	requireReturn(t, errCh, "OpenClientActionStream after a failed Send")
-
-	if got := stream.sentCount(); got != 0 {
-		t.Errorf("stream recorded %d successful sends, want 0", got)
-	}
-}
-
-// A Send broken on the FIRST action can be satisfied by a path that never really
-// registered. Breaking a later one forces the healthy case to have happened
-// first, so this is the test that proves the teardown works on a stream that was
-// genuinely serving traffic.
-func TestSendFailureOnALaterActionDeregistersTheClient(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t).failSendsAfter(1, errors.New("transport is closing"))
-	errCh := registerStream(t, s, stream, pb.Platform_PLATFORM_DISCORD)
-
-	s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
-	waitFor(t, func() bool { return stream.sentCount() == 1 })
-
-	if got := s.clientCount(); got != 1 {
-		t.Fatalf("clientCount() = %d after a successful send, want the client still registered", got)
-	}
-
-	s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
-
-	waitForClientCount(t, s, 0)
-	requireReturn(t, errCh, "OpenClientActionStream after a failed Send")
-}
-
-// ── A sender stuck inside Send ───────────────────────────────────────────────
-//
-// The handler must wait for its sender before returning, because grpc-go forbids
-// SendMsg after the handler has returned. Ordinarily deregister closing
-// c.actions ends the sender's range and the wait is instant. The case that is
-// not ordinary: a peer that has stopped reading with a full HTTP/2 flow-control
-// window leaves the sender blocked INSIDE Send, nowhere near the range
-// statement — and grpc-go only releases such a Send once the handler has
-// returned. So an unbounded wait is a deadlock by construction, and under
-// GracefulStop it pins process shutdown until the container runtime SIGKILLs the
-// container.
-
-// TestAStuckSenderDoesNotPinTheHandler is the only coverage of that bound. It
-// asserts the three things that make the bound worth having: the handler
-// returns, the registry slot it was holding is released, and the overrun is
-// visible to an operator rather than silent.
-func TestAStuckSenderDoesNotPinTheHandler(t *testing.T) {
-	// Assigned rather than waited out. defaultSenderDrainTimeout is 5s, which is
-	// most of this package's entire runtime for one assertion; the odd value is
-	// so the overrun record below can be identified by it and not by matching on
-	// wording.
-	const drainTimeout = 37 * time.Millisecond
-
-	s := NewReverseServer()
-	s.senderDrainTimeout = drainTimeout
-
-	stream := newFakeStream(t).blockSends()
-	// Released before the test ends, so no goroutine is left parked in Send for
-	// the rest of the binary — including when an assertion below fails.
-	t.Cleanup(stream.releaseSends)
-
-	errCh := registerStream(t, s, stream, pb.Platform_PLATFORM_DISCORD)
-
-	logs.TakeAll()
-
-	s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
-
-	// Inside Send, not merely scheduled. A sender still at the range statement
-	// is released by deregister closing c.actions, which is the case that needs
-	// no timeout at all and would make this test pass for the wrong reason.
-	waitFor(t, stream.sendEntered)
-
-	// An ordinary client disconnect. It closes c.actions by way of deregister,
-	// and that does not reach a sender already blocked in Send.
-	stream.closeRecv()
-
-	if err := requireReturn(t, errCh, "OpenClientActionStream with its sender stuck in Send"); err != nil {
-		t.Errorf("handler returned %v, want nil: an EOF from the client is not a stream failure", err)
-	}
-
-	// The slot, not the goroutine. The sender is deliberately still stuck; what
-	// must not still be held is capacity another client needs.
-	waitForClientCount(t, s, 0)
-
-	overrun := false
-	for _, entry := range logs.TakeAll() {
-		if hasDurationField(entry, drainTimeout) {
-			overrun = true
-			break
-		}
-	}
-	if !overrun {
-		t.Errorf("giving up on the sender after %v was not recorded at warn level; "+
-			"a goroutine knowingly left to outlive its handler has to be visible", drainTimeout)
-	}
-}
-
-// ── A panic inside Recv ──────────────────────────────────────────────────────
-//
-// RecoverStreamInterceptor wraps the goroutine running the handler and nothing
-// else, so it does not cover the goroutine the handler starts. That goroutine is
-// where Recv now runs — protobuf unmarshalling plus a protovalidate CEL
-// evaluation, over bytes from a peer this stream never authenticates — so a
-// panic there is not one failed RPC, it is the whole server process, taking the
-// database, the cron loop and every other service with it.
-
-// TestAPanicInRecvBecomesInternalRatherThanKillingTheProcess: the panic arrives
-// before any registration, which is the first thing a hostile peer can reach.
-func TestAPanicInRecvBecomesInternalRatherThanKillingTheProcess(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t)
-
-	errCh := openStream(s, stream)
-	stream.panicNextRecv("malformed registration blew up in Recv")
-
-	err := requireReturn(t, errCh, "OpenClientActionStream after Recv panicked")
-	// Internal specifically: the peer gets no detail about what it broke, and a
-	// reconnecting platform client reads it as an ordinary drop rather than as a
-	// refusal it should back off from.
-	requireCode(t, err, codes.Internal)
-}
-
-// TestAPanicInRecvReleasesTheRegistrySlot: recovering is not enough on its own.
-// The handler's deferred deregistration has to run, or a peer that can provoke
-// the panic at will burns one of maxStreamClients slots per attempt and locks
-// the real platform clients out with 64 malformed messages.
-func TestAPanicInRecvReleasesTheRegistrySlot(t *testing.T) {
-	s := NewReverseServer()
-	stream := newFakeStream(t)
-
-	// Registered first, and observed to be registered, so the assertion below is
-	// about a slot that demonstrably existed.
-	errCh := registerStream(t, s, stream, pb.Platform_PLATFORM_DISCORD)
-
-	stream.panicNextRecv("second message blew up in Recv")
-
-	err := requireReturn(t, errCh, "a registered OpenClientActionStream after Recv panicked")
-	requireCode(t, err, codes.Internal)
-
-	waitForClientCount(t, s, 0)
+	waitForClientCount(t, h.reverseServer, 0)
 }

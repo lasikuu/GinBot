@@ -1,6 +1,6 @@
 //go:build integration
 
-// Integration tests for the repost/WANHA surface, driven through the bufconn
+// Integration tests for the repost/WANHA surface, driven through the harness
 // harness with the real interceptor chain and a real database.
 //
 //	docker compose -f docker-compose.psql.yml up -d
@@ -41,7 +41,7 @@ import (
 // liveRepostHarness wires both the caller resolver and the origin resolver to
 // the real database, exactly as liveTriggerHarness does: CheckRepost resolves
 // its calling instance from origin metadata, which needs
-// interceptor.NewOriginUnaryInterceptor to have actually bootstrapped the
+// interceptor.NewOriginInterceptor to have actually bootstrapped the
 // instance row.
 func liveRepostHarness(t *testing.T, opts ...harnessOption) (*harness, *pgxpool.Pool) {
 	t.Helper()
@@ -58,7 +58,7 @@ func liveRepostHarness(t *testing.T, opts ...harnessOption) (*harness, *pgxpool.
 // repostCtx's fixed one, because the behaviour under test is often defined by
 // the relationship BETWEEN two calls' origins or authors.
 func liveRepostCtx(platformUID string, origin callermeta.Origin) context.Context {
-	return callermeta.NewOutgoingOrigin(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), origin)
+	return originCtx(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), origin)
 }
 
 // countRepostEntries counts repost_entry rows scoped to one instance, so a

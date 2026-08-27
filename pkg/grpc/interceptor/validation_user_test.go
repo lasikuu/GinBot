@@ -4,10 +4,21 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
+
+// This file talks to the invoke helper in validate_test.go, not to
+// protovalidate directly, unlike its siblings (validation_rules_test.go,
+// validation_trigger_test.go, validation_instance_test.go,
+// validation_enum_test.go). Porting invoke from the deleted hand-rolled
+// gRPC-style interceptor to connectrpc.com/validate changed the error type
+// invoke returns from a gRPC status error to a *connect.Error, which
+// google.golang.org/grpc/status.Code does not recognise — it has no
+// GRPCStatus() method, so status.Code(err) silently reports codes.Unknown for
+// every rejection below instead of the real code. The two call sites are
+// therefore updated to connect.CodeOf, matching validate_test.go; nothing
+// else in this file changes.
 
 // These exercise the buf.validate constraints on SetLocaleReq and
 // SetTimezoneReq through the validation interceptor. They reuse the invoke
@@ -63,8 +74,8 @@ func TestSetLocaleRejectsEverythingElse(t *testing.T) {
 			if err == nil {
 				t.Fatalf("locale %q was accepted", tt.locale)
 			}
-			if got := status.Code(err); got != codes.InvalidArgument {
-				t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
 			}
 			if reached {
 				t.Error("handler was reached despite an invalid locale")
@@ -117,8 +128,8 @@ func TestSetTimezoneValidationOnlyRejectsEmpty(t *testing.T) {
 				if err == nil {
 					t.Fatalf("timezone %q was accepted by validation", tt.timezone)
 				}
-				if got := status.Code(err); got != codes.InvalidArgument {
-					t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
+				if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+					t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
 				}
 				return
 			}

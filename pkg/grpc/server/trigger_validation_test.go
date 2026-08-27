@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// The trigger schema rules, driven end to end through the bufconn harness and
+// The trigger schema rules, driven end to end through the harness and
 // the production interceptor chain.
 //
 // pkg/grpc/interceptor/validation_trigger_test.go covers the full table of

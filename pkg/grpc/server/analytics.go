@@ -2,17 +2,19 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type AnalyticsServer struct {
-	pb.UnimplementedAnalyticsServiceServer
+	ginbotv1connect.UnimplementedAnalyticsServiceHandler
 }
 
 func NewAnalyticsServer() *AnalyticsServer {
@@ -33,14 +35,16 @@ func NewAnalyticsServer() *AnalyticsServer {
 // straight to db.CreateActionRecord in-process rather than through this RPC, so
 // they can still attribute a system-initiated action to the right user without
 // this restriction getting in the way.
-func (s *AnalyticsServer) CreateActionRecord(ctx context.Context, req *pb.CreateActionRecordReq) (*pb.CreateActionRecordResp, error) {
+func (s *AnalyticsServer) CreateActionRecord(ctx context.Context, connReq *connect.Request[pb.CreateActionRecordReq]) (*connect.Response[pb.CreateActionRecordResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasActionType() {
-		return nil, status.Errorf(codes.InvalidArgument, "action_type is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("action_type is required"))
 	}
 
 	var actionTime *int64
@@ -51,12 +55,12 @@ func (s *AnalyticsServer) CreateActionRecord(ctx context.Context, req *pb.Create
 
 	if err := db.CreateActionRecord(ctx, req.GetActionType(), caller.ID, actionTime); err != nil {
 		log.Z.Error("failed to create action record", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to create action record")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create action record"))
 	}
 
-	return pb.CreateActionRecordResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.CreateActionRecordResp_builder{}.Build()), nil
 }
 
-func (s *AnalyticsServer) ListActionRecords(_ context.Context, _ *pb.ListActionRecordsReq) (*pb.ListActionRecordsResp, error) {
-	return nil, status.Error(codes.Unimplemented, "ListActionRecords is not implemented yet")
+func (s *AnalyticsServer) ListActionRecords(_ context.Context, _ *connect.Request[pb.ListActionRecordsReq]) (*connect.Response[pb.ListActionRecordsResp], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ListActionRecords is not implemented yet"))
 }

@@ -4,20 +4,21 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"slices"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
+	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"github.com/lasikuu/GinBot/pkg/storage"
 	"github.com/lasikuu/GinBot/pkg/trigger"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // regexClearanceFloor is the minimum clearance required to create or update a
@@ -48,7 +49,7 @@ var mimeExtensions = map[string]string{
 
 // TriggerServer implements TriggerService.
 type TriggerServer struct {
-	pb.UnimplementedTriggerServiceServer
+	ginbotv1connect.UnimplementedTriggerServiceHandler
 
 	cache   *trigger.Cache
 	limiter *trigger.ForcedLimiter
@@ -134,33 +135,33 @@ func (s *TriggerServer) loadCandidates(ctx context.Context, instanceID int64) ([
 
 // resolveInstance maps a *pb.TriggerInstance onto its instance row's id.
 //
-// codes.NotFound rather than a get-or-create: interceptor.NewOriginUnaryInterceptor
+// codes.NotFound rather than a get-or-create: interceptor.NewOriginInterceptor
 // already bootstraps the instance for a call's own origin on every
 // authenticated RPC, so by the time a handler runs, any instance the caller
 // could legitimately name already exists.
 func resolveInstance(ctx context.Context, instance *pb.TriggerInstance) (int64, error) {
 	if instance == nil || !instance.HasPlatformEnum() || !instance.HasInstanceMeta() {
-		return 0, status.Errorf(codes.InvalidArgument, "instance is required")
+		return 0, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("instance is required"))
 	}
 
 	row, err := db.GetInstanceByMeta(ctx, instance.GetPlatformEnum(), instance.GetInstanceMeta())
 	if errors.Is(err, db.ErrNotFound) {
-		return 0, status.Errorf(codes.NotFound, "instance not found")
+		return 0, connect.NewError(connect.CodeNotFound, fmt.Errorf("instance not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to resolve trigger instance", zap.Error(err))
-		return 0, status.Errorf(codes.Internal, "failed to resolve instance")
+		return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve instance"))
 	}
 
 	return row.ID, nil
 }
 
 // callerOriginInstanceID resolves the instance id for the call's own origin —
-// the same instance interceptor.NewOriginUnaryInterceptor already bootstrapped
+// the same instance interceptor.NewOriginInterceptor already bootstrapped
 // for this request. ok is false for a call with no origin (e.g. a direct
 // message) or whose origin cannot be resolved.
 func callerOriginInstanceID(ctx context.Context) (int64, bool) {
-	origin, ok := callermeta.OriginFromIncomingContext(ctx)
+	origin, ok := interceptor.OriginFromContext(ctx)
 	if !ok {
 		return 0, false
 	}
@@ -193,7 +194,7 @@ func callerOriginInstanceID(ctx context.Context) (int64, bool) {
 func callerScopedInstance(ctx context.Context, requested *pb.TriggerInstance) (int64, error) {
 	originID, ok := callerOriginInstanceID(ctx)
 	if !ok {
-		return 0, status.Errorf(codes.FailedPrecondition, "this action must be used in a server or room")
+		return 0, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("this action must be used in a server or room"))
 	}
 
 	if requested == nil {
@@ -205,7 +206,7 @@ func callerScopedInstance(ctx context.Context, requested *pb.TriggerInstance) (i
 		return 0, err
 	}
 	if requestedID != originID {
-		return 0, status.Errorf(codes.NotFound, "instance not found")
+		return 0, connect.NewError(connect.CodeNotFound, fmt.Errorf("instance not found"))
 	}
 
 	return originID, nil
@@ -225,11 +226,11 @@ func displayFilename(file *model.File) string {
 func invalidPatternError(err error) error {
 	switch {
 	case errors.Is(err, trigger.ErrEmptyPhrase):
-		return status.Errorf(codes.InvalidArgument, "phrase must not be blank")
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("phrase must not be blank"))
 	case errors.Is(err, trigger.ErrPatternTooLong):
-		return status.Errorf(codes.InvalidArgument, "phrase exceeds the maximum length of %d characters", trigger.MaxPatternLength)
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("phrase exceeds the maximum length of %d characters", trigger.MaxPatternLength))
 	default:
-		return status.Errorf(codes.InvalidArgument, "phrase is not a valid pattern for the selected mode")
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("phrase is not a valid pattern for the selected mode"))
 	}
 }
 
@@ -239,14 +240,14 @@ func invalidPatternError(err error) error {
 func mapFetchError(err error) error {
 	switch {
 	case errors.Is(err, storage.ErrHostNotAllowed):
-		return status.Errorf(codes.InvalidArgument, "file_url host is not allowed")
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("file_url host is not allowed"))
 	case errors.Is(err, storage.ErrTooLarge):
-		return status.Errorf(codes.InvalidArgument, "file_url content exceeds the maximum size of %d bytes", storage.MaxFileBytes)
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("file_url content exceeds the maximum size of %d bytes", storage.MaxFileBytes))
 	case errors.Is(err, storage.ErrUnsupportedType):
-		return status.Errorf(codes.InvalidArgument, "file_url content type is not supported")
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("file_url content type is not supported"))
 	default:
 		log.Z.Error("failed to fetch trigger file", zap.Error(err))
-		return status.Errorf(codes.Internal, "failed to fetch file")
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to fetch file"))
 	}
 }
 
@@ -267,7 +268,7 @@ func (s *TriggerServer) fetchAndStoreFile(ctx context.Context, fileURL string) (
 	fileID, inserted, err := db.GetOrCreateFileByHash(ctx, fetched.Hash, key, fetched.MIMEType, int32(len(fetched.Content)))
 	if err != nil {
 		log.Z.Error("failed to resolve trigger file row", zap.Error(err))
-		return "", status.Errorf(codes.Internal, "failed to store file")
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store file"))
 	}
 
 	if !inserted {
@@ -277,11 +278,11 @@ func (s *TriggerServer) fetchAndStoreFile(ctx context.Context, fileURL string) (
 
 	if s.blobs == nil {
 		log.Z.Error("trigger file storage is not configured")
-		return "", status.Errorf(codes.Internal, "failed to store file")
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store file"))
 	}
 	if _, err := s.blobs.Put(ctx, key, bytes.NewReader(fetched.Content)); err != nil {
 		log.Z.Error("failed to write trigger file blob", zap.Error(err))
-		return "", status.Errorf(codes.Internal, "failed to store file")
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store file"))
 	}
 
 	return fileID, nil
@@ -325,11 +326,11 @@ func (s *TriggerServer) buildTriggerFile(ctx context.Context, fileID string) (*p
 		// trigger.file_id is a foreign key: a missing row here means the
 		// referenced file was hard-deleted out of band, not a caller mistake.
 		log.Z.Error("trigger references a missing file row", zap.String("file_id", fileID))
-		return nil, status.Errorf(codes.Internal, "failed to load trigger file")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load trigger file"))
 	}
 	if err != nil {
 		log.Z.Error("failed to load trigger file", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to load trigger file")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load trigger file"))
 	}
 
 	return fileRow.ToProto(displayFilename(fileRow)), nil
@@ -346,7 +347,7 @@ func (s *TriggerServer) buildTryTriggerResp(ctx context.Context, triggerID strin
 	}
 	if err != nil {
 		log.Z.Error("failed to load selected trigger", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to load trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load trigger"))
 	}
 
 	id := row.ID
@@ -375,17 +376,19 @@ func (s *TriggerServer) buildTryTriggerResp(ctx context.Context, triggerID strin
 // and, on a fire, records the outcome. It never queries the database when
 // nothing matches: candidates come from the cache, and only a match's own row
 // is fetched afterwards.
-func (s *TriggerServer) TryTrigger(ctx context.Context, req *pb.TryTriggerReq) (*pb.TryTriggerResp, error) {
+func (s *TriggerServer) TryTrigger(ctx context.Context, connReq *connect.Request[pb.TryTriggerReq]) (*connect.Response[pb.TryTriggerResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasInstance() || !req.GetInstance().HasPlatformEnum() || !req.GetInstance().HasInstanceMeta() {
-		return nil, status.Errorf(codes.InvalidArgument, "instance is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("instance is required"))
 	}
 	if req.GetPhrase() == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "phrase is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("phrase is required"))
 	}
 
 	instanceID, err := callerScopedInstance(ctx, req.GetInstance())
@@ -396,13 +399,13 @@ func (s *TriggerServer) TryTrigger(ctx context.Context, req *pb.TryTriggerReq) (
 	candidates, err := s.cache.Candidates(ctx, instanceID)
 	if err != nil {
 		log.Z.Error("failed to load trigger candidates", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to evaluate triggers")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to evaluate triggers"))
 	}
 
 	selected := trigger.Select(req.GetPhrase(), candidates, s.roll)
 	if selected == nil {
 		// A non-match is not an error.
-		return pb.TryTriggerResp_builder{}.Build(), nil
+		return connect.NewResponse(pb.TryTriggerResp_builder{}.Build()), nil
 	}
 
 	actionType := pb.ActionType_ACTION_TYPE_TRIGGER_OCCURRED
@@ -410,11 +413,11 @@ func (s *TriggerServer) TryTrigger(ctx context.Context, req *pb.TryTriggerReq) (
 		if !s.limiter.Allow(caller.ID) {
 			// Rate limited is not an error either; the client simply says
 			// nothing.
-			return pb.TryTriggerResp_builder{}.Build(), nil
+			return connect.NewResponse(pb.TryTriggerResp_builder{}.Build()), nil
 		}
 		actionType = pb.ActionType_ACTION_TYPE_TRIGGER_CALLED
 	} else if !trigger.Fires(*selected, s.roll) {
-		return pb.TryTriggerResp_builder{}.Build(), nil
+		return connect.NewResponse(pb.TryTriggerResp_builder{}.Build()), nil
 	}
 
 	resp, err := s.buildTryTriggerResp(ctx, selected.ID)
@@ -428,24 +431,26 @@ func (s *TriggerServer) TryTrigger(ctx context.Context, req *pb.TryTriggerReq) (
 		log.Z.Error("failed to record trigger fire", zap.Error(err))
 	}
 
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
 // ExecTrigger fires a specific trigger unconditionally, provided it is scoped
 // to the given instance. No chance roll: an explicit execution always fires.
 // Not rate limited: it is an explicit command, and any cooldown belongs at the
 // command layer.
-func (s *TriggerServer) ExecTrigger(ctx context.Context, req *pb.ExecTriggerReq) (*pb.TryTriggerResp, error) {
+func (s *TriggerServer) ExecTrigger(ctx context.Context, connReq *connect.Request[pb.ExecTriggerReq]) (*connect.Response[pb.TryTriggerResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 	if !req.HasInstance() || !req.GetInstance().HasPlatformEnum() || !req.GetInstance().HasInstanceMeta() {
-		return nil, status.Errorf(codes.InvalidArgument, "instance is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("instance is required"))
 	}
 
 	instanceID, err := callerScopedInstance(ctx, req.GetInstance())
@@ -455,23 +460,23 @@ func (s *TriggerServer) ExecTrigger(ctx context.Context, req *pb.ExecTriggerReq)
 
 	row, err := db.GetTrigger(ctx, req.GetId())
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "trigger not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to load trigger for exec", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to load trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load trigger"))
 	}
 
 	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, row.ID)
 	if err != nil {
 		log.Z.Error("failed to load trigger scope", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to load trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load trigger"))
 	}
 	if !slices.Contains(scopedIDs, instanceID) {
 		// NotFound rather than PermissionDenied: a caller must not be able to
 		// fire another guild's trigger into theirs, and must not learn that
 		// the id exists elsewhere.
-		return nil, status.Errorf(codes.NotFound, "trigger not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 
 	resp, err := s.buildTryTriggerResp(ctx, row.ID)
@@ -483,36 +488,38 @@ func (s *TriggerServer) ExecTrigger(ctx context.Context, req *pb.ExecTriggerReq)
 		log.Z.Error("failed to record trigger fire", zap.Error(err))
 	}
 
-	return resp, nil
+	return connect.NewResponse(resp), nil
 }
 
 // GetTrigger returns a trigger with its file and instances. A trigger is
 // readable by its creator, and by any caller on an instance it is scoped to
 // — a trigger that can fire in your guild is not a secret from you. Anyone
 // else gets NotFound, so the response does not confirm the id exists.
-func (s *TriggerServer) GetTrigger(ctx context.Context, req *pb.GetTriggerReq) (*pb.GetTriggerResp, error) {
+func (s *TriggerServer) GetTrigger(ctx context.Context, connReq *connect.Request[pb.GetTriggerReq]) (*connect.Response[pb.GetTriggerResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
 	row, err := db.GetTrigger(ctx, req.GetId())
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "trigger not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to get trigger", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get trigger"))
 	}
 
 	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, row.ID)
 	if err != nil {
 		log.Z.Error("failed to load trigger scope", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get trigger"))
 	}
 
 	visible := row.UserID != nil && *row.UserID == caller.ID
@@ -522,7 +529,7 @@ func (s *TriggerServer) GetTrigger(ctx context.Context, req *pb.GetTriggerReq) (
 		}
 	}
 	if !visible {
-		return nil, status.Errorf(codes.NotFound, "trigger not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 
 	var file *pb.TriggerFile
@@ -536,12 +543,12 @@ func (s *TriggerServer) GetTrigger(ctx context.Context, req *pb.GetTriggerReq) (
 	instances, err := db.GetTriggerInstances(ctx, row.ID)
 	if err != nil {
 		log.Z.Error("failed to load trigger instances", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get trigger"))
 	}
 
-	return pb.GetTriggerResp_builder{
+	return connect.NewResponse(pb.GetTriggerResp_builder{
 		Trigger: row.ToProto(file, instances),
-	}.Build(), nil
+	}.Build()), nil
 }
 
 // ListTriggers is scoped to the caller's own call origin instance, and narrows
@@ -555,7 +562,9 @@ func (s *TriggerServer) GetTrigger(ctx context.Context, req *pb.GetTriggerReq) (
 // unset instance and an unset user id together would make db.ListTriggers skip
 // both predicates and return every trigger in the database, across every guild.
 // The else branch below is what prevents that, and it does not depend on `mine`.
-func (s *TriggerServer) ListTriggers(ctx context.Context, req *pb.ListTriggersReq) (*pb.ListTriggersResp, error) {
+func (s *TriggerServer) ListTriggers(ctx context.Context, connReq *connect.Request[pb.ListTriggersReq]) (*connect.Response[pb.ListTriggersResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -591,7 +600,7 @@ func (s *TriggerServer) ListTriggers(ctx context.Context, req *pb.ListTriggersRe
 	rows, err := db.ListTriggers(ctx, filter)
 	if err != nil {
 		log.Z.Error("failed to list triggers", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to list triggers")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triggers"))
 	}
 
 	out := make([]*pb.Trigger, 0, len(rows))
@@ -607,32 +616,34 @@ func (s *TriggerServer) ListTriggers(ctx context.Context, req *pb.ListTriggersRe
 		instances, instErr := db.GetTriggerInstances(ctx, row.ID)
 		if instErr != nil {
 			log.Z.Error("failed to load trigger instances", zap.Error(instErr))
-			return nil, status.Errorf(codes.Internal, "failed to list triggers")
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triggers"))
 		}
 
 		out = append(out, row.ToProto(file, instances))
 	}
 
-	return pb.ListTriggersResp_builder{
+	return connect.NewResponse(pb.ListTriggersResp_builder{
 		Triggers: out,
-	}.Build(), nil
+	}.Build()), nil
 }
 
 // CreateTrigger validates the pattern and the chance at creation time, never
 // at match time, gates TRIGGER_MODE_REGEX behind regexClearanceFloor, fetches
 // and dedupes a file_url when given one, and scopes the trigger to the
 // requested instances or, absent those, to the caller's own call origin.
-func (s *TriggerServer) CreateTrigger(ctx context.Context, req *pb.CreateTriggerReq) (*pb.CreateTriggerResp, error) {
+func (s *TriggerServer) CreateTrigger(ctx context.Context, connReq *connect.Request[pb.CreateTriggerReq]) (*connect.Response[pb.CreateTriggerResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasPhrase() || req.GetPhrase() == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "phrase is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("phrase is required"))
 	}
 	if req.GetReply() == "" && req.GetFileUrl() == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "reply or file_url is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("reply or file_url is required"))
 	}
 
 	mode := pb.TriggerMode_TRIGGER_MODE_ANY
@@ -640,7 +651,7 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, req *pb.CreateTrigger
 		mode = req.GetMode()
 	}
 	if mode == pb.TriggerMode_TRIGGER_MODE_REGEX && caller.Clearance < int32(regexClearanceFloor) {
-		return nil, status.Errorf(codes.PermissionDenied, "regex triggers require %s clearance", regexClearanceFloor.String())
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("regex triggers require %s clearance", regexClearanceFloor.String()))
 	}
 	if _, err := trigger.Compile(req.GetPhrase(), mode); err != nil {
 		return nil, invalidPatternError(err)
@@ -648,7 +659,7 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, req *pb.CreateTrigger
 
 	chance := req.GetChance()
 	if chance < 0 || chance > trigger.MaxChance {
-		return nil, status.Errorf(codes.InvalidArgument, "chance must be between 0 and %d", trigger.MaxChance)
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("chance must be between 0 and %d", trigger.MaxChance))
 	}
 
 	var fileID string
@@ -674,7 +685,7 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, req *pb.CreateTrigger
 		InstanceIDs: instanceIDs,
 	})
 	if errors.Is(err, db.ErrExactPhraseTaken) {
-		return nil, status.Errorf(codes.AlreadyExists, "an exact trigger with this phrase already exists")
+		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("an exact trigger with this phrase already exists"))
 	}
 	if err != nil {
 		// If the trigger insert fails after a file_url blob was written, that
@@ -682,16 +693,16 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, req *pb.CreateTrigger
 		// compensation-deleted here: a compensating delete could remove a blob
 		// another trigger deduped onto.
 		log.Z.Error("failed to create trigger", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to create trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create trigger"))
 	}
 
 	for _, instanceID := range instanceIDs {
 		s.cache.Invalidate(instanceID)
 	}
 
-	return pb.CreateTriggerResp_builder{
+	return connect.NewResponse(pb.CreateTriggerResp_builder{
 		Id: &triggerID,
-	}.Build(), nil
+	}.Build()), nil
 }
 
 // UpdateTrigger applies the same validation CreateTrigger does to any field
@@ -701,14 +712,16 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, req *pb.CreateTrigger
 // be checked against the combination that will actually be stored, not an
 // assumed default that could let a broken regex-mode phrase through
 // unvalidated.
-func (s *TriggerServer) UpdateTrigger(ctx context.Context, req *pb.UpdateTriggerReq) (*pb.UpdateTriggerResp, error) {
+func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Request[pb.UpdateTriggerReq]) (*connect.Response[pb.UpdateTriggerResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
 	// Ownership is resolved first, before anything expensive or observable
@@ -717,18 +730,18 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, req *pb.UpdateTrigger
 	// file row and a blob write on the way to being told NotFound.
 	current, err := db.GetTrigger(ctx, req.GetId())
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "trigger not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to load trigger for update", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to update trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update trigger"))
 	}
 	// Matches UpdateTriggerByUser's own privacy check: a trigger that is not
 	// the caller's own is NotFound, checked here too so no validation, clearance
 	// detail or side effect can run against a trigger the caller could not
 	// update anyway.
 	if current.UserID == nil || *current.UserID != caller.ID {
-		return nil, status.Errorf(codes.NotFound, "trigger not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 
 	update := db.TriggerUpdate{
@@ -743,7 +756,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, req *pb.UpdateTrigger
 	if req.HasChance() {
 		chance := req.GetChance()
 		if chance < 0 || chance > trigger.MaxChance {
-			return nil, status.Errorf(codes.InvalidArgument, "chance must be between 0 and %d", trigger.MaxChance)
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("chance must be between 0 and %d", trigger.MaxChance))
 		}
 		update.UpdateChance = true
 		update.Chance = chance
@@ -766,7 +779,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, req *pb.UpdateTrigger
 		}
 
 		if effectiveMode == pb.TriggerMode_TRIGGER_MODE_REGEX && caller.Clearance < int32(regexClearanceFloor) {
-			return nil, status.Errorf(codes.PermissionDenied, "regex triggers require %s clearance", regexClearanceFloor.String())
+			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("regex triggers require %s clearance", regexClearanceFloor.String()))
 		}
 		if _, compileErr := trigger.Compile(effectivePhrase, effectiveMode); compileErr != nil {
 			return nil, invalidPatternError(compileErr)
@@ -800,37 +813,39 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, req *pb.UpdateTrigger
 	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, req.GetId())
 	if err != nil {
 		log.Z.Error("failed to load trigger scope for invalidation", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to update trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update trigger"))
 	}
 
 	err = db.UpdateTriggerByUser(ctx, update)
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "trigger not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 	if errors.Is(err, db.ErrExactPhraseTaken) {
-		return nil, status.Errorf(codes.AlreadyExists, "an exact trigger with this phrase already exists")
+		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("an exact trigger with this phrase already exists"))
 	}
 	if err != nil {
 		log.Z.Error("failed to update trigger", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to update trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update trigger"))
 	}
 
 	for _, instanceID := range scopedIDs {
 		s.cache.Invalidate(instanceID)
 	}
 
-	return pb.UpdateTriggerResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.UpdateTriggerResp_builder{}.Build()), nil
 }
 
 // DeleteTrigger soft-deletes the caller's own trigger.
-func (s *TriggerServer) DeleteTrigger(ctx context.Context, req *pb.DeleteTriggerReq) (*pb.DeleteTriggerResp, error) {
+func (s *TriggerServer) DeleteTrigger(ctx context.Context, connReq *connect.Request[pb.DeleteTriggerReq]) (*connect.Response[pb.DeleteTriggerResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
 	// Read before the write, matching UpdateTrigger: after the delete there is
@@ -838,34 +853,36 @@ func (s *TriggerServer) DeleteTrigger(ctx context.Context, req *pb.DeleteTrigger
 	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, req.GetId())
 	if err != nil {
 		log.Z.Error("failed to load trigger scope for invalidation", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to delete trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete trigger"))
 	}
 
 	err = db.SoftDeleteTriggerByUser(ctx, req.GetId(), caller.ID)
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "trigger not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to delete trigger", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to delete trigger")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete trigger"))
 	}
 
 	for _, instanceID := range scopedIDs {
 		s.cache.Invalidate(instanceID)
 	}
 
-	return pb.DeleteTriggerResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.DeleteTriggerResp_builder{}.Build()), nil
 }
 
 // GetTriggerStats returns a leaderboard derived from action_record, scoped to
 // an instance and to a period.
-func (s *TriggerServer) GetTriggerStats(ctx context.Context, req *pb.GetTriggerStatsReq) (*pb.GetTriggerStatsResp, error) {
+func (s *TriggerServer) GetTriggerStats(ctx context.Context, connReq *connect.Request[pb.GetTriggerStatsReq]) (*connect.Response[pb.GetTriggerStatsResp], error) {
+	req := connReq.Msg
+
 	if _, err := callerUser(ctx); err != nil {
 		return nil, err
 	}
 
 	if !req.HasInstance() || !req.GetInstance().HasPlatformEnum() || !req.GetInstance().HasInstanceMeta() {
-		return nil, status.Errorf(codes.InvalidArgument, "instance is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("instance is required"))
 	}
 
 	// A leaderboard exposes another guild's phrases, chances and fire counts,
@@ -880,7 +897,7 @@ func (s *TriggerServer) GetTriggerStats(ctx context.Context, req *pb.GetTriggerS
 		actionType = req.GetActionType()
 	}
 	if actionType != pb.ActionType_ACTION_TYPE_TRIGGER_OCCURRED && actionType != pb.ActionType_ACTION_TYPE_TRIGGER_CALLED {
-		return nil, status.Errorf(codes.InvalidArgument, "action_type must be TRIGGER_OCCURRED or TRIGGER_CALLED")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("action_type must be TRIGGER_OCCURRED or TRIGGER_CALLED"))
 	}
 
 	filter := db.TriggerStatsFilter{
@@ -900,7 +917,7 @@ func (s *TriggerServer) GetTriggerStats(ctx context.Context, req *pb.GetTriggerS
 	rows, err := db.ListTriggerStats(ctx, filter)
 	if err != nil {
 		log.Z.Error("failed to list trigger stats", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to load trigger stats")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load trigger stats"))
 	}
 
 	stats := make([]*pb.TriggerStat, 0, len(rows))
@@ -915,9 +932,9 @@ func (s *TriggerServer) GetTriggerStats(ctx context.Context, req *pb.GetTriggerS
 		}.Build())
 	}
 
-	return pb.GetTriggerStatsResp_builder{
+	return connect.NewResponse(pb.GetTriggerStatsResp_builder{
 		Stats: stats,
-	}.Build(), nil
+	}.Build()), nil
 }
 
 // GetFile returns a trigger file's metadata and content. A file is readable
@@ -925,23 +942,25 @@ func (s *TriggerServer) GetTriggerStats(ctx context.Context, req *pb.GetTriggerS
 // or one scoped to their own call origin instance. Content is bounded by
 // storage.MaxFileBytes as a last line of defence — a row whose blob has grown
 // past the cap on disk is refused, not streamed.
-func (s *TriggerServer) GetFile(ctx context.Context, req *pb.GetFileReq) (*pb.GetFileResp, error) {
+func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb.GetFileReq]) (*connect.Response[pb.GetFileResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasFileId() {
-		return nil, status.Errorf(codes.InvalidArgument, "file_id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("file_id is required"))
 	}
 
 	fileRow, err := db.GetFile(ctx, req.GetFileId())
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "file not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("file not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to get file", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get file")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 
 	// A zero instance id (no origin, e.g. a direct message) simply never
@@ -951,21 +970,21 @@ func (s *TriggerServer) GetFile(ctx context.Context, req *pb.GetFileReq) (*pb.Ge
 	visible, err := db.FileVisibleToCaller(ctx, fileRow.ID, caller.ID, originInstanceID)
 	if err != nil {
 		log.Z.Error("failed to check file visibility", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get file")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 	if !visible {
-		return nil, status.Errorf(codes.NotFound, "file not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("file not found"))
 	}
 
 	if s.blobs == nil {
 		log.Z.Error("trigger file storage is not configured")
-		return nil, status.Errorf(codes.Internal, "failed to get file")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 
 	reader, err := s.blobs.Get(ctx, fileRow.Path)
 	if err != nil {
 		log.Z.Error("failed to open trigger file blob", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get file")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 	defer func() {
 		_ = reader.Close()
@@ -975,15 +994,15 @@ func (s *TriggerServer) GetFile(ctx context.Context, req *pb.GetFileReq) (*pb.Ge
 	content, err := io.ReadAll(limited)
 	if err != nil {
 		log.Z.Error("failed to read trigger file blob", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get file")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 	if int64(len(content)) > storage.MaxFileBytes {
 		log.Z.Error("trigger file blob exceeds the size cap", zap.String("file_id", fileRow.ID))
-		return nil, status.Errorf(codes.Internal, "file exceeds the maximum size")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("file exceeds the maximum size"))
 	}
 
-	return pb.GetFileResp_builder{
+	return connect.NewResponse(pb.GetFileResp_builder{
 		File:    fileRow.ToProto(displayFilename(fileRow)),
 		Content: content,
-	}.Build(), nil
+	}.Build()), nil
 }

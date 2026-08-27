@@ -18,7 +18,10 @@ package callermeta
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -161,6 +164,42 @@ func FromIncomingContext(ctx context.Context) (*Caller, error) {
 	}, nil
 }
 
+// FromHeader extracts caller identity from Connect request headers.
+//
+// This is the http.Header counterpart of FromIncomingContext: gRPC embeds
+// metadata into the context automatically, but a Connect handler only ever
+// sees headers on the request or connection object itself, never on ctx. The
+// wire encoding and the required/unspecified checks are identical, so a caller
+// cannot tell which transport parsed its request from the response alone — with
+// one exception that has no counterpart here: FromIncomingContext reports a
+// context carrying no metadata at all as "missing gRPC metadata", where an empty
+// header set simply fails the first check and reports the missing platform.
+func FromHeader(header http.Header) (*Caller, error) {
+	platformValue := header.Get(HeaderPlatformEnum)
+	if platformValue == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s is required", HeaderPlatformEnum))
+	}
+
+	platformNumber, ok := pb.Platform_value[platformValue]
+	if !ok {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown %s %q", HeaderPlatformEnum, platformValue))
+	}
+	platform := pb.Platform(platformNumber)
+	if platform == pb.Platform_PLATFORM_UNSPECIFIED {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s must not be unspecified", HeaderPlatformEnum))
+	}
+
+	var platformUID *string
+	if userValue := header.Get(HeaderUserID); userValue != "" {
+		platformUID = &userValue
+	}
+
+	return &Caller{
+		PlatformEnum: platform,
+		PlatformUID:  platformUID,
+	}, nil
+}
+
 // NewOutgoingOrigin appends origin metadata to an outgoing gRPC context.
 //
 // It must be called *after* NewOutgoingContext, not before: that function
@@ -203,4 +242,21 @@ func OriginFromIncomingContext(ctx context.Context) (Origin, bool) {
 	}
 
 	return origin, true
+}
+
+// OriginFromHeader extracts the origin of a call from Connect request
+// headers. See FromHeader for why this counterpart exists.
+//
+// ok is false when the call carried none, which is normal rather than an
+// error: direct messages and non-platform callers have no instance.
+func OriginFromHeader(header http.Header) (Origin, bool) {
+	instanceValue := header.Get(HeaderInstanceUID)
+	if instanceValue == "" {
+		return Origin{}, false
+	}
+
+	return Origin{
+		InstanceUID:    instanceValue,
+		DestinationUID: header.Get(HeaderDestinationUID),
+	}, true
 }

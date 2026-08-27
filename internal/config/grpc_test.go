@@ -10,11 +10,14 @@ import (
 // Tests for internal/config/grpc.go. TestMain and unsetEnv come from
 // repost_test.go.
 //
-// Nothing here exercises ServerOptions() or dialOptions() with TLS ENABLED:
-// both call into internal/auth, which calls log.Z.Fatal on a missing or
-// malformed certificate and would take the whole test binary down with it.
-// The TLS-off path is safe and is covered below; the credential loading
-// itself is covered in internal/auth/auth_test.go against generated fixtures.
+// ServerOptions() and dialOptions() are gone: stage 3 deletes both, along with
+// GRPCClientOptions, because internal/config stops constructing anything
+// transport-shaped at all — that is what kills the M4 hazard (the server
+// binary requiring a client certificate) structurally rather than by
+// convention. What is left to test here is the plain data: gRPCHost,
+// gRPCPort, gRPCTLS, certsPath and MaxGRPCMessageBytes. TLS credential
+// loading itself is covered in internal/auth/auth_test.go against generated
+// fixtures.
 
 func TestGRPCHost(t *testing.T) {
 	unsetEnv(t, "GINBOT_GRPC_HOST")
@@ -134,23 +137,5 @@ func TestMaxGRPCMessageBytesExceedsTheFileSizeCap(t *testing.T) {
 		t.Errorf("MaxGRPCMessageBytes = %d, want strictly greater than storage.MaxFileBytes (%d); "+
 			"GetFile returns file content inline in one unary response",
 			MaxGRPCMessageBytes, storage.MaxFileBytes)
-	}
-}
-
-// TestServerOptionsWithoutTLSCarriesTheMessageCapsAndNoCredentials: with TLS
-// off, ServerOptions must not touch internal/auth at all — reaching for a
-// certificate that is not there is fatal — and must still install both
-// message size bounds.
-func TestServerOptionsWithoutTLSCarriesTheMessageCapsAndNoCredentials(t *testing.T) {
-	t.Setenv("GINBOT_GRPC_TLS", "false")
-
-	got := ServerOptions()
-
-	// grpc.ServerOption is an opaque interface, so the count is what can be
-	// asserted portably: MaxRecvMsgSize and MaxSendMsgSize, and nothing else.
-	// A third option here means grpc.Creds was appended, i.e. the TLS branch
-	// ran with TLS disabled.
-	if len(got) != 2 {
-		t.Errorf("ServerOptions() with TLS off returned %d options, want exactly 2 (the two message size caps)", len(got))
 	}
 }

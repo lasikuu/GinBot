@@ -22,10 +22,10 @@ import (
 var repostOrigin = callermeta.Origin{InstanceUID: "repost-instance", DestinationUID: "repost-destination"}
 
 // repostCtx attaches both caller identity and call origin, in that order —
-// callermeta.NewOutgoingOrigin must run after NewOutgoingContext, which
-// callerCtx already is, matching triggerCtx in trigger_integration_test.go.
+// originCtx must run after callerCtx, matching triggerCtx in
+// trigger_integration_test.go.
 func repostCtx(platformUID string) context.Context {
-	return callermeta.NewOutgoingOrigin(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), repostOrigin)
+	return originCtx(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), repostOrigin)
 }
 
 // ── Assumed symbols from pkg/grpc/server/repost.go (spec §3.7) ───────────────

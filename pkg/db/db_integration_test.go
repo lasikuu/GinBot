@@ -583,6 +583,21 @@ func TestGetOrCreateDestinationIsScopedToPlatform(t *testing.T) {
 	}
 }
 
+// TestPingReportsAReachablePool: Ping backs cmd/ginbot-server's three health
+// surfaces (UtilityService/HealthCheck, the gRPC health protocol and GET
+// /healthz), so it has to answer against a real pool rather than merely
+// compile. There is no live-database counterpart for the failure branch in
+// this suite: dbpool is package-private, so the only way to make Ping fail is
+// to close the very pool this whole suite depends on, which every other test
+// here shares. That branch is exercised instead by the injected HealthProbe
+// fakes in pkg/grpc/server and cmd/ginbot-server, which do not need Postgres
+// at all.
+func TestPingReportsAReachablePool(t *testing.T) {
+	if err := Ping(context.Background()); err != nil {
+		t.Errorf("Ping: %v", err)
+	}
+}
+
 func TestGetInstanceByMetaMatchesOnPlatformAndMeta(t *testing.T) {
 	ctx := context.Background()
 	suffix := time.Now().Format("150405.000000")

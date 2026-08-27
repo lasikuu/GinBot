@@ -1,6 +1,6 @@
 //go:build integration
 
-// Integration tests for the reminder surface, driven through the bufconn harness
+// Integration tests for the reminder surface, driven through the harness
 // with the real interceptor chain and a real database.
 //
 //	docker compose -f docker-compose.psql.yml up -d

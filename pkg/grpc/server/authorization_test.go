@@ -9,7 +9,7 @@ import (
 )
 
 // Handler-level authorization tests that need no database, driven through the
-// bufconn harness so the production interceptor chain runs in front of them.
+// harness so the production interceptor chain runs in front of them.
 //
 // The decisions covered here are the ones a handler reaches BEFORE it touches
 // pkg/db, which is exactly why they can be tested this way — and, in the

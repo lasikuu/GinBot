@@ -6,12 +6,11 @@ import (
 )
 
 type DiscordOptions struct {
-	GRPCClientOptions GRPCClientOptions
-	OwnerId           string
-	BotToken          string
-	ClientId          string
-	EraseCommands     bool
-	CommandPrefixes   CommandPrefixes
+	OwnerId         string
+	BotToken        string
+	ClientId        string
+	EraseCommands   bool
+	CommandPrefixes CommandPrefixes
 	// MessageContent opts in to the privileged MESSAGE_CONTENT gateway intent
 	// on its own. Trigger matching requires it: without the intent every
 	// MessageCreate arrives with an empty Content, so there is nothing to match

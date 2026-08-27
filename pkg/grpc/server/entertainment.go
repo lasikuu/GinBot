@@ -2,18 +2,19 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"strconv"
 	"strings"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 )
 
 type EntertainmentServer struct {
-	pb.UnimplementedEntertainmentServiceServer
+	ginbotv1connect.UnimplementedEntertainmentServiceHandler
 }
 
 func NewEntertainmentServer() *EntertainmentServer {
@@ -25,14 +26,15 @@ func NewEntertainmentServer() *EntertainmentServer {
 // on 64-bit platforms and the response remains a sane length.
 const maxDigits = 18
 
-func (s *EntertainmentServer) GetRandomNumber(_ context.Context, req *pb.GetRandomNumberReq) (*pb.GetRandomNumberResp, error) {
+func (s *EntertainmentServer) GetRandomNumber(_ context.Context, connReq *connect.Request[pb.GetRandomNumberReq]) (*connect.Response[pb.GetRandomNumberResp], error) {
+	req := connReq.Msg
 	var value string
 
 	switch req.GetType() {
 	case pb.GetRandomNumberReq_DOUBLES:
 		digits := int(req.GetDigits())
 		if digits < 1 || digits > maxDigits {
-			return nil, status.Errorf(codes.InvalidArgument, "digits must be between 1 and %d, got %d", maxDigits, digits)
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("digits must be between 1 and %d, got %d", maxDigits, digits))
 		}
 		upperBound := int64(math.Pow10(digits))
 
@@ -48,8 +50,7 @@ func (s *EntertainmentServer) GetRandomNumber(_ context.Context, req *pb.GetRand
 		// rand.Int64N panics on n <= 0, which would take down the whole server.
 		// The range is inclusive of lower and exclusive of upper.
 		if upper <= lower {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"upper (%d) must be greater than lower (%d)", upper, lower)
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("upper (%d) must be greater than lower (%d)", upper, lower))
 		}
 
 		// upper-lower overflows int64 when the bounds straddle zero widely enough,
@@ -58,8 +59,7 @@ func (s *EntertainmentServer) GetRandomNumber(_ context.Context, req *pb.GetRand
 		// by a conversion to int.
 		span := upper - lower
 		if span <= 0 {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"range between %d and %d is too large", lower, upper)
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("range between %d and %d is too large", lower, upper))
 		}
 
 		value = strconv.FormatInt(rand.Int64N(span)+lower, 10)
@@ -68,10 +68,10 @@ func (s *EntertainmentServer) GetRandomNumber(_ context.Context, req *pb.GetRand
 		value = req.GetMsgId()
 
 	default:
-		return nil, status.Errorf(codes.InvalidArgument, "unsupported request type %q", req.GetType().String())
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unsupported request type %q", req.GetType().String()))
 	}
 
-	return pb.GetRandomNumberResp_builder{
+	return connect.NewResponse(pb.GetRandomNumberResp_builder{
 		Number: &value,
-	}.Build(), nil
+	}.Build()), nil
 }

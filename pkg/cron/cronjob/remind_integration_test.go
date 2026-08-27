@@ -21,6 +21,8 @@ package cronjob
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"sync"
@@ -31,13 +33,11 @@ import (
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/grpc/server"
 	"github.com/lasikuu/GinBot/pkg/grpc/service"
 	"github.com/lasikuu/GinBot/pkg/log"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -118,48 +118,36 @@ func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 	service.ReverseServer = reverse
 	t.Cleanup(func() { service.ReverseServer = previous })
 
-	grpcServer := grpc.NewServer()
-	pb.RegisterReverseServiceServer(grpcServer, reverse)
+	mux := http.NewServeMux()
+	mux.Handle(ginbotv1connect.NewReverseServiceHandler(reverse))
 
-	listener := bufconn.Listen(1024 * 1024)
-	served := make(chan struct{})
-	go func() {
-		defer close(served)
-		// Serve returns ErrServerStopped on Stop, which is the normal path here.
-		_ = grpcServer.Serve(listener)
-	}()
+	// EnableHTTP2 + StartTLS, matching pkg/grpc/server's harness: a bidi stream
+	// needs a real HTTP/2 connection and HTTP/1.1 cannot carry one at all.
+	// No interceptor chain is installed, because this suite is about Remind's
+	// producer seam and not about authorization — the clearance interceptor
+	// covering this stream is pkg/grpc/server's to prove.
+	srv := httptest.NewUnstartedServer(mux)
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
 
-	// passthrough is required: grpc.NewClient defaults to the DNS resolver, and
-	// "bufnet" is not a hostname.
-	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return listener.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-
+	httpClient := srv.Client()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	t.Cleanup(func() {
 		cancel()
-		// Shutdown BEFORE GracefulStop, which is cmd/ginbot-server's ordering:
-		// GracefulStop waits for handlers to return, and a reverse-stream
-		// handler waiting for a client message never returns on its own.
+		// Shutdown BEFORE the server closes, which is cmd/ginbot-server's
+		// ordering: http.Server.Shutdown waits for handlers to return without
+		// cancelling their contexts, and a reverse-stream handler waiting for a
+		// client message never returns on its own.
 		reverse.Shutdown()
-		grpcServer.GracefulStop()
-		if err := conn.Close(); err != nil {
-			t.Errorf("close client connection: %v", err)
-		}
-		<-served
+		// Cancelling the stream's context does not close the pooled HTTP/2
+		// connection it rode on, and srv.Close waits for every connection to go
+		// inactive — so without this the cleanup hangs rather than finishing.
+		httpClient.CloseIdleConnections()
+		srv.Close()
 	})
 
-	stream, err := pb.NewReverseServiceClient(conn).OpenClientActionStream(ctx)
-	if err != nil {
-		t.Fatalf("OpenClientActionStream: %v", err)
-	}
+	stream := ginbotv1connect.NewReverseServiceClient(httpClient, srv.URL).OpenClientActionStream(ctx)
 	if err := stream.Send(pb.OpenClientActionStreamReq_builder{
 		PlatformEnum: platform.Enum(),
 	}.Build()); err != nil {
@@ -177,7 +165,7 @@ func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 	go func() {
 		closeOnce := sync.Once{}
 		for {
-			in, err := stream.Recv()
+			in, err := stream.Receive()
 			if err != nil {
 				return
 			}

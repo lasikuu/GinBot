@@ -3,16 +3,17 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"github.com/lasikuu/GinBot/pkg/reminder"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // maxActiveRemindersPerUser caps how many pending reminders one user may hold.
@@ -24,7 +25,7 @@ import (
 const maxActiveRemindersPerUser = 100
 
 type ReminderServer struct {
-	pb.UnimplementedReminderServiceServer
+	ginbotv1connect.UnimplementedReminderServiceHandler
 }
 
 func NewReminderServer() *ReminderServer {
@@ -32,47 +33,51 @@ func NewReminderServer() *ReminderServer {
 	return s
 }
 
-func (s *ReminderServer) GetReminder(ctx context.Context, req *pb.GetReminderReq) (*pb.GetReminderResp, error) {
+func (s *ReminderServer) GetReminder(ctx context.Context, connReq *connect.Request[pb.GetReminderReq]) (*connect.Response[pb.GetReminderResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
 	reminderRow, err := db.GetReminder(ctx, req.GetId())
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "reminder not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to get reminder", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to get reminder")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get reminder"))
 	}
 
 	// Reminders are private to their creator. NotFound rather than
 	// PermissionDenied so the response does not confirm that the id exists.
 	if reminderRow.UserID == nil || *reminderRow.UserID != caller.ID {
-		return nil, status.Errorf(codes.NotFound, "reminder not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
 
 	destination, err := db.GetReminderDestination(ctx, reminderRow.DestinationID)
 	if err != nil && !errors.Is(err, db.ErrNotFound) {
 		log.Z.Error("failed to resolve reminder destination", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to resolve reminder destination")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve reminder destination"))
 	}
 
-	return pb.GetReminderResp_builder{
+	return connect.NewResponse(pb.GetReminderResp_builder{
 		Reminder: reminderRow.ToProto(destination),
-	}.Build(), nil
+	}.Build()), nil
 }
 
 // ListReminders is caller-scoped: only the caller's own reminders are returned.
 // The optional filters (limit, offset, status, period, message search) narrow
 // within that scope, and the request has no field that could widen it to another
 // user.
-func (s *ReminderServer) ListReminders(ctx context.Context, req *pb.ListRemindersReq) (*pb.ListRemindersResp, error) {
+func (s *ReminderServer) ListReminders(ctx context.Context, connReq *connect.Request[pb.ListRemindersReq]) (*connect.Response[pb.ListRemindersResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -102,7 +107,7 @@ func (s *ReminderServer) ListReminders(ctx context.Context, req *pb.ListReminder
 	reminders, err := db.ListRemindersByUser(ctx, filter)
 	if err != nil {
 		log.Z.Error("failed to list reminders", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to list reminders")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list reminders"))
 	}
 
 	// The destinations arrive with the rows: ListRemindersByUser joins them, so a
@@ -112,12 +117,14 @@ func (s *ReminderServer) ListReminders(ctx context.Context, req *pb.ListReminder
 		out = append(out, listed.Reminder.ToProto(listed.Destination))
 	}
 
-	return pb.ListRemindersResp_builder{
+	return connect.NewResponse(pb.ListRemindersResp_builder{
 		Reminders: out,
-	}.Build(), nil
+	}.Build()), nil
 }
 
-func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateReminderReq) (*pb.CreateReminderResp, error) {
+func (s *ReminderServer) CreateReminder(ctx context.Context, connReq *connect.Request[pb.CreateReminderReq]) (*connect.Response[pb.CreateReminderResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
@@ -127,14 +134,14 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 	// cmd/ginbot-server, and AGENTS.md requires handlers to check required
 	// fields themselves.
 	if !req.HasDatetime() || !req.HasTimezone() {
-		return nil, status.Errorf(codes.InvalidArgument, "datetime and timezone are required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("datetime and timezone are required"))
 	}
 
 	if !req.HasDestination() ||
 		!req.GetDestination().HasPlatformEnum() ||
 		!req.GetDestination().HasInstanceMeta() ||
 		!req.GetDestination().HasDestinationMeta() {
-		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("destination is required"))
 	}
 
 	// Validate the repeat schedule semantically. The proto's regex only checks
@@ -142,14 +149,14 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 	// a repeat more frequent than the floor for its destination.
 	if req.HasRepeatCron() {
 		if err := reminder.ValidateRepeatInterval(req.GetRepeatCron(), isDMDestination(req.GetDestination())); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "%s", err.Error())
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s", err.Error()))
 		}
 	}
 
 	destinationID, err := db.GetOrCreateDestinationByMeta(ctx, req.GetDestination())
 	if err != nil {
 		log.Z.Error("failed to get or create destination", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to resolve destination")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve destination"))
 	}
 
 	// The per-user cap is enforced inside the insert's transaction, not by a
@@ -157,12 +164,11 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 	// both pass the check and both write.
 	reminderID, err := db.CreateReminder(ctx, req, caller.ID, destinationID, maxActiveRemindersPerUser)
 	if errors.Is(err, db.ErrReminderCapReached) {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"you already have the maximum of %d active reminders", maxActiveRemindersPerUser)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("you already have the maximum of %d active reminders", maxActiveRemindersPerUser))
 	}
 	if err != nil {
 		log.Z.Error("failed to create reminder", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to create reminder")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create reminder"))
 	}
 
 	// Analytics: record the creation. A failure here must not fail the create —
@@ -171,57 +177,61 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, req *pb.CreateRemin
 		log.Z.Error("failed to record reminder creation", zap.Error(err))
 	}
 
-	return pb.CreateReminderResp_builder{
+	return connect.NewResponse(pb.CreateReminderResp_builder{
 		Id: &reminderID,
-	}.Build(), nil
+	}.Build()), nil
 }
 
-func (s *ReminderServer) DeleteReminder(ctx context.Context, req *pb.DeleteReminderReq) (*pb.DeleteReminderResp, error) {
+func (s *ReminderServer) DeleteReminder(ctx context.Context, connReq *connect.Request[pb.DeleteReminderReq]) (*connect.Response[pb.DeleteReminderResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
 	// Caller-scoped soft delete. ErrNotFound covers another user's reminder, so
 	// a caller cannot delete or probe one that is not theirs.
 	err = db.SoftDeleteReminderByUser(ctx, req.GetId(), caller.ID)
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "reminder not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to delete reminder", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to delete reminder")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete reminder"))
 	}
 
-	return pb.DeleteReminderResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.DeleteReminderResp_builder{}.Build()), nil
 }
 
-func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateReminderReq) (*pb.UpdateReminderResp, error) {
+func (s *ReminderServer) UpdateReminder(ctx context.Context, connReq *connect.Request[pb.UpdateReminderReq]) (*connect.Response[pb.UpdateReminderResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 	if !req.HasDatetime() || !req.HasTimezone() {
-		return nil, status.Errorf(codes.InvalidArgument, "datetime and timezone are required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("datetime and timezone are required"))
 	}
 	if !req.HasDestination() ||
 		!req.GetDestination().HasPlatformEnum() ||
 		!req.GetDestination().HasInstanceMeta() ||
 		!req.GetDestination().HasDestinationMeta() {
-		return nil, status.Errorf(codes.InvalidArgument, "destination is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("destination is required"))
 	}
 
 	// A reminder can only be moved into the future.
 	if !req.GetDatetime().AsTime().After(time.Now()) {
-		return nil, status.Errorf(codes.InvalidArgument, "datetime must be in the future")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("datetime must be in the future"))
 	}
 
 	// repeat_cron is the one patch-shaped field on this request: absent means
@@ -237,14 +247,14 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateRemin
 	repeatCron := req.GetRepeatCron()
 	if updateRepeat && repeatCron != "" {
 		if err := reminder.ValidateRepeatInterval(repeatCron, isDMDestination(req.GetDestination())); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "%s", err.Error())
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s", err.Error()))
 		}
 	}
 
 	destinationID, err := db.GetOrCreateDestinationByMeta(ctx, req.GetDestination())
 	if err != nil {
 		log.Z.Error("failed to get or create destination", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to resolve destination")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve destination"))
 	}
 
 	// Caller-scoped update; ErrNotFound covers another user's reminder, matching
@@ -260,14 +270,14 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateRemin
 		RepeatCron:    repeatCron,
 	})
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "reminder not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to update reminder", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to update reminder")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update reminder"))
 	}
 
-	return pb.UpdateReminderResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.UpdateReminderResp_builder{}.Build()), nil
 }
 
 // ConfirmDelivery records the outcome of a pushed notification.
@@ -285,23 +295,25 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, req *pb.UpdateRemin
 //   - delivered=true, one-shot        -> DELIVERED (kept, not deleted)
 //   - delivered=true, repeating       -> datetime advanced to the next
 //     occurrence in the reminder's timezone, status back to PENDING
-func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDeliveryReq) (*pb.ConfirmDeliveryResp, error) {
+func (s *ReminderServer) ConfirmDelivery(ctx context.Context, connReq *connect.Request[pb.ConfirmDeliveryReq]) (*connect.Response[pb.ConfirmDeliveryResp], error) {
+	req := connReq.Msg
+
 	caller, err := callerUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if !req.HasId() {
-		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
 	reminderRow, err := db.GetReminder(ctx, req.GetId())
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "reminder not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to load reminder for confirmation", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to confirm delivery")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to confirm delivery"))
 	}
 
 	// Reminders are private to their creator, and this method MUTATES one. Same
@@ -314,19 +326,19 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDel
 	// a forged REMINDER_DELIVERED recorded against its owner. The production
 	// client already sends the owner's identity, so this changes no real caller.
 	if reminderRow.UserID == nil || *reminderRow.UserID != caller.ID {
-		return nil, status.Errorf(codes.NotFound, "reminder not found")
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
 
 	if !req.GetDelivered() {
 		failed, err := db.AdvanceReminderStatusIfSent(ctx, req.GetId(), pb.ReminderStatus_REMINDER_STATUS_FAILED)
 		if err != nil {
 			log.Z.Error("failed to mark reminder failed", zap.Error(err))
-			return nil, status.Errorf(codes.Internal, "failed to confirm delivery")
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to confirm delivery"))
 		}
 		if !failed {
 			logConfirmNoOp(req.GetId())
 		}
-		return pb.ConfirmDeliveryResp_builder{}.Build(), nil
+		return connect.NewResponse(pb.ConfirmDeliveryResp_builder{}.Build()), nil
 	}
 
 	// A repeating reminder reschedules; a one-shot is marked delivered. The
@@ -345,20 +357,20 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDel
 			advanced, err = db.AdvanceReminderStatusIfSent(ctx, req.GetId(), pb.ReminderStatus_REMINDER_STATUS_DELIVERED)
 			if err != nil {
 				log.Z.Error("failed to mark reminder delivered", zap.Error(err))
-				return nil, status.Errorf(codes.Internal, "failed to confirm delivery")
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to confirm delivery"))
 			}
 		} else {
 			advanced, err = db.RescheduleReminderIfSent(ctx, req.GetId(), next)
 			if err != nil {
 				log.Z.Error("failed to reschedule repeating reminder", zap.Error(err))
-				return nil, status.Errorf(codes.Internal, "failed to confirm delivery")
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to confirm delivery"))
 			}
 		}
 	} else {
 		advanced, err = db.AdvanceReminderStatusIfSent(ctx, req.GetId(), pb.ReminderStatus_REMINDER_STATUS_DELIVERED)
 		if err != nil {
 			log.Z.Error("failed to mark reminder delivered", zap.Error(err))
-			return nil, status.Errorf(codes.Internal, "failed to confirm delivery")
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to confirm delivery"))
 		}
 	}
 
@@ -372,7 +384,7 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDel
 	// than deliveries, unbounded per reminder.
 	if !advanced {
 		logConfirmNoOp(req.GetId())
-		return pb.ConfirmDeliveryResp_builder{}.Build(), nil
+		return connect.NewResponse(pb.ConfirmDeliveryResp_builder{}.Build()), nil
 	}
 
 	// Analytics: record the delivery against the reminder's owner. Best-effort.
@@ -380,7 +392,7 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, req *pb.ConfirmDel
 		log.Z.Error("failed to record reminder delivery", zap.Error(err))
 	}
 
-	return pb.ConfirmDeliveryResp_builder{}.Build(), nil
+	return connect.NewResponse(pb.ConfirmDeliveryResp_builder{}.Build()), nil
 }
 
 // logConfirmNoOp records a confirmation that changed nothing. Debug, not warn:

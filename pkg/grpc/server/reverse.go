@@ -1,17 +1,18 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io"
 	"runtime/debug"
 	"sync"
 	"time"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // clientSendBuffer bounds how many actions may queue for a single client before
@@ -22,13 +23,20 @@ const clientSendBuffer = 64
 // defaultSenderDrainTimeout bounds how long a returning handler waits for its
 // sender goroutine to finish.
 //
-// The wait itself is not optional: grpc-go forbids SendMsg after the handler has
-// returned, so the sender must normally be done first. But it cannot be
-// unbounded either. A sender blocked inside stream.Send against a peer that has
-// stopped reading, with a full HTTP/2 flow-control window, is not at the range
-// statement — so deregister closing c.actions does not release it, and the
-// handler would never return at all. Under GracefulStop that pins process
-// shutdown until the container runtime SIGKILLs it.
+// The wait itself is not optional, and the consequence of skipping it is worse
+// on this transport than it was on grpc-go, where SendMsg after the handler
+// returned merely returned an error. connect's connectStreamingHandlerConn.Send
+// and .Close both write to the same underlying http.ResponseWriter with no
+// synchronisation between them, and net/http2 does not tolerate the late write
+// at all: http2.responseWriter.write PANICS with "Write called after Handler
+// finished" once handlerDone has nilled the request state and returned it to a
+// pool. So the sender must normally be done first, and when it is not, it needs
+// the recover it carries below. But the wait cannot be unbounded either. A
+// sender blocked inside stream.Send against a peer that
+// has stopped reading, with a full HTTP/2 flow-control window, is not at the
+// range statement — so deregister closing c.actions does not release it, and
+// the handler would never return at all. Under http.Server.Shutdown that pins
+// process shutdown until the container runtime SIGKILLs it.
 //
 // So the trade is explicit: five seconds is far longer than a healthy Send
 // needs, and expiring it risks a goroutine that briefly outlives its handler
@@ -41,29 +49,36 @@ const defaultSenderDrainTimeout = 5 * time.Second
 
 // maxStreamClients caps how many client action streams may be registered at once.
 //
-// grpc.MaxConcurrentStreams is deliberately NOT the mechanism here: it is a
-// per-CONNECTION limit, so N separate connections each opening a single stream
-// sail straight past it. The unbounded resource is this server's registry —
-// every admitted client costs a goroutine plus a clientSendBuffer-slot channel,
-// held for the life of the stream — so the cap belongs on the registry.
+// http2.Server.MaxConcurrentStreams is deliberately NOT the mechanism here: it
+// is a per-CONNECTION limit, so N separate connections each opening a single
+// stream sail straight past it. The unbounded resource is this server's
+// registry — every admitted client costs a goroutine plus a
+// clientSendBuffer-slot channel, held for the life of the stream — so the cap
+// belongs on the registry.
 //
 // 64 is far above the real deployment, which has two platform clients. That
 // headroom is for reconnect churn and rolling restarts, where the old stream's
 // deregistration can lag the new stream's registration, while still bounding
 // the cost at 64 goroutines and 64*64 queued action pointers.
 //
-// What this cap does NOT fix, stated plainly because the cap is easy to mistake
-// for a complete answer: OpenClientActionStream has no identity check at all.
-// cmd/ginbot-server installs only recovery and validation on the stream chain —
-// the clearance interceptor is unary-only — so with GINBOT_GRPC_TLS off,
-// anything that can reach the port can hold all 64 slots and keep the real
-// platform clients out for as long as it cares to. The consequences are bounded
-// but real:
+// Precisely: it bounds REGISTERED clients. A stream that opens and never sends
+// a registration message holds no slot and is not counted here — it is bounded
+// instead by the clearance interceptor now refusing to open it at all without a
+// registered caller, and by MaxConcurrentStreams per connection.
 //
-//   - Blast radius shrinks either way. Before this cap the same attacker grew
-//     the registry until the process died, which took the control channel down
-//     WITH the rest of the server. Refusing at 64 is strictly the better of the
-//     two outcomes, not a new exposure.
+// OpenClientActionStream is guarded at CLEARANCE_REGISTERED like every other
+// authenticated RPC (see interceptor.DefaultRequirements): ClearanceInterceptor
+// runs on WrapStreamingHandler exactly as it does on the unary path, resolving
+// and checking the caller before this handler ever sees the stream. That is a
+// change from the grpc-go server this replaced, whose stream chain carried
+// only recovery and validation. This cap is not standing in for that check —
+// it never was the identity boundary — it exists purely to bound the registry
+// once a caller has already passed clearance:
+//
+//   - Blast radius shrinks either way. Before this cap a registered caller
+//     opening streams in a loop grew the registry until the process died,
+//     which took the control channel down WITH the rest of the server.
+//     Refusing at 64 is strictly the better of the two outcomes.
 //   - Recovery is automatic, and the cost of it is bounded. A client refused
 //     with the ResourceExhausted returned below treats that as a refusal rather
 //     than a healthy drop, so each refusal DOUBLES its reconnect delay instead
@@ -74,18 +89,14 @@ const defaultSenderDrainTimeout = 5 * time.Second
 //     its slot during a rolling restart: it re-registers on its own with no
 //     operator action, but up to 30s after a slot actually frees rather than
 //     immediately.
-//   - Mutual TLS closes it properly. Under GINBOT_GRPC_TLS=true nothing without
-//     a client certificate connects at all, so the exposure exists only in the
-//     insecure default that is meant for local development.
 //
 // Two narrower caps were considered and rejected. A per-peer cap keys on a
 // remote address that is the proxy's, not the client's, behind any ingress or
 // NAT — it would refuse legitimate clients in exactly the deployments that need
 // it most. Evicting the oldest stream on the same platform trades a lockout for
-// a flapping control channel, since the attacker simply re-registers and evicts
-// the legitimate client straight back. Neither addresses the actual hole. The
-// real fix is a stream-side identity check along the lines of ADR-0012, which
-// is a separate change with its own decision to record.
+// a flapping control channel, since a misbehaving registered caller simply
+// re-registers and evicts the legitimate client straight back. See ADR-0012 for
+// the identity model this cap sits on top of.
 const maxStreamClients = 64
 
 // streamClient is one connected platform client.
@@ -96,7 +107,7 @@ type streamClient struct {
 }
 
 type ReverseServer struct {
-	pb.UnimplementedReverseServiceServer
+	ginbotv1connect.UnimplementedReverseServiceHandler
 
 	mu      sync.RWMutex // protects clients and nextID
 	clients map[uint64]*streamClient
@@ -173,7 +184,7 @@ func (s *ReverseServer) register(platform pb.Platform) (admitted *streamClient, 
 	}, true
 }
 
-// received is one result of a stream.Recv() call, moved off the handler's
+// received is one result of a stream.Receive() call, moved off the handler's
 // goroutine so the handler can select over it alongside everything else that
 // should end the stream.
 type received struct {
@@ -186,11 +197,12 @@ type received struct {
 // The client identifies its platform by sending a registration message; from
 // then on it receives every action addressed to that platform.
 //
-// Recv deliberately does NOT drive the loop directly. Blocking the handler on it
-// makes three separate conditions unobservable: server shutdown, cancellation of
-// the stream's own context, and the failure of this stream's sender goroutine.
-// All three have to end the handler, so all four are select arms instead.
-func (s *ReverseServer) OpenClientActionStream(stream pb.ReverseService_OpenClientActionStreamServer) error {
+// Receive deliberately does NOT drive the loop directly. Blocking the handler
+// on it makes three separate conditions unobservable: server shutdown,
+// cancellation of the stream's own context, and the failure of this stream's
+// sender goroutine. All three have to end the handler, so they are select arms
+// instead — four in total, the fourth being the received message itself.
+func (s *ReverseServer) OpenClientActionStream(ctx context.Context, stream *connect.BidiStream[pb.OpenClientActionStreamReq, pb.OpenClientActionStreamResp]) error {
 	// The client's platform is not known until its first message arrives, so
 	// registration is deferred until then.
 	var (
@@ -229,22 +241,24 @@ func (s *ReverseServer) OpenClientActionStream(stream pb.ReverseService_OpenClie
 	}()
 
 	// handlerDone releases the receive goroutine from a publish nobody will ever
-	// read. It cannot release the goroutine from Recv itself: nothing in grpc-go
-	// cancels a server-side Recv, so after this handler returns the goroutine may
-	// stay parked in Recv until the transport tears the stream down. That
-	// residual is precisely why ReverseServer.Shutdown() must be called BEFORE
-	// grpc.Server.GracefulStop() — GracefulStop waits for handlers to return
-	// before it closes transports, so the reverse order deadlocks: the handlers
+	// read. It cannot release the goroutine from Receive itself: nothing here
+	// cancels a server-side Receive directly, so after this handler returns the
+	// goroutine may stay parked in Receive until the transport tears the stream
+	// down (which ctx being cancelled — see the select below — brings forward
+	// close to immediately in practice). That residual is precisely why
+	// ReverseServer.Shutdown() must be called BEFORE http.Server.Shutdown() in
+	// cmd/ginbot-server — Shutdown waits for in-flight handlers to return before
+	// it lets the process exit, so the reverse order deadlocks: the handlers
 	// wait for a client message that shutdown was supposed to make unnecessary.
 	//
 	// The goroutine carries its own recover because it sits OUTSIDE the
-	// interceptor chain. RecoverStreamInterceptor unwinds only the goroutine
-	// running handler(srv, stream), and this is not that goroutine, so a panic
-	// here has no recovering frame above it and kills the whole process —
-	// Postgres pool, cron loop and every other service with it. Assuming the
-	// chain covers this is exactly the mistake to avoid: Recv is not inert, it
-	// unmarshals and protovalidates bytes from a peer this method does not
-	// authenticate at all.
+	// interceptor chain. RecoverInterceptor.WrapStreamingHandler unwinds only
+	// the goroutine running next(ctx, conn), and this is not that goroutine, so
+	// a panic here has no recovering frame above it and kills the whole process
+	// — Postgres pool, cron loop and every other service with it. Assuming the
+	// chain covers this is exactly the mistake to avoid: Receive is not inert,
+	// it unmarshals and protovalidates bytes from a peer this method does not
+	// authenticate beyond the clearance check already passed to reach here.
 	handlerDone := make(chan struct{})
 	recvCh := make(chan received, 1)
 	defer close(handlerDone)
@@ -257,10 +271,10 @@ func (s *ReverseServer) OpenClientActionStream(stream pb.ReverseService_OpenClie
 		// gets a bare Internal.
 		//
 		// This cannot publish twice or wedge the handler: the panic escapes from
-		// Recv, before the loop's own publish, and the loop is already unwinding
-		// by the time this runs, so there is exactly one publish and no further
-		// iteration. handlerDone covers the case where nobody is left to read
-		// it.
+		// Receive, before the loop's own publish, and the loop is already
+		// unwinding by the time this runs, so there is exactly one publish and
+		// no further iteration. handlerDone covers the case where nobody is left
+		// to read it.
 		defer func() {
 			recovered := recover()
 			if recovered == nil {
@@ -268,19 +282,19 @@ func (s *ReverseServer) OpenClientActionStream(stream pb.ReverseService_OpenClie
 			}
 
 			log.Z.Error("recovered from a panic in a stream receive goroutine",
-				zap.String("method", pb.ReverseService_OpenClientActionStream_FullMethodName),
+				zap.String("procedure", ginbotv1connect.ReverseServiceOpenClientActionStreamProcedure),
 				zap.Any("panic", recovered),
 				zap.ByteString("stack", debug.Stack()),
 			)
 
 			select {
-			case recvCh <- received{err: status.Error(codes.Internal, "internal error")}:
+			case recvCh <- received{err: connect.NewError(connect.CodeInternal, errors.New("internal error"))}:
 			case <-handlerDone:
 			}
 		}()
 
 		for {
-			msg, err := stream.Recv()
+			msg, err := stream.Receive()
 
 			select {
 			case recvCh <- received{msg: msg, err: err}:
@@ -298,12 +312,12 @@ func (s *ReverseServer) OpenClientActionStream(stream pb.ReverseService_OpenClie
 
 	// The status this returns on an abrupt client disconnect is deliberately
 	// NON-DETERMINISTIC, and that is recorded here so it is not rediscovered as
-	// a bug. One disconnect readies three of these arms at once: the stream
-	// context is cancelled, the same cancellation breaks a blocked Send so
-	// sendDone closes, and the transport error also surfaces on recvCh. select
-	// picks uniformly among ready arms, so the same event reports Canceled, the
-	// raw send error, or the raw receive error from one run to the next — where
-	// blocking on Recv always reported the receive error.
+	// a bug. One disconnect readies three of these arms at once: ctx is
+	// cancelled, the same cancellation breaks a blocked Send so sendDone closes,
+	// and the transport error also surfaces on recvCh. select picks uniformly
+	// among ready arms, so the same event reports Canceled, the raw send error,
+	// or the raw receive error from one run to the next — where blocking on
+	// Receive always reported the receive error.
 	//
 	// Nothing depends on the distinction: the client buckets all three as an
 	// ordinary drop, and the caller only logs it. Do NOT write a test asserting
@@ -315,8 +329,8 @@ func (s *ReverseServer) OpenClientActionStream(stream pb.ReverseService_OpenClie
 			// asked it to.
 			return nil
 
-		case <-stream.Context().Done():
-			return stream.Context().Err()
+		case <-ctx.Done():
+			return ctx.Err()
 
 		case <-sendDone:
 			// Nil until the client registers, and a select on a nil channel
@@ -370,12 +384,38 @@ func (s *ReverseServer) OpenClientActionStream(stream pb.ReverseService_OpenClie
 					zap.String("platform", platform.String()),
 					zap.Int("max_clients", maxStreamClients),
 				)
-				return status.Errorf(codes.ResourceExhausted, "too many client action streams")
+				return connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams"))
 			}
 			sendDone = make(chan struct{})
 
 			go func(c *streamClient, done chan struct{}) {
 				defer close(done)
+
+				// This goroutine sits OUTSIDE the interceptor chain, exactly as
+				// the receive goroutine above does, so nothing else recovers for
+				// it and a panic here would kill the whole process — Postgres
+				// pool, cron loop and every other stream with it.
+				//
+				// It is reachable: on the senderDrainTimeout path the handler
+				// has already returned, and net/http2 panics with "Write called
+				// after Handler finished" on any Send that lands after that.
+				// Recovering turns a bounded, already-accepted trade — a
+				// goroutine that briefly outlives its handler — back into what
+				// the drain timeout's comment claims it costs.
+				//
+				// Nothing is published: by this point either the handler read
+				// sendErr through the sendDone edge, or it gave up on the drain
+				// and there is no reader at all.
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						log.Z.Error("recovered from a panic in a stream send goroutine",
+							zap.Uint64("client_id", c.id),
+							zap.Any("panic", recovered),
+							zap.ByteString("stack", debug.Stack()),
+						)
+					}
+				}()
+
 				// Ranging over the channel exits when deregister closes it.
 				for action := range c.actions {
 					if err := stream.Send(action); err != nil {

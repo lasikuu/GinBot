@@ -7,10 +7,18 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
+
+// GetRandomNumber is exercised by calling the handler directly rather than
+// through the harness, because its own tests are about the random number
+// generator's boundary behaviour, not about clearance or origin (it is
+// public). connect.NewRequest/resp.Msg replace the raw pb.GetRandomNumberReq
+// in/out shape the grpc-go handler used to have, and connect.CodeOf replaces
+// status.Code — a *connect.Error has no GRPCStatus() method, so
+// google.golang.org/grpc/status.Code silently reports codes.Unknown for every
+// case below instead of the real code.
 
 func doublesReq(digits int32) *pb.GetRandomNumberReq {
 	reqType := pb.GetRandomNumberReq_DOUBLES
@@ -29,12 +37,12 @@ func TestGetRandomNumberDoubles(t *testing.T) {
 		t.Run(strconv.Itoa(int(digits)), func(t *testing.T) {
 			// Repeat: the value is random, so a single draw proves little.
 			for i := 0; i < 200; i++ {
-				resp, err := s.GetRandomNumber(context.Background(), doublesReq(digits))
+				resp, err := s.GetRandomNumber(context.Background(), connect.NewRequest(doublesReq(digits)))
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
 
-				got := resp.GetNumber()
+				got := resp.Msg.GetNumber()
 				if len(got) != int(digits) {
 					t.Fatalf("value %q has length %d, want %d (zero padding)", got, len(got), digits)
 				}
@@ -54,12 +62,12 @@ func TestGetRandomNumberDoublesRejectsBadDigits(t *testing.T) {
 
 	for _, digits := range []int32{-1, 0, 19, 100, math.MaxInt32} {
 		t.Run(strconv.Itoa(int(digits)), func(t *testing.T) {
-			_, err := s.GetRandomNumber(context.Background(), doublesReq(digits))
+			_, err := s.GetRandomNumber(context.Background(), connect.NewRequest(doublesReq(digits)))
 			if err == nil {
 				t.Fatalf("digits=%d was accepted", digits)
 			}
-			if got := status.Code(err); got != codes.InvalidArgument {
-				t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
 			}
 		})
 	}
@@ -81,14 +89,14 @@ func TestGetRandomNumberInterval(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(strconv.FormatInt(tt.lower, 10)+".."+strconv.FormatInt(tt.upper, 10), func(t *testing.T) {
 			for i := 0; i < 200; i++ {
-				resp, err := s.GetRandomNumber(context.Background(), intervalReq(tt.lower, tt.upper))
+				resp, err := s.GetRandomNumber(context.Background(), connect.NewRequest(intervalReq(tt.lower, tt.upper)))
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
 
-				got, parseErr := strconv.ParseInt(resp.GetNumber(), 10, 64)
+				got, parseErr := strconv.ParseInt(resp.Msg.GetNumber(), 10, 64)
 				if parseErr != nil {
-					t.Fatalf("value %q is not an int64: %v", resp.GetNumber(), parseErr)
+					t.Fatalf("value %q is not an int64: %v", resp.Msg.GetNumber(), parseErr)
 				}
 				if got < tt.lower || got >= tt.upper {
 					t.Fatalf("value %d outside [%d, %d)", got, tt.lower, tt.upper)
@@ -128,12 +136,12 @@ func TestGetRandomNumberIntervalRejectsUnusableRanges(t *testing.T) {
 				}
 			}()
 
-			_, err := s.GetRandomNumber(context.Background(), intervalReq(tt.lower, tt.upper))
+			_, err := s.GetRandomNumber(context.Background(), connect.NewRequest(intervalReq(tt.lower, tt.upper)))
 			if err == nil {
 				t.Fatalf("lower=%d upper=%d was accepted", tt.lower, tt.upper)
 			}
-			if got := status.Code(err); got != codes.InvalidArgument {
-				t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
 			}
 		})
 	}
@@ -146,12 +154,12 @@ func TestGetRandomNumberAnyEchoesMessageID(t *testing.T) {
 	msgID := "1234567890"
 	req := pb.GetRandomNumberReq_builder{Type: &reqType, MsgId: &msgID}.Build()
 
-	resp, err := s.GetRandomNumber(context.Background(), req)
+	resp, err := s.GetRandomNumber(context.Background(), connect.NewRequest(req))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.GetNumber() != msgID {
-		t.Errorf("value = %q, want %q", resp.GetNumber(), msgID)
+	if resp.Msg.GetNumber() != msgID {
+		t.Errorf("value = %q, want %q", resp.Msg.GetNumber(), msgID)
 	}
 }
 
@@ -162,11 +170,11 @@ func TestGetRandomNumberRejectsUnknownType(t *testing.T) {
 	unknown := pb.GetRandomNumberReq_REQUEST(999)
 	req := pb.GetRandomNumberReq_builder{Type: &unknown}.Build()
 
-	_, err := s.GetRandomNumber(context.Background(), req)
+	_, err := s.GetRandomNumber(context.Background(), connect.NewRequest(req))
 	if err == nil {
 		t.Fatal("unknown request type was accepted")
 	}
-	if got := status.Code(err); got != codes.InvalidArgument {
-		t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
 	}
 }
