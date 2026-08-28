@@ -158,10 +158,8 @@ func TestDialCarriesUnaryAndBidiTrafficOverPlaintextH2C(t *testing.T) {
 		_ = stream.CloseResponse()
 	})
 
-	if err := stream.Send(pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()); err != nil {
-		t.Fatalf("send registration: %v", err)
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{}.Build()); err != nil {
+		t.Fatalf("send hello: %v", err)
 	}
 
 	resp, err := stream.Receive()

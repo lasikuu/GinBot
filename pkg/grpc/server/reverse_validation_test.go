@@ -5,19 +5,33 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"google.golang.org/grpc/codes"
 )
 
-// The stream validation interceptor, exercised on the one message it sees.
+// This file used to pin protovalidate rejecting OpenClientActionStreamReq's
+// platform_enum field — three rules (required, enum.defined_only,
+// enum.not_in = 0), exercised through connectvalidate.NewInterceptor. That
+// field, and every field on the message, is gone: OpenClientActionStreamReq
+// carries nothing at all now (see reverse.proto's own doc comment on it),
+// identity having moved to the ginbot-platform-enum header, so
+// connectvalidate has nothing left to validate on this RPC at all.
 //
-// Until OpenClientActionStreamReq carried constraints, the stream interceptor
-// validated a message that could not fail: it was installed, it ran, and no
-// input existed that it would reject. These tests are what make it observable.
+// What replaces this coverage is the same refusal through the new mechanism:
+// a stream opened with a PLATFORM_UNSPECIFIED ginbot-platform-enum header
+// must still be refused InvalidArgument, and one carrying a value no
+// Platform name matches must be refused the same way `enum.defined_only`
+// used to refuse an undefined NUMBER on the message. Both now happen at
+// callermeta.FromHeader, reached from ClearanceInterceptor.WrapStreamingHandler
+// (pkg/grpc/interceptor/clearance.go) rather than from protovalidate — see
+// that function's own three cases (empty, unrecognised, PLATFORM_UNSPECIFIED)
+// for exactly what is being exercised here from the other side of the wire.
 //
 // Everything here goes through reverseHarness, a real HTTP/2 connection with
-// the production interceptor chain in front of it — the only place that chain
-// actually runs. reverse_test.go's registry and fan-out tests exercise
+// the production interceptor chain in front of it — the only place that
+// chain actually runs. reverse_test.go's registry and fan-out tests exercise
 // ReverseServer's own methods directly and never reach the chain at all; the
 // two files therefore cover two different lines of defence, and neither
 // substitutes for the other.
@@ -25,46 +39,67 @@ import (
 // registrationVerdictGrace bounds how long a test waits for the stream to be
 // refused before concluding it was accepted.
 //
-// There is no positive admission signal on the wire: a stream the server admits
-// simply blocks in Receive, so "accepted" can only be inferred from the absence
-// of a rejection, and inferring it takes a wait. 250ms against a measured sub-
-// millisecond round trip over a real loopback HTTP/2 connection under -race.
-// Too short would not produce a false PASS on the rejection tests — those
-// block on Receive until the status arrives — only a false pass on the
-// acceptance test, which is why the margin is generous rather than tight.
+// There is no positive admission signal on the wire: a stream the server
+// admits simply blocks in Receive, so "accepted" can only be inferred from
+// the absence of a rejection, and inferring it takes a wait. 250ms against a
+// measured sub-millisecond round trip over a real loopback HTTP/2 connection
+// under -race. Too short would not produce a false PASS on the rejection
+// tests — those block on Receive until the status arrives — only a false
+// pass on an acceptance test, which is why the margin is generous rather
+// than tight.
 const registrationVerdictGrace = 250 * time.Millisecond
 
-// registrationVerdict opens a client action stream, sends one registration and
-// reports how the server answered.
+// openWithHeader opens a reverse stream whose ginbot-platform-enum header is
+// set directly, bypassing callerCtx/identityInterceptor entirely — that path
+// only ever stamps a real pb.Platform's own String(), which can never
+// produce an unrecognised value, and callerCtx's platform argument is typed
+// as pb.Platform so it cannot express PLATFORM_UNSPECIFIED's absence either.
+// A garbage string is exactly what this file needs to drive
+// callermeta.FromHeader's "unrecognised" branch, so the header is written by
+// hand onto the stream's own RequestHeader before the first Send.
 //
-// It carries the SAME identity headers as a registered caller — unlike
-// requireCode(err, InvalidArgument) alone can prove, this is what shows
-// validation runs before the stream is otherwise perfectly authorised to
-// open. An unauthenticated caller would be rejected regardless of the
-// message body, which would make these tests pass for the wrong reason.
-//
-// The error is read from Receive rather than from Send. A streaming Send is
-// asynchronous — it hands the message to the transport and returns — so a
-// rejection produced by the interceptor arrives as the stream's terminal status
-// on the receive side, never as the send's return value. Asserting on Send would
-// pass whatever the interceptor did.
-//
-// nil means the server did not reject the registration within the grace period.
-func registrationVerdict(t *testing.T, h *harness, req *pb.OpenClientActionStreamReq) error {
+// The context is cancelled on cleanup rather than left as Background: an
+// ADMITTED stream (TestAValidPlatformHeaderStillOpensTheStream) otherwise
+// parks its handler in the select loop for the rest of the test binary,
+// which is exactly what leaves an idle-but-open HTTP/2 connection for
+// httptest.Server.Close to hang on — see harness_test.go's own comment on
+// httpClient.CloseIdleConnections for the full explanation.
+func openWithHeader(t *testing.T, h *harness, value string) *connect.BidiStreamForClient[pb.OpenClientActionStreamReq, pb.OpenClientActionStreamResp] {
 	t.Helper()
 
-	ctx, cancel := context.WithCancel(callerCtx(pb.Platform_PLATFORM_DISCORD, reverseCallerUID))
-	// Cancelled on the way out so an ACCEPTED stream's handler is released
-	// rather than left parked in Receive for the rest of the binary.
+	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	stream := h.Reverse.OpenClientActionStream(ctx)
+	if value != "" {
+		stream.RequestHeader().Set(callermeta.HeaderPlatformEnum, value)
+	}
+	return stream
+}
 
-	if err := stream.Send(req); err != nil {
+// registrationVerdict opens a client action stream carrying header, sends one
+// hello, and reports how the server answered.
+//
+// The error is read from Receive rather than from Send. A streaming Send is
+// asynchronous — it hands the message to the transport and returns — so a
+// rejection produced by the interceptor arrives as the stream's terminal
+// status on the receive side, never as the send's return value. Asserting on
+// Send would pass whatever the interceptor did.
+//
+// nil means the server did not reject the stream within the grace period.
+func registrationVerdict(t *testing.T, stream *connect.BidiStreamForClient[pb.OpenClientActionStreamReq, pb.OpenClientActionStreamResp]) error {
+	t.Helper()
+
+	t.Cleanup(func() {
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
+	})
+
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{}.Build()); err != nil {
 		// A send that fails outright is not the rejection under test: the
-		// interceptor rejects the message after the transport carried it, and
+		// interceptor rejects the request after the transport carried it, and
 		// reporting that here would look identical to the test passing.
-		t.Fatalf("send registration: %v", err)
+		t.Fatalf("send hello: %v", err)
 	}
 
 	// Buffered so this goroutine cannot be left parked on a receive once the
@@ -87,113 +122,74 @@ func registrationVerdict(t *testing.T, h *harness, req *pb.OpenClientActionStrea
 	}
 }
 
-// TestAnUndefinedPlatformNumberIsRejectedByTheInterceptor is what
-// enum.defined_only buys.
+// TestAnUnspecifiedPlatformHeaderIsRejected is what callermeta.FromHeader's
+// own PLATFORM_UNSPECIFIED check now buys on this RPC, in place of the old
+// enum.not_in = 0 rule on the message.
 //
-// A number no Platform value uses is a perfectly well-formed enum on the wire —
-// protobuf enums are open, so it round-trips through the generated code without
-// complaint and arrives at the handler as pb.Platform(99). The handler's own
-// check does not catch it either: it tests for PLATFORM_UNSPECIFIED, and 99 is
-// not that, so an unconstrained schema would register a client on a platform
-// nothing routes to and leave it holding a registry slot indefinitely.
-//
-// InvalidArgument is therefore attributable: the handler returns
-// ResourceExhausted, Internal or a context error, and never this.
-func TestAnUndefinedPlatformNumberIsRejectedByTheInterceptor(t *testing.T) {
+// The identity is registered anyway, under PLATFORM_UNSPECIFIED specifically:
+// if this caller were only ever known under a real platform, opening with an
+// unspecified header would be refused with FailedPrecondition ("caller is not
+// registered") instead, for an unrelated reason, and this test would pass for
+// the wrong one. dir.resolveCount() below is what proves that did not happen
+// — FromHeader fails before ClearanceInterceptor ever calls the resolver.
+func TestAnUnspecifiedPlatformHeaderIsRejected(t *testing.T) {
+	user := testUser(reverseCallerUserID, pb.Clearance_CLEARANCE_REGISTERED)
+	dir := newDirectory().add(pb.Platform_PLATFORM_UNSPECIFIED, reverseCallerUID, user)
+	h := newHarness(t, withDirectory(dir))
+
+	stream := openWithHeader(t, h, pb.Platform_PLATFORM_UNSPECIFIED.String())
+
+	err := registrationVerdict(t, stream)
+	if err == nil {
+		t.Fatal("the server admitted a stream whose ginbot-platform-enum header was PLATFORM_UNSPECIFIED")
+	}
+	requireCode(t, err, codes.InvalidArgument)
+
+	if n := dir.resolveCount(); n != 0 {
+		t.Errorf("resolver ran %d times for an unspecified platform, want 0: "+
+			"callermeta.FromHeader is supposed to refuse it before any caller is resolved", n)
+	}
+}
+
+// TestAnUnrecognisedPlatformHeaderIsRejected is what callermeta.FromHeader's
+// pb.Platform_value lookup buys, in place of the old enum.defined_only rule
+// on a message field. The header carries a NAME now, not a raw number, so
+// "undefined" means a string no Platform value declares rather than a number
+// outside the enum's range — the mechanism moved, but a client that gets the
+// platform wrong is refused the same way either side of that move.
+func TestAnUnrecognisedPlatformHeaderIsRejected(t *testing.T) {
 	h := reverseHarness(t)
 
-	// 99 is chosen for being far outside the declared range (0..6) rather than
-	// one past the end, so adding a Platform value cannot quietly make this test
-	// stop testing anything.
-	undefined := pb.Platform(99)
-	if _, ok := pb.Platform_name[int32(undefined)]; ok {
-		t.Fatalf("Platform(%d) is a defined value; pick a number the enum does not use", undefined)
-	}
+	stream := openWithHeader(t, h, "PLATFORM_DOES_NOT_EXIST")
 
-	err := registrationVerdict(t, h, pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: undefined.Enum(),
-	}.Build())
+	err := registrationVerdict(t, stream)
 	if err == nil {
-		t.Fatalf("the server accepted a registration for Platform(%d); enum.defined_only is not being enforced",
-			undefined)
+		t.Fatal("the server admitted a stream whose ginbot-platform-enum header names no Platform value")
 	}
 	requireCode(t, err, codes.InvalidArgument)
 }
 
-// TestAMissingPlatformIsRejectedByTheInterceptor is what required buys, and it
-// is a DIFFERENT input from the one above on purpose.
-//
-// A test that only covered an undefined number would pass with required deleted,
-// and a test that only covered an absent field would pass with defined_only
-// deleted. Two rules, two inputs that each violate exactly one of them.
-//
-// An absent platform_enum is reachable: presence is explicit, so any client that
-// simply does not set the field — trivially expressible in Go, and the default in
-// several other languages' builders — sends this.
-func TestAMissingPlatformIsRejectedByTheInterceptor(t *testing.T) {
+// TestAMissingPlatformHeaderIsRejected is what callermeta.FromHeader's
+// presence check buys, in place of the old `required` rule on the message.
+// No header at all is a real input: a client built without
+// identityInterceptor's equivalent (or a raw curl against the endpoint)
+// sends exactly this.
+func TestAMissingPlatformHeaderIsRejected(t *testing.T) {
 	h := reverseHarness(t)
 
-	// Nothing set at all. With explicit presence this is not serialised, so the
-	// server genuinely sees an absent field rather than a zero one.
-	req := pb.OpenClientActionStreamReq_builder{}.Build()
-	if req.HasPlatformEnum() {
-		t.Fatal("the fixture set platform_enum; this test is about the field being absent")
-	}
+	stream := openWithHeader(t, h, "")
 
-	err := registrationVerdict(t, h, req)
+	err := registrationVerdict(t, stream)
 	if err == nil {
-		t.Fatal("the server accepted a registration with no platform_enum at all; required is not being enforced")
+		t.Fatal("the server admitted a stream with no ginbot-platform-enum header at all")
 	}
 	requireCode(t, err, codes.InvalidArgument)
 }
 
-// TestAnUnspecifiedPlatformIsRejectedByTheInterceptor.
-//
-// PLATFORM_UNSPECIFIED is the registration the server has no route for: there is
-// no platform to fan actions out to, so admitting one costs a registry slot and
-// a goroutine to deliver nothing.
-//
-// InvalidArgument is the assertion because it is attributable. The handler's own
-// PLATFORM_UNSPECIFIED check does not produce an error at all — it logs and
-// continues, leaving the stream open — so this code can only have come from the
-// interceptor.
-//
-// What this test actually guards is the THIRD rule on platform_enum, which is
-// the only one that does any work here. Neither of the other two rejects an
-// explicitly set zero enum:
-//
-//   - required is a PRESENCE check. platform_enum has explicit presence, so a
-//     client that sets it to PLATFORM_UNSPECIFIED serialises it, the server sees
-//     it as present, and required is satisfied. Only an ABSENT field fails it,
-//     which is what TestAMissingPlatformIsRejectedByTheInterceptor covers.
-//   - enum.defined_only rejects numbers the enum does not declare. 0 IS declared
-//     — it is PLATFORM_UNSPECIFIED — so it passes. That rule is covered by
-//     TestAnUndefinedPlatformNumberIsRejectedByTheInterceptor.
-//
-// So deleting `(buf.validate.field).enum.not_in = 0` from reverse.proto would
-// leave the other two rules in place, the whole reverse-stream suite passing,
-// and this the only test that noticed. It was written while that rule was
-// missing and failing on purpose; it is the regression guard now.
-func TestAnUnspecifiedPlatformIsRejectedByTheInterceptor(t *testing.T) {
-	h := reverseHarness(t)
-
-	err := registrationVerdict(t, h, pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_UNSPECIFIED.Enum(),
-	}.Build())
-	if err == nil {
-		t.Fatal("the interceptor accepted a PLATFORM_UNSPECIFIED registration: " +
-			"required is a presence check and an explicitly set zero enum is present, " +
-			"and enum.defined_only allows 0 because PLATFORM_UNSPECIFIED is a defined value. " +
-			"(buf.validate.field).enum.not_in = 0 on OpenClientActionStreamReq.platform_enum " +
-			"is the only rule that refuses this; check it is still there")
-	}
-	requireCode(t, err, codes.InvalidArgument)
-}
-
-// TestAValidPlatformStillOpensTheStream is the other half of every rejection
-// above: constraints that refuse everything would satisfy all three and break
-// the control channel outright.
-func TestAValidPlatformStillOpensTheStream(t *testing.T) {
+// TestAValidPlatformHeaderStillOpensTheStream is the other half of every
+// rejection above: a mechanism that refused everything would satisfy all
+// three rejection tests too.
+func TestAValidPlatformHeaderStillOpensTheStream(t *testing.T) {
 	for _, platform := range []pb.Platform{
 		pb.Platform_PLATFORM_DISCORD,
 		pb.Platform_PLATFORM_MATRIX_PROTOCOL,
@@ -201,9 +197,14 @@ func TestAValidPlatformStillOpensTheStream(t *testing.T) {
 		t.Run(platform.String(), func(t *testing.T) {
 			h := reverseHarness(t)
 
-			if err := registrationVerdict(t, h, pb.OpenClientActionStreamReq_builder{
-				PlatformEnum: platform.Enum(),
-			}.Build()); err != nil {
+			stream := openWithHeader(t, h, platform.String())
+			// A valid platform alone is not enough to be admitted: the caller
+			// still has to resolve, which needs ginbot-user-id too.
+			// reverseHarness registers reverseCallerUID on both platforms this
+			// test drives.
+			stream.RequestHeader().Set(callermeta.HeaderUserID, reverseCallerUID)
+
+			if err := registrationVerdict(t, stream); err != nil {
 				t.Errorf("the server refused a %v registration with %v", platform, err)
 			}
 		})

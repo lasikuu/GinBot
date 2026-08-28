@@ -103,16 +103,18 @@ func fixedCallerResolver() interceptor.CallerResolver {
 // mirrors — over plaintext h2c.
 //
 // interceptor.NewOriginInterceptor is deliberately NOT included. Its own doc
-// comment records that WrapStreamingHandler is a no-op for
-// OpenClientActionStream specifically — the reverse stream is not scoped to
-// a single origin at all — so adding it here would change nothing this test
-// can observe while pulling in an OriginResolver fixture purely for show.
-// RecoverInterceptor and connectvalidate.NewInterceptor are kept: the former
-// is what stops a handler-side bug from taking the whole test binary down
-// with it, and the latter is what actually enforces
-// OpenClientActionStreamReq's platform_enum requirement at the edge — see
-// pkg/grpc/server/reverse.go's comment on why that check is still duplicated
-// defensively inside the handler.
+// comment records that its bootstrap is a no-op in PRACTICE for
+// OpenClientActionStream specifically — a reverse stream carries no origin
+// headers at all — so adding it here would change nothing this test can
+// observe while pulling in an OriginResolver fixture purely for show.
+// RecoverInterceptor and connectvalidate.NewInterceptor are kept:
+// RecoverInterceptor is what stops a handler-side bug from taking the whole
+// test binary down with it. connectvalidate.NewInterceptor no longer has
+// anything to enforce on OpenClientActionStreamReq specifically — that
+// message carries no fields at all now, identity having moved to the
+// ginbot-platform-enum header — but it stays installed because production
+// installs it unconditionally too, and this file mirrors production's chain
+// rather than hand-picking only the interceptors this test happens to need.
 func newRealReverseH2CServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
@@ -194,10 +196,13 @@ const admissionWindow = 300 * time.Millisecond
 func openAndCheckAdmission(ctx context.Context, reverseClient ginbotv1connect.ReverseServiceClient) (entry actionStream, refusalErr error) {
 	stream := reverseClient.OpenClientActionStream(ctx)
 
-	registration := pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()
-	if err := stream.Send(registration); err != nil {
+	// A hello, not a registration: the message carries no fields at all, and
+	// the server takes this stream's platform from the ginbot-platform-enum
+	// header ctx carries (attached by the test's own callermeta.NewOutgoingContext
+	// call, mirroring RunClientActionStream) — see reverse.go and
+	// OpenClientActionStreamReq's own doc comment in reverse.proto.
+	hello := pb.OpenClientActionStreamReq_builder{}.Build()
+	if err := stream.Send(hello); err != nil {
 		return nil, err
 	}
 

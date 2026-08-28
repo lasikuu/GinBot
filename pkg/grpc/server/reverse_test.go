@@ -264,9 +264,15 @@ func openRegisteredReverseClient(t *testing.T, h *harness, platform pb.Platform)
 	stream := h.Reverse.OpenClientActionStream(ctx)
 
 	before := h.reverseServer.clientCount()
-	if err := stream.Send(pb.OpenClientActionStreamReq_builder{PlatformEnum: platform.Enum()}.Build()); err != nil {
+	// The hello carries no fields at all: platform now travels in the
+	// ginbot-platform-enum header identityInterceptor already stamped from
+	// callerCtx above, not in the message body. Connect issues the underlying
+	// HTTP request lazily on the first Send, so this still has to happen —
+	// see runOnce's own comment in pkg/grpc/client/reverse.go — it just no
+	// longer carries anything the server reads.
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{}.Build()); err != nil {
 		cancel()
-		t.Fatalf("send registration: %v", err)
+		t.Fatalf("send hello: %v", err)
 	}
 
 	// Registered before the wait below, not after: if registration itself
@@ -575,10 +581,8 @@ func TestOpenClientActionStreamPastTheCapIsResourceExhausted(t *testing.T) {
 	defer cancel()
 	stream := h.Reverse.OpenClientActionStream(ctx)
 
-	if err := stream.Send(pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
-	}.Build()); err != nil {
-		t.Fatalf("send registration: %v", err)
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{}.Build()); err != nil {
+		t.Fatalf("send hello: %v", err)
 	}
 
 	_, err := stream.Receive()
@@ -730,10 +734,26 @@ func TestShutdownUnblocksASilentRegisteredStream(t *testing.T) {
 	waitForClientCount(t, h.reverseServer, 0)
 }
 
-// A client's platform is unknown until its first message, so a stream can sit in
-// its first Receive having registered nothing. That iteration runs before there
-// is anything to deregister and must unwind on its own terms.
-func TestShutdownUnblocksAStreamThatNeverRegistered(t *testing.T) {
+// TestShutdownUnblocksAStreamRegisteredFromHeadersAloneBeforeAnyMessageContent
+// replaces the pre-stage-5 TestShutdownUnblocksAStreamThatNeverRegistered,
+// whose premise this stage retires: "a client's platform is unknown until its
+// first message" stopped being true the moment registration moved onto
+// headers (reverse.go's getMetadata, fed by the ginbot-platform-enum header
+// ClearanceInterceptor already parsed). The platform is now known before the
+// handler's select loop ever starts, so registration happens at HANDLER
+// START — see maxStreamClients's own updated comment — not on the first
+// Receive.
+//
+// So the scenario this test now exercises is stronger, not merely renamed: a
+// stream that never sends anything beyond its headers-only hello (Send(nil),
+// no OpenClientActionStreamReq body at all) is registered anyway, because
+// nothing about registration needed that body in the first place. Shutdown
+// still has to unblock it and release its slot — that property survives
+// unchanged — but there is no longer an "unregistered window" to prove
+// Shutdown also covers; TestShutdownUnblocksASilentRegisteredStream is now
+// this test's only meaningfully distinct sibling, differing solely in
+// whether the hello carries a body message at all.
+func TestShutdownUnblocksAStreamRegisteredFromHeadersAloneBeforeAnyMessageContent(t *testing.T) {
 	h := reverseHarness(t)
 
 	ctx, cancel := context.WithCancel(callerCtx(pb.Platform_PLATFORM_DISCORD, reverseCallerUID))
@@ -742,8 +762,7 @@ func TestShutdownUnblocksAStreamThatNeverRegistered(t *testing.T) {
 
 	// Send(nil) dispatches the request headers without a body message — a
 	// Connect client's first Send is what actually puts the request on the
-	// wire at all, so without this the handler never starts and Shutdown
-	// would trivially "unblock" a request the server never received.
+	// wire at all, so without this the handler never starts.
 	if err := stream.Send(nil); err != nil {
 		t.Fatalf("send headers-only: %v", err)
 	}
@@ -751,11 +770,69 @@ func TestShutdownUnblocksAStreamThatNeverRegistered(t *testing.T) {
 	rec := &streamRecorder{}
 	done := drainReverseStream(stream, rec)
 
+	// The registration signal itself: admitted before this test ever sent a
+	// single body message. A harness still running the pre-stage-5 handler —
+	// which only registers on the first Receive — would time out here rather
+	// than reach Shutdown at all.
+	waitForClientCount(t, h.reverseServer, 1)
+
 	h.reverseServer.Shutdown()
 
-	requireStreamEnded(t, done, "an unregistered OpenClientActionStream after Shutdown")
+	requireStreamEnded(t, done, "a headers-only OpenClientActionStream after Shutdown")
+	waitForClientCount(t, h.reverseServer, 0)
+}
+
+// TestClientRegisteredFromHeadersAloneReceivesActions is the other half of
+// the property above: registration from headers alone is not just a registry
+// count, the client is genuinely reachable through SendAction — before it
+// ever sends anything but the hello.
+func TestClientRegisteredFromHeadersAloneReceivesActions(t *testing.T) {
+	h := reverseHarness(t)
+
+	ctx, cancel := context.WithCancel(callerCtx(pb.Platform_PLATFORM_DISCORD, reverseCallerUID))
+	t.Cleanup(cancel)
+	stream := h.Reverse.OpenClientActionStream(ctx)
+	t.Cleanup(func() {
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
+	})
+
+	if err := stream.Send(nil); err != nil {
+		t.Fatalf("send headers-only: %v", err)
+	}
+
+	rec := &streamRecorder{}
+	drainReverseStream(stream, rec)
+
+	waitForClientCount(t, h.reverseServer, 1)
+
+	h.reverseServer.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
+
+	waitFor(t, func() bool { return rec.count() >= 1 })
+}
+
+// TestAnUnauthorisedCallerCannotOpenTheReverseStream is item 7(b): a caller
+// carrying no identity at all must never take a registry slot, whatever else
+// is true of the registry's capacity.
+func TestAnUnauthorisedCallerCannotOpenTheReverseStream(t *testing.T) {
+	h := reverseHarness(t)
+
+	ctx, cancel := context.WithCancel(anonymousCtx())
+	defer cancel()
+	stream := h.Reverse.OpenClientActionStream(ctx)
+
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{}.Build()); err != nil {
+		t.Fatalf("send hello: %v", err)
+	}
+
+	_, err := stream.Receive()
+	if err == nil {
+		t.Fatal("an anonymous caller was admitted to the reverse stream")
+	}
+	requireCode(t, err, codes.InvalidArgument)
+
 	if got := h.reverseServer.clientCount(); got != 0 {
-		t.Errorf("clientCount() = %d, want 0: the stream never registered", got)
+		t.Errorf("clientCount() = %d, want 0: an unauthorised caller must not take a registry slot", got)
 	}
 }
 

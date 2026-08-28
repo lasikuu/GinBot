@@ -12,9 +12,13 @@ import (
 // The three-rule enum contract, applied to every enum field that carries it.
 //
 // The rules are `required`, `enum.defined_only` and `enum.not_in = 0`, and the
-// reason all three are needed is not the intuitive one. Established empirically
-// against the real validator, and documented on
-// OpenClientActionStreamReq.platform_enum in reverse.proto:
+// reason all three are needed is not the intuitive one. Established
+// empirically against the real validator. This was first documented on
+// OpenClientActionStreamReq.platform_enum in reverse.proto, before that RPC
+// moved identity onto the ginbot-platform-enum header and the field — along
+// with every protovalidate rule on it — was deleted; the reasoning below is
+// restated because the fields that still carry it need it as much as that
+// one did:
 //
 //   - `required` is a PRESENCE check. Every field here has explicit presence,
 //     so a client that explicitly sets the enum's zero value SATISFIES it.

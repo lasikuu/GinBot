@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestMain(m *testing.M) {
@@ -871,10 +872,18 @@ func TestRunOnceReportsAnUnreachableServerWhenSendFails(t *testing.T) {
 	}
 }
 
-// TestRunOnceSendsARegistrationCarryingTheIdentityPlatform: the registration
-// message is what tells the server which platform this stream serves, so it
-// has to carry the identity runOnce was actually given, not some other value.
-func TestRunOnceSendsARegistrationCarryingTheIdentityPlatform(t *testing.T) {
+// TestRunOnceSendsExactlyOneEmptyHelloToOpenTheStream replaces the
+// pre-stage-5 TestRunOnceSendsARegistrationCarryingTheIdentityPlatform.
+// OpenClientActionStreamReq carries no fields at all now — identity moved to
+// the ginbot-platform-enum header, which callermeta.NewClientInterceptor
+// stamps from the ctx RunClientActionStream builds (see its own comment) —
+// so there is no longer a platform_enum on the message for this test to read.
+// What is still true, and worth pinning, is that runOnce still sends exactly
+// one message to open the stream: connect issues the underlying HTTP request
+// lazily, on the first Send, so a client that stopped sending anything would
+// never reach the server handler at all. See runOnce's own comment for why
+// this Send is a hello and not a registration.
+func TestRunOnceSendsExactlyOneEmptyHelloToOpenTheStream(t *testing.T) {
 	streams := &scriptedStreams{script: []streamAttempt{{}}}
 
 	// A script entry with no recvErr and no actions ends the stream with
@@ -892,10 +901,13 @@ func TestRunOnceSendsARegistrationCarryingTheIdentityPlatform(t *testing.T) {
 	}
 	sent := stream.sentMessages()
 	if len(sent) != 1 {
-		t.Fatalf("%d registration messages were sent, want exactly 1", len(sent))
+		t.Fatalf("%d hello messages were sent, want exactly 1", len(sent))
 	}
-	if got := sent[0].GetPlatformEnum(); got != testIdentity.Platform {
-		t.Errorf("registration platform_enum = %v, want %v", got, testIdentity.Platform)
+	if sent[0] == nil {
+		t.Fatal("the hello message was nil")
+	}
+	if !proto.Equal(sent[0], pb.OpenClientActionStreamReq_builder{}.Build()) {
+		t.Errorf("hello message = %+v, want the canonical empty OpenClientActionStreamReq", sent[0])
 	}
 }
 

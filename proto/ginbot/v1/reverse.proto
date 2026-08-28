@@ -6,7 +6,11 @@ option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1;ginbotv1";
 
 import "ginbot/v1/platform.proto";
 
-import "buf/validate/validate.proto";
+// buf/validate/validate.proto is deliberately NOT imported. The only message a
+// client sends on this service is OpenClientActionStreamReq, which now has no
+// fields at all: identity moved to the headers, where the clearance interceptor
+// checks it. There is nothing left here for protovalidate to constrain, and an
+// unused import is a lint failure.
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/go_features.proto";
 
@@ -23,34 +27,30 @@ service ReverseService {
   rpc OpenClientActionStream(stream OpenClientActionStreamReq) returns (stream OpenClientActionStreamResp);
 }
 
+// The client half of the reverse stream. It carries no fields, and that is the
+// point.
+//
+// Field 1 used to be `platform_enum`, which made this the one RPC in the
+// repository that took caller identity from the request BODY — the exact
+// pattern ADR-0030 exists to forbid, surviving here only because the stream
+// predates the audited path. The platform now arrives in the
+// ginbot-platform-enum header like every other call, so the handler registers
+// the client from headers the clearance interceptor has already parsed rather
+// than from a message it has not.
+//
+// The message itself stays because the RPC stays bidirectional. A client must
+// still send one of these to open the stream: connect issues the underlying
+// HTTP request lazily, on the first Send or CloseRequest, so a client that
+// never sent would never reach the handler at all. It is a hello, not a
+// registration, and the server ignores its contents.
+//
+// The number and the name stay reserved so they can never be silently reused —
+// a future field 1 of a different type on a message clients still send would be
+// a wire-level type confusion.
 message OpenClientActionStreamReq {
-  // Platform of the Connection.
-  //
-  // This is the only message the stream validation interceptor ever sees on
-  // this RPC, and it previously carried no constraints at all — so the
-  // interceptor was validating a message that could not fail.
-  //
-  // All THREE rules are needed, and the reason is not obvious:
-  //
-  //   - required rejects the field being absent. It is a PRESENCE check, not a
-  //     non-zero check. This field has explicit presence, so a client that
-  //     explicitly sets PLATFORM_UNSPECIFIED satisfies required.
-  //   - enum.defined_only rejects a number the enum does not declare, e.g. 99.
-  //     It does NOT reject 0, because 0 is declared: it is
-  //     PLATFORM_UNSPECIFIED.
-  //   - enum.not_in = 0 is therefore what actually refuses an unspecified
-  //     platform, which is the registration the server has to reject — there is
-  //     no platform to route actions to. not_in is a REPEATED rule, so it takes
-  //     a repeated scalar assignment; `= [0]` is an array expression and does
-  //     not parse here.
-  //
-  // Verified against protovalidate rather than assumed: with only the first two
-  // rules, an explicit PLATFORM_UNSPECIFIED passed validation cleanly.
-  Platform platform_enum = 1 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).enum.defined_only = true,
-    (buf.validate.field).enum.not_in = 0
-  ];
+  reserved 1;
+  // Editions require reserved names as identifiers, not string literals.
+  reserved platform_enum;
 }
 
 // One reminder to post, pushed to the platform client that owns its destination.

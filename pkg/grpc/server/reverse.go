@@ -61,10 +61,24 @@ const defaultSenderDrainTimeout = 5 * time.Second
 // deregistration can lag the new stream's registration, while still bounding
 // the cost at 64 goroutines and 64*64 queued action pointers.
 //
-// Precisely: it bounds REGISTERED clients. A stream that opens and never sends
-// a registration message holds no slot and is not counted here — it is bounded
-// instead by the clearance interceptor now refusing to open it at all without a
-// registered caller, and by MaxConcurrentStreams per connection.
+// Precisely: it bounds every ADMITTED stream, from the moment its handler
+// starts running. There is no unregistered window to exempt from the count
+// any more — the client's platform comes from already-parsed caller metadata
+// (see getMetadata in common.go), not from a message the client has to send
+// first, so the handler registers immediately and holds its slot for the
+// stream's whole lifetime.
+//
+// Known and accepted, per ADR-0012: the platform a stream registers on is the
+// CALLER'S OWN asserted platform, so any CLEARANCE_REGISTERED account can
+// attach to the control channel for its platform and receive every action
+// fanned out to it, including other users' reminder text. It is not a
+// regression — before this stage the same caller could name any platform in
+// the request body, which was strictly weaker — and it cannot be closed with a
+// higher clearance floor, because nothing in the product grants clearance
+// above CLEARANCE_REGISTERED (see the "Known gap" note on
+// interceptor.DefaultRequirements), so raising it would refuse the bot's own
+// stream. Closing it properly means authenticating the bot PROCESS rather than
+// the account, which is ADR-0012's open question, not this cap's.
 //
 // OpenClientActionStream is guarded at CLEARANCE_REGISTERED like every other
 // authenticated RPC (see interceptor.DefaultRequirements): ClearanceInterceptor
@@ -194,8 +208,14 @@ type received struct {
 
 // OpenClientActionStream serves a bidirectional stream for one client.
 //
-// The client identifies its platform by sending a registration message; from
-// then on it receives every action addressed to that platform.
+// The client's platform travels in the ginbot-platform-enum request header
+// (see callermeta), already parsed and resolved by ClearanceInterceptor before
+// this handler ever runs; it is read here via getMetadata, never by re-parsing
+// headers or by reading the request body. Registration happens immediately,
+// before the first receive, and the client is sent every action addressed to
+// its platform from that point on. The client still sends one message after
+// opening — see pkg/grpc/client/reverse.go for why — but it carries no
+// content: it is a hello, not a registration.
 //
 // Receive deliberately does NOT drive the loop directly. Blocking the handler
 // on it makes three separate conditions unobservable: server shutdown,
@@ -203,32 +223,56 @@ type received struct {
 // sender goroutine. All three have to end the handler, so they are select arms
 // instead — four in total, the fourth being the received message itself.
 func (s *ReverseServer) OpenClientActionStream(ctx context.Context, stream *connect.BidiStream[pb.OpenClientActionStreamReq, pb.OpenClientActionStreamResp]) error {
-	// The client's platform is not known until its first message arrives, so
-	// registration is deferred until then.
-	var (
-		client     *streamClient
-		deregister func()
-		sendDone   chan struct{}
-		// sendErr is written by the sender goroutine strictly BEFORE it closes
-		// sendDone, and read here strictly AFTER a receive from sendDone. The
-		// close is the happens-before edge, so this needs no lock and stays
-		// clean under -race.
-		//
-		// That edge does NOT exist on the drain-timeout path below, where the
-		// handler gives up on sendDone and returns while the sender is still
-		// inside Send. Any write the sender makes here after that point has no
-		// reader at all, which is why it is harmless. It stops being harmless
-		// the moment anything reads sendErr without having received from
-		// sendDone first: do NOT add a sendErr field to the deferred logging
-		// below. That would be a genuine race, and one -race would almost never
-		// report, since it needs Send blocked for the whole drain timeout.
-		sendErr error
-	)
-	defer func() {
-		if deregister == nil {
-			return
-		}
+	meta, err := getMetadata(ctx)
+	if err != nil {
+		return err
+	}
 
+	// Currently UNREACHABLE, and kept deliberately. It replaces the
+	// protovalidate rule that used to guard OpenClientActionStreamReq's
+	// platform_enum before that field was reserved, and it is the invariant
+	// this handler actually depends on: a client must never be registered on a
+	// platform nothing can route to.
+	//
+	// Two things make it unreachable today, and neither is this handler's to
+	// enforce. With no interceptor chain — a unit test driving this method
+	// directly — getMetadata above has already failed, because nothing stashed
+	// any metadata. With the chain, ClearanceInterceptor stashes metadata only
+	// when callermeta.FromHeader succeeded, and FromHeader refuses an
+	// unspecified ginbot-platform-enum outright. So this is belt and braces
+	// against a future FromHeader that stops checking, not a live branch, and
+	// it is not covered by a test because no caller can construct the state it
+	// guards.
+	if meta.PlatformEnum == pb.Platform_PLATFORM_UNSPECIFIED {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("platform is required"))
+	}
+
+	client, deregister, admitted := s.register(meta.PlatformEnum)
+	if !admitted {
+		log.Z.Warn("refusing client action stream, registry is at capacity",
+			zap.String("platform", meta.PlatformEnum.String()),
+			zap.Int("max_clients", maxStreamClients),
+		)
+		return connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams"))
+	}
+
+	sendDone := make(chan struct{})
+	// sendErr is written by the sender goroutine strictly BEFORE it closes
+	// sendDone, and read here strictly AFTER a receive from sendDone. The
+	// close is the happens-before edge, so this needs no lock and stays
+	// clean under -race.
+	//
+	// That edge does NOT exist on the drain-timeout path below, where the
+	// handler gives up on sendDone and returns while the sender is still
+	// inside Send. Any write the sender makes here after that point has no
+	// reader at all, which is why it is harmless. It stops being harmless
+	// the moment anything reads sendErr without having received from
+	// sendDone first: do NOT add a sendErr field to the deferred logging
+	// below. That would be a genuine race, and one -race would almost never
+	// report, since it needs Send blocked for the whole drain timeout.
+	var sendErr error
+
+	defer func() {
 		deregister()
 		select {
 		case <-sendDone:
@@ -239,6 +283,48 @@ func (s *ReverseServer) OpenClientActionStream(ctx context.Context, stream *conn
 			)
 		}
 	}()
+
+	go func(c *streamClient, done chan struct{}) {
+		defer close(done)
+
+		// This goroutine sits OUTSIDE the interceptor chain, exactly as the
+		// receive goroutine below does, so nothing else recovers for it and a
+		// panic here would kill the whole process — Postgres pool, cron loop
+		// and every other stream with it.
+		//
+		// It is reachable: on the senderDrainTimeout path the handler has
+		// already returned, and net/http2 panics with "Write called after
+		// Handler finished" on any Send that lands after that. Recovering
+		// turns a bounded, already-accepted trade — a goroutine that briefly
+		// outlives its handler — back into what the drain timeout's comment
+		// claims it costs.
+		//
+		// Nothing is published: by this point either the handler read sendErr
+		// through the sendDone edge, or it gave up on the drain and there is
+		// no reader at all.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Z.Error("recovered from a panic in a stream send goroutine",
+					zap.Uint64("client_id", c.id),
+					zap.Any("panic", recovered),
+					zap.ByteString("stack", debug.Stack()),
+				)
+			}
+		}()
+
+		// Ranging over the channel exits when deregister closes it.
+		for action := range c.actions {
+			if err := stream.Send(action); err != nil {
+				log.Z.Warn("failed to send action to client",
+					zap.Uint64("client_id", c.id),
+					zap.Error(err),
+				)
+				// Published to the handler by the deferred close above.
+				sendErr = err
+				return
+			}
+		}
+	}(client, sendDone)
 
 	// handlerDone releases the receive goroutine from a publish nobody will ever
 	// read. It cannot release the goroutine from Receive itself: nothing here
@@ -333,12 +419,9 @@ func (s *ReverseServer) OpenClientActionStream(ctx context.Context, stream *conn
 			return ctx.Err()
 
 		case <-sendDone:
-			// Nil until the client registers, and a select on a nil channel
-			// blocks this arm forever — which is exactly right, since there is
-			// no sender to fail before then. Reaching here means Send failed;
-			// returning runs the deferred deregister, so the client does not
-			// keep its registry slot and its buffer for a stream it can no
-			// longer be written to.
+			// Reaching here means Send failed; returning runs the deferred
+			// deregister, so the client does not keep its registry slot and its
+			// buffer for a stream it can no longer be written to.
 			return sendErr
 
 		case r := <-recvCh:
@@ -349,86 +432,12 @@ func (s *ReverseServer) OpenClientActionStream(ctx context.Context, stream *conn
 				return r.err
 			}
 
-			// Second line of defence, not the first. OpenClientActionStreamReq
-			// now constrains platform_enum with required + defined_only, so the
-			// validation interceptor rejects an unspecified platform at the edge
-			// and this never fires through the server's own chain. It stays
-			// because it is still reachable: unit tests drive this handler
-			// directly with no chain around it, and an interceptor left off a
-			// future wiring would otherwise register a client on a platform
-			// nothing can ever route to.
-			platform := r.msg.GetPlatformEnum()
-			if platform == pb.Platform_PLATFORM_UNSPECIFIED {
-				log.Z.Warn("ignoring stream registration with unspecified platform")
-				continue
-			}
-
-			if client != nil {
-				// Already registered. Re-registration is not meaningful, but a
-				// client may legitimately keep the stream alive with further
-				// messages.
-				if platform != client.platform {
-					log.Z.Warn("client attempted to change platform on an open stream",
-						zap.Uint64("client_id", client.id),
-						zap.String("from", client.platform.String()),
-						zap.String("to", platform.String()),
-					)
-				}
-				continue
-			}
-
-			var admitted bool
-			client, deregister, admitted = s.register(platform)
-			if !admitted {
-				log.Z.Warn("refusing client action stream, registry is at capacity",
-					zap.String("platform", platform.String()),
-					zap.Int("max_clients", maxStreamClients),
-				)
-				return connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams"))
-			}
-			sendDone = make(chan struct{})
-
-			go func(c *streamClient, done chan struct{}) {
-				defer close(done)
-
-				// This goroutine sits OUTSIDE the interceptor chain, exactly as
-				// the receive goroutine above does, so nothing else recovers for
-				// it and a panic here would kill the whole process — Postgres
-				// pool, cron loop and every other stream with it.
-				//
-				// It is reachable: on the senderDrainTimeout path the handler
-				// has already returned, and net/http2 panics with "Write called
-				// after Handler finished" on any Send that lands after that.
-				// Recovering turns a bounded, already-accepted trade — a
-				// goroutine that briefly outlives its handler — back into what
-				// the drain timeout's comment claims it costs.
-				//
-				// Nothing is published: by this point either the handler read
-				// sendErr through the sendDone edge, or it gave up on the drain
-				// and there is no reader at all.
-				defer func() {
-					if recovered := recover(); recovered != nil {
-						log.Z.Error("recovered from a panic in a stream send goroutine",
-							zap.Uint64("client_id", c.id),
-							zap.Any("panic", recovered),
-							zap.ByteString("stack", debug.Stack()),
-						)
-					}
-				}()
-
-				// Ranging over the channel exits when deregister closes it.
-				for action := range c.actions {
-					if err := stream.Send(action); err != nil {
-						log.Z.Warn("failed to send action to client",
-							zap.Uint64("client_id", c.id),
-							zap.Error(err),
-						)
-						// Published to the handler by the deferred close above.
-						sendErr = err
-						return
-					}
-				}
-			}(client, sendDone)
+			// A received message carries no content any more —
+			// OpenClientActionStreamReq has no fields — so there is nothing to
+			// act on beyond having observed that the client is still there.
+			// This arm exists so the loop keeps calling stream.Receive() (via
+			// the goroutine above) for as long as the stream is open, which is
+			// what lets an EOF or a transport error surface here at all.
 		}
 	}
 }

@@ -217,11 +217,15 @@ func runOnce(
 	defer stream.CloseResponse() //nolint:errcheck // best-effort on an attempt already being abandoned
 	defer stream.CloseRequest()  //nolint:errcheck // best-effort on an attempt already being abandoned
 
-	// Register this client's platform so the server knows what to route here.
-	req := pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: id.Platform.Enum(),
-	}.Build()
-	if err := stream.Send(req); err != nil {
+	// This is a hello, not a registration: OpenClientActionStreamReq carries no
+	// fields, and the server now takes this client's platform from the
+	// ginbot-platform-enum header that callermeta.NewClientInterceptor stamps
+	// on every attempt (see RunClientActionStream's ctx setup above). The Send
+	// still has to happen, though — connect issues the underlying HTTP request
+	// lazily, on the first Send or CloseRequest, so a client that never sent
+	// anything would never reach the server handler at all and the stream
+	// would silently never open.
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{}.Build()); err != nil {
 		return streamUnreachable, err
 	}
 

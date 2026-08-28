@@ -29,12 +29,15 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lasikuu/GinBot/internal/config"
+	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
+	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"github.com/lasikuu/GinBot/pkg/grpc/server"
 	"github.com/lasikuu/GinBot/pkg/grpc/service"
 	"github.com/lasikuu/GinBot/pkg/log"
@@ -106,6 +109,30 @@ type pushedActions struct {
 	registered chan struct{}
 }
 
+// remindProducerCallerUID is the platform uid the reverse stream in this file
+// opens as. Its value is arbitrary: remindProducerResolver admits it
+// unconditionally, because this suite is about Remind's producer seam and not
+// about authorization — the clearance interceptor covering this stream is
+// pkg/grpc/server's to prove.
+const remindProducerCallerUID = "remind-producer-caller"
+
+// remindProducerResolver is an interceptor.CallerResolver that admits
+// remindProducerCallerUID at CLEARANCE_REGISTERED — the floor
+// OpenClientActionStream enforces (interceptor.DefaultRequirements) since
+// ClearanceInterceptor started covering the streaming path too. Any other
+// identity is unknown, matching db.ErrNotFound's contract, though nothing in
+// this file drives one.
+func remindProducerResolver(_ context.Context, _ pb.Platform, platformUID string) (*model.User, error) {
+	if platformUID != remindProducerCallerUID {
+		return nil, db.ErrNotFound
+	}
+	return &model.User{
+		ID:        "018f0000-0000-7000-8000-0000000000f1",
+		Username:  "remind-producer-caller",
+		Clearance: int32(pb.Clearance_CLEARANCE_REGISTERED),
+	}, nil
+}
+
 // startPlatformClient stands up a ReverseServer, installs it as the one Remind
 // pushes to, and connects a client that has demonstrably registered by the time
 // this returns.
@@ -118,20 +145,32 @@ func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 	service.ReverseServer = reverse
 	t.Cleanup(func() { service.ReverseServer = previous })
 
+	// ClearanceInterceptor is installed now, where it was not before: the
+	// reverse handler reads the caller's platform from context metadata
+	// ClearanceInterceptor stashes (see pkg/grpc/server/reverse.go's
+	// getMetadata call), rather than from the message body, since stage 5 of
+	// the Connect port. Without it, OpenClientActionStream fails closed with
+	// Internal before ever reaching the registry — there is no longer a
+	// message-only path around it, unlike before this stage.
+	handlerOpts := []connect.HandlerOption{
+		connect.WithInterceptors(interceptor.NewClearanceInterceptor(interceptor.DefaultRequirements(), remindProducerResolver)),
+	}
+
 	mux := http.NewServeMux()
-	mux.Handle(ginbotv1connect.NewReverseServiceHandler(reverse))
+	mux.Handle(ginbotv1connect.NewReverseServiceHandler(reverse, handlerOpts...))
 
 	// EnableHTTP2 + StartTLS, matching pkg/grpc/server's harness: a bidi stream
 	// needs a real HTTP/2 connection and HTTP/1.1 cannot carry one at all.
-	// No interceptor chain is installed, because this suite is about Remind's
-	// producer seam and not about authorization — the clearance interceptor
-	// covering this stream is pkg/grpc/server's to prove.
 	srv := httptest.NewUnstartedServer(mux)
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 
 	httpClient := srv.Client()
 	ctx, cancel := context.WithCancel(context.Background())
+	// Attached so callermeta.NewClientInterceptor (installed on the client
+	// below) stamps the ginbot-platform-enum / ginbot-user-id headers
+	// ClearanceInterceptor now resolves the caller from.
+	ctx = callermeta.NewOutgoingContext(ctx, platform, remindProducerCallerUID)
 
 	t.Cleanup(func() {
 		cancel()
@@ -147,11 +186,14 @@ func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 		srv.Close()
 	})
 
-	stream := ginbotv1connect.NewReverseServiceClient(httpClient, srv.URL).OpenClientActionStream(ctx)
-	if err := stream.Send(pb.OpenClientActionStreamReq_builder{
-		PlatformEnum: platform.Enum(),
-	}.Build()); err != nil {
-		t.Fatalf("register client action stream: %v", err)
+	client := ginbotv1connect.NewReverseServiceClient(httpClient, srv.URL, connect.WithInterceptors(callermeta.NewClientInterceptor()))
+	stream := client.OpenClientActionStream(ctx)
+	// A hello, not a registration: OpenClientActionStreamReq carries no
+	// fields since stage 5 of the Connect port. Connect issues the underlying
+	// HTTP request lazily on the first Send, so this still has to happen —
+	// see pkg/grpc/client/reverse.go's runOnce for the production equivalent.
+	if err := stream.Send(pb.OpenClientActionStreamReq_builder{}.Build()); err != nil {
+		t.Fatalf("send hello: %v", err)
 	}
 
 	pushed := &pushedActions{
