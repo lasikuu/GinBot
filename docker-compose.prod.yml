@@ -22,10 +22,26 @@
 x-ginbot-env: &ginbot-env
   GINBOT_ENV: production
   GINBOT_LOG_LEVEL: info
+  # This is the address the CLIENTS dial. ginbot-server overrides it for
+  # itself, because the same variable is also what the server BINDS — and
+  # binding a service name resolves to the container's own eth0 address alone,
+  # leaving loopback unbound. See the override on that service.
   GINBOT_GRPC_HOST: ginbot-server
   GINBOT_GRPC_PORT: "50051"
-  # Flip to true only once certs are mounted at /app/cert on every service.
-  GINBOT_GRPC_TLS: "false"
+  # Enabling mutual TLS is `cd cert && ./generator.sh`, then
+  # `GINBOT_GRPC_TLS=true` in .env — no compose edit at either step, which is
+  # what the default expression below is for. The cert mount on all three
+  # services is unconditional and safe with TLS off: cert/ always exists after
+  # a clone (generator.sh and the *-ext.conf files are committed; only the
+  # *.pem and *.srl material it produces is gitignored), and nothing reads it
+  # while this is "false".
+  #
+  # cert/server-ext.conf must carry a SAN matching GINBOT_GRPC_HOST above, or
+  # every client handshake fails hostname verification —
+  # auth.ClientTLSConfig sets neither ServerName nor InsecureSkipVerify, on
+  # purpose. DNS:ginbot-server is in there for exactly this reason; change one
+  # and change the other.
+  GINBOT_GRPC_TLS: ${GINBOT_GRPC_TLS:-false}
   GINBOT_DB_HOST: psql
   GINBOT_DB_PORT: "5432"
   GINBOT_DB_NAME: ginbot
@@ -58,10 +74,47 @@ services:
       target: server
     image: ginbot-server:latest
     restart: unless-stopped
-    environment: *ginbot-env
+    environment:
+      <<: *ginbot-env
+      # Overridden for this service ALONE, and it is load-bearing.
+      # cmd/ginbot-server binds net.JoinHostPort(GINBOT_GRPC_HOST, PORT), so
+      # the anchor's "ginbot-server" would bind only the address Docker's DNS
+      # resolves that name to — this container's eth0 — leaving 127.0.0.1
+      # unbound. The healthcheck below runs INSIDE this container, so it would
+      # be refused, the container would never become healthy, and both clients
+      # gate on that. Binding all interfaces is not extra exposure either: no
+      # port is published to the host, so the only reachable path is still the
+      # compose network. The clients keep dialling the service name from the
+      # anchor.
+      GINBOT_GRPC_HOST: "0.0.0.0"
+    volumes:
+      - ./cert:/app/cert:ro
     depends_on:
       psql:
         condition: service_healthy
+    healthcheck:
+      # The runtime image is alpine:3.20, which ships busybox wget; no image
+      # change needed. `-qO-` writes the body to stdout instead of to a file
+      # and suppresses progress output; a 503 and a refused connection both
+      # exit non-zero, which is all a healthcheck reads. CMD-SHELL propagates
+      # that status, so no explicit `|| exit 1` is needed.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:50051/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # The budget before this container is declared unhealthy is
+      # start_period + retries*interval — failures inside start_period do not
+      # count toward retries, they only stop an early failure being reported
+      # as unhealthy straight away. So 30s here is not what protects a slow
+      # boot; the 50s of retries after it is. It is set to roughly cover
+      # migrations (db.EnsureLatestVersion runs before the listener opens) so
+      # that `docker compose ps` reports "starting" rather than a failing
+      # check while they apply.
+      start_period: 30s
+    # Must exceed shutdownDrainDelay + shutdownTimeout (cmd/ginbot-server/main.go,
+    # 15s worst case) or the runtime SIGKILLs the process mid-drain and
+    # db.CloseDB / log.Sync never run.
+    stop_grace_period: 30s
 
   ginbot-discord:
     # Optional: only started when the `discord` profile is active
@@ -80,8 +133,14 @@ services:
       DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
       DISCORD_COMMAND_PREFIXES: ${DISCORD_COMMAND_PREFIXES:-}
       DISCORD_REMOVE_COMMANDS: ${DISCORD_REMOVE_COMMANDS:-false}
+    volumes:
+      - ./cert:/app/cert:ro
     depends_on:
-      - ginbot-server
+      ginbot-server:
+        # Waiting on the container starting rather than the server actually
+        # listening is why this used to hit refused connections and fall into
+        # the reconnect ladder on every `up`.
+        condition: service_healthy
 
   ginbot-matrix:
     # Optional: only started when the `matrix` profile is active
@@ -98,8 +157,14 @@ services:
       MATRIX_HOMESERVER_URL: ${MATRIX_HOMESERVER_URL:-}
       MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
       MATRIX_USER_ID: ${MATRIX_USER_ID:-}
+    volumes:
+      - ./cert:/app/cert:ro
     depends_on:
-      - ginbot-server
+      ginbot-server:
+        # See the same condition on ginbot-discord above: waiting on the
+        # container starting rather than the server listening is what used to
+        # send this client into the reconnect ladder on every `up`.
+        condition: service_healthy
 
 volumes:
   ginbot_prod_pgdata:

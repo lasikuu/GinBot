@@ -9,3 +9,23 @@ deps:
 lint:
   use:
     - BASIC
+# The whole point of phase 7 stage 1 was that breaking the wire was free while
+# nothing consumed it: no server implemented the Connect services yet, and no
+# client called them. That window is now closed — the server and both clients
+# are on Connect, deployed, and reading each other's messages. This is the
+# commit that ends it. From here, a breaking proto change must be a deliberate,
+# justified act (a new field, a deprecation with a migration path, a version
+# bump) rather than something CI simply failed to notice.
+#
+# FILE, the strictest category, rather than WIRE or WIRE_JSON. Those two cover
+# only what changes the bytes on the wire — deleting a field or an RPC,
+# renumbering, changing a type. FILE additionally catches what breaks
+# GENERATED CODE while leaving the wire intact: renaming a field, moving a
+# message between files, changing go_package. That is the failure mode this
+# repository actually has, because pkg/gen is committed and every call site is
+# compiled against it, so a "wire-compatible" rename lands as a build break
+# across cmd/, pkg/discord and pkg/matrix at once. FILE still permits ordinary
+# evolution: adding a field and deprecating an RPC both pass.
+breaking:
+  use:
+    - FILE

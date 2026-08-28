@@ -84,6 +84,23 @@ const (
 	// ReverseServer.Shutdown() below — to finish before the listener is forced
 	// closed.
 	shutdownTimeout = 10 * time.Second
+
+	// shutdownDrainDelay is a pause between flipping the health checker to
+	// NOT_SERVING and calling srv.Shutdown. Without it the two happen back to
+	// back, so a prober polling GET /healthz never observes the 503: by the
+	// time it would reconnect, the listener is already gone and it sees a
+	// refused connection instead. This delay buys an orchestrator or load
+	// balancer time to see the 503 and stop routing new work here before the
+	// listener actually closes — an orderly shutdown now costs at least this
+	// long in exchange for that. A second SIGINT or SIGTERM cuts it short, so
+	// a developer hitting Ctrl-C twice is not made to wait it out.
+	//
+	// shutdownDrainDelay + shutdownTimeout is 15s worst case, comfortably
+	// inside the 30s stop_grace_period set on ginbot-server in
+	// docker-compose.prod.yml — that margin is deliberate, not incidental: a
+	// worst case that ran past the grace period would get SIGKILLed before
+	// db.CloseDB and log.Sync ever ran.
+	shutdownDrainDelay = 5 * time.Second
 )
 
 // healthChecker backs UtilityService/HealthCheck, the gRPC health protocol and
@@ -124,17 +141,15 @@ func (h *healthChecker) Check(ctx context.Context, _ *grpchealth.CheckRequest) (
 
 // healthzHandler is the plain-HTTP counterpart of Check, for any prober that
 // speaks neither Connect nor gRPC, only "GET a URL and look at the status
-// code".
+// code". docker-compose.prod.yml wires a healthcheck against it, and both
+// platform clients wait on that healthcheck (`condition: service_healthy`)
+// rather than merely on the container having started.
 //
-// Nothing consumes it yet: docker-compose.prod.yml declares a healthcheck for
-// Postgres only, so wiring one for this service — and having both clients wait
-// on it rather than merely on the container starting — is still outstanding.
-//
-// Note it stops answering SERVING only microseconds before the listener closes,
-// because shutdown flips the checker and then immediately drains. A prober
-// therefore sees a refused connection rather than a 503. Draining for a beat
-// after the flip is what would make the NOT_SERVING window observable, and is
-// worth doing at the same time as the compose healthcheck.
+// It stops answering SERVING shutdownDrainDelay before the listener actually
+// closes, not the instant shutdown begins: main flips the checker to
+// NOT_SERVING, then pauses for that delay before calling srv.Shutdown, so a
+// prober polling this endpoint has a real chance to observe the 503 instead
+// of only ever seeing a refused connection once the listener is gone.
 func (h *healthChecker) healthzHandler(w http.ResponseWriter, r *http.Request) {
 	resp, _ := h.Check(r.Context(), &grpchealth.CheckRequest{})
 	if resp.Status != grpchealth.StatusServing {
@@ -335,9 +350,43 @@ func main() {
 	// come, so without this it would never return on its own and Shutdown would
 	// wait out its whole timeout before forcing the listener closed anyway.
 	// ReverseServer.Shutdown closes s.done first, so Shutdown has something to
-	// wait for that actually finishes.
+	// wait for that actually finishes. That ordering is unaffected by the
+	// shutdownDrainDelay pause below: the streams are already released by the
+	// time it starts, so the delay only holds the listener open a little
+	// longer, it does not change what has to be released before srv.Shutdown
+	// can succeed. It is also why a stream opened DURING the drain window
+	// returns immediately rather than parking — s.done is already closed.
 	service.ReverseServer.Shutdown()
 	checker.shutdown()
+
+	// See shutdownDrainDelay's doc comment: this is what turns the NOT_SERVING
+	// window from something only this process's memory knows about into
+	// something a prober outside it can actually observe before the listener
+	// closes.
+	//
+	// Only on the signal path. On the serveErr branch the listener is already
+	// gone, so there is nothing left for a prober to connect to and the delay
+	// would be pure dead time before teardown.
+	//
+	// Interruptible, and that is not a nicety. signal.NotifyContext keeps
+	// SIGINT and SIGTERM trapped until stopSignals runs, which is after this,
+	// so an uninterruptible sleep here would swallow a second Ctrl-C entirely
+	// and leave SIGKILL as the operator's only way out of a five-second wait
+	// they have already asked twice to skip. drainSignals is registered before
+	// the wait for the same reason the outer NotifyContext is: a signal that
+	// arrives between the two would otherwise be lost.
+	if shutdownCtx.Err() != nil {
+		secondSignal := make(chan os.Signal, 1)
+		signal.Notify(secondSignal, os.Interrupt, syscall.SIGTERM)
+
+		select {
+		case <-time.After(shutdownDrainDelay):
+		case <-secondSignal:
+			log.Z.Info("second shutdown signal received, skipping the health drain.")
+		}
+
+		signal.Stop(secondSignal)
+	}
 
 	shutdownTimeoutCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()

@@ -130,6 +130,14 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v7
+      with:
+        # buf breaking below reads history out of ../.git. The default
+        # checkout is shallow (fetch-depth 1) and fetches only the ref under
+        # test, so neither the baseline commit on a push nor origin/main on a
+        # pull request is present and buf fails to resolve the ref outright.
+        # It errors rather than silently comparing against something wrong,
+        # but it errors on every run, so the check would be permanently red.
+        fetch-depth: 0
 
     - name: Set up Go
       uses: actions/setup-go@v7
@@ -159,6 +167,35 @@ jobs:
     # proto/buf.yaml has configured lint since it was added, but nothing ran it.
     - name: Lint protos
       run: cd proto && buf lint
+
+    # The baseline differs by event, and getting it wrong makes the check
+    # either permanently red or permanently vacuous.
+    #
+    #   - On a pull request, actions/checkout leaves a DETACHED HEAD at
+    #     refs/pull/N/merge and creates no local refs/heads/main, so
+    #     `#branch=main` cannot resolve however deep the fetch is. The branch
+    #     exists only as the remote-tracking refs/remotes/origin/main, which
+    #     is what has to be named.
+    #   - On a push to main the ref under test IS main, so comparing against
+    #     it would diff main's proto/ against itself and could only ever pass.
+    #     This repository pushes to main directly, so skipping the check there
+    #     would leave the ordinary path completely uncovered — the baseline is
+    #     the previous commit instead.
+    #
+    # The initial-commit case (no HEAD~1) is skipped rather than failed: there
+    # is nothing to be compatible with yet.
+    - name: Breaking change check
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          against='../.git#ref=refs/remotes/origin/main,subdir=proto'
+        elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+          against='../.git#ref=HEAD~1,subdir=proto'
+        else
+          echo "No previous commit to compare against; skipping."
+          exit 0
+        fi
+        echo "Comparing proto/ against ${against}"
+        cd proto && buf breaking --against "$against"
 
     # The same class of silent drift as the protovalidate pin below, one layer
     # up: the generator and the runtime it generates against are two independent
