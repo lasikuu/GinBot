@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -95,13 +98,138 @@ const (
 	// long in exchange for that. A second SIGINT or SIGTERM cuts it short, so
 	// a developer hitting Ctrl-C twice is not made to wait it out.
 	//
-	// shutdownDrainDelay + shutdownTimeout is 15s worst case, comfortably
-	// inside the 30s stop_grace_period set on ginbot-server in
-	// docker-compose.prod.yml — that margin is deliberate, not incidental: a
-	// worst case that ran past the grace period would get SIGKILLed before
-	// db.CloseDB and log.Sync ever ran.
+	// shutdownDrainDelay + shutdownTimeout is 15s, comfortably inside the 30s
+	// stop_grace_period set on ginbot-server in docker-compose.prod.yml — that
+	// margin is deliberate, not incidental: a shutdown that ran past the grace
+	// period would get SIGKILLed before db.CloseDB and log.Sync ever ran.
+	//
+	// It bounds the TRANSPORT's half of teardown and nothing else. What runs
+	// after srv.Shutdown returns is not covered: cronWait.Wait blocks until an
+	// inline cron job finishes, and a job that ignores its context (see
+	// pkg/cron) can take as long as its own query does, then db.CloseDB and
+	// log.Sync follow. The remaining 15s of grace is the budget for those. If a
+	// cron job ever grows a genuinely long-running query, bound the job rather
+	// than bounding cronWait.Wait — waiting is what stops the pool being closed
+	// under an in-flight query.
 	shutdownDrainDelay = 5 * time.Second
+
+	// healthProbeArg turns this binary into a one-shot health probe that exits
+	// 0 when the server answers GET /healthz with a 200, instead of starting a
+	// server. docker-compose.prod.yml's healthcheck is exactly this.
+	//
+	// The probe is this binary rather than the runtime image's busybox wget
+	// because wget cannot reach the server at all once GINBOT_GRPC_TLS is on:
+	// auth.ServerTLSConfig sets RequireAndVerifyClientCert, so the listener
+	// accepts nothing that fails to present a client certificate, and busybox
+	// wget cannot present one. A plaintext probe against a TLS listener never
+	// succeeds either. Since both platform clients gate on
+	// `condition: service_healthy`, a probe that cannot pass under TLS does not
+	// merely misreport — it stops the whole stack from starting. Reusing this
+	// binary means the probe loads the same certificate material through the
+	// same internal/auth path the platform clients use, so a green healthcheck
+	// under TLS is also evidence that mutual TLS itself works.
+	healthProbeArg = "-healthcheck"
+
+	// healthProbeHost is the address the probe dials, and it is deliberately
+	// NOT config.Options.GRPC.Host. That variable is a BIND address — the
+	// server passes it straight to net.Listen — and in production it is the
+	// wildcard 0.0.0.0, which names no peer to connect to. The probe runs
+	// inside the server's own container, so loopback is the correct target, and
+	// it is what makes the wildcard bind load-bearing rather than incidental:
+	// cmd/ginbot-server/compose_test.go pins that relationship.
+	//
+	// "localhost" rather than "127.0.0.1" so the name matches a DNS SAN in
+	// cert/server-ext.conf under TLS, where the probe verifies the server
+	// certificate like any other client.
+	healthProbeHost = "localhost"
+
+	// healthProbeTimeout bounds the probe's own request. It is well under the
+	// 5s `timeout` on the compose healthcheck so that a slow probe reports a
+	// failure itself, with a logged reason, rather than being killed by the
+	// container runtime with none.
+	healthProbeTimeout = 3 * time.Second
 )
+
+// healthProbeURL is the URL the in-container probe dials. The scheme has to
+// track GINBOT_GRPC_TLS: the server serves either plaintext h2c or TLS on the
+// one listener, never both, so probing the wrong scheme cannot connect.
+func healthProbeURL(tlsEnabled bool, port string) string {
+	scheme := "http"
+	if tlsEnabled {
+		scheme = "https"
+	}
+
+	return scheme + "://" + net.JoinHostPort(healthProbeHost, port) + "/healthz"
+}
+
+// probeHealth performs one GET against the health endpoint, returning nil only
+// on a 200.
+//
+// tlsConf is nil for a plaintext server. When it is non-nil it carries the
+// client key pair the server's RequireAndVerifyClientCert demands, and leaves
+// ServerName unset so the certificate is verified against the host in url —
+// the same posture auth.ClientTLSConfig gives the platform clients.
+func probeHealth(ctx context.Context, url string, tlsConf *tls.Config) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build probe request: %w", err)
+	}
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConf}}
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("probe %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	// Drained so the connection is reusable and CloseIdleConnections has
+	// something to close, rather than leaving a half-read response behind.
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("probe %s: %s", url, resp.Status)
+	}
+
+	return nil
+}
+
+// runHealthProbe is the whole of the container healthcheck. It returns the
+// process exit code: 0 is healthy, anything else is not.
+//
+// It shares nothing with the running server but the configuration, which is
+// the point — it is a separate process, started by the container runtime, that
+// has to reach the listener the same way any other client would.
+func runHealthProbe() int {
+	config.LoadEnv()
+	log.InitializeLogger(config.AppEnvironment, config.LogLevel)
+	defer log.Sync()
+	config.SetEnv()
+
+	var tlsConf *tls.Config
+	if config.Options.GRPC.TLS {
+		conf, err := auth.ClientTLSConfig(config.Options.GRPC.CertsPath)
+		if err != nil {
+			// Not fatal via log.Z.Fatal: os.Exit(1) there would skip the
+			// log.Sync above and the reason for an unhealthy container would
+			// be the one thing not written out.
+			log.Z.Error("health probe could not load client TLS material.", zap.Error(err))
+			return 1
+		}
+		tlsConf = conf
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), healthProbeTimeout)
+	defer cancel()
+
+	url := healthProbeURL(config.Options.GRPC.TLS, config.Options.GRPC.Port)
+	if err := probeHealth(ctx, url, tlsConf); err != nil {
+		log.Z.Error("health probe failed.", zap.Error(err))
+		return 1
+	}
+
+	return 0
+}
 
 // healthChecker backs UtilityService/HealthCheck, the gRPC health protocol and
 // GET /healthz from one probe, so the three surfaces this process exposes
@@ -160,6 +288,14 @@ func (h *healthChecker) healthzHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Checked before anything else is wired: the probe is a short-lived
+	// process that must not open the database, run migrations or bind a
+	// listener. os.Exit here skips no deferred call, because none is
+	// registered yet — runHealthProbe owns its own.
+	if len(os.Args) > 1 && os.Args[1] == healthProbeArg {
+		os.Exit(runHealthProbe())
+	}
+
 	// Environment variables and logger
 	config.LoadEnv()
 	log.InitializeLogger(config.AppEnvironment, config.LogLevel)
@@ -356,6 +492,15 @@ func main() {
 	// longer, it does not change what has to be released before srv.Shutdown
 	// can succeed. It is also why a stream opened DURING the drain window
 	// returns immediately rather than parking — s.done is already closed.
+	//
+	// One consequence worth knowing rather than discovering: a platform client
+	// reads that immediate clean return as a stream that was established and
+	// dropped, which resets its reconnect backoff to the minimum, so each
+	// client reattaches and is released again a handful of times across the
+	// drain window. It is bounded by the window and each attempt is refused
+	// straight away, so it costs a few registry round trips and nothing else —
+	// but it does mean the drain window quiets probers, not reverse-stream
+	// clients.
 	service.ReverseServer.Shutdown()
 	checker.shutdown()
 
@@ -364,15 +509,19 @@ func main() {
 	// something a prober outside it can actually observe before the listener
 	// closes.
 	//
-	// Only on the signal path. On the serveErr branch the listener is already
-	// gone, so there is nothing left for a prober to connect to and the delay
-	// would be pure dead time before teardown.
+	// Guarded on a signal having arrived rather than on which select arm won.
+	// Where Serve returned on its own with no signal, the listener is already
+	// gone, there is nothing left for a prober to connect to, and the delay
+	// would be pure dead time before teardown. Where a signal did arrive the
+	// delay is taken, including in the case where one landed while Serve was
+	// failing — that is deliberate: an operator who asked for a shutdown gets
+	// the observable NOT_SERVING window either way.
 	//
 	// Interruptible, and that is not a nicety. signal.NotifyContext keeps
 	// SIGINT and SIGTERM trapped until stopSignals runs, which is after this,
 	// so an uninterruptible sleep here would swallow a second Ctrl-C entirely
 	// and leave SIGKILL as the operator's only way out of a five-second wait
-	// they have already asked twice to skip. drainSignals is registered before
+	// they have already asked twice to skip. secondSignal is registered before
 	// the wait for the same reason the outer NotifyContext is: a signal that
 	// arrives between the two would otherwise be lost.
 	if shutdownCtx.Err() != nil {

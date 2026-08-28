@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"regexp"
-	"strconv"
 	"testing"
 	"time"
 )
@@ -45,18 +44,20 @@ func readCompose(t *testing.T) string {
 func TestComposeStopGracePeriodOutlastsShutdown(t *testing.T) {
 	compose := readCompose(t)
 
-	match := regexp.MustCompile(`(?m)^\s*stop_grace_period:\s*(\d+)s\s*$`).FindStringSubmatch(compose)
+	match := regexp.MustCompile(`(?m)^\s*stop_grace_period:\s*(\S+)\s*$`).FindStringSubmatch(compose)
 	if match == nil {
 		t.Fatalf("no stop_grace_period found in %s; ginbot-server needs one, "+
 			"or the runtime's 10s default cuts the drain short", composePath)
 	}
 
-	seconds, err := strconv.Atoi(match[1])
+	// Parsed as a duration rather than matched as a whole number of seconds:
+	// Compose accepts "1m30s" too, and a test that failed on a LARGER, safer
+	// grace period would be pushing back on the wrong side of its own bound.
+	grace, err := time.ParseDuration(match[1])
 	if err != nil {
-		t.Fatalf("stop_grace_period %q is not a whole number of seconds: %v", match[1], err)
+		t.Fatalf("stop_grace_period %q is not a duration: %v", match[1], err)
 	}
 
-	grace := time.Duration(seconds) * time.Second
 	worstCase := shutdownDrainDelay + shutdownTimeout
 	if grace <= worstCase {
 		t.Errorf("stop_grace_period = %s, want strictly greater than shutdownDrainDelay + shutdownTimeout (%s)",
@@ -67,17 +68,38 @@ func TestComposeStopGracePeriodOutlastsShutdown(t *testing.T) {
 // TestComposeHealthcheckProbesAnAddressTheServerBinds is the guard for the bug
 // described at the top of this file.
 //
-// The rule it enforces: whatever host the healthcheck connects to, the
-// ginbot-server service must set GINBOT_GRPC_HOST to a wildcard, because the
-// probe runs inside the container and the server binds exactly the one address
-// that variable names. Binding a specific name or address and probing a
-// different one is the failure that shipped.
+// The rule it enforces: the healthcheck must run THIS binary in probe mode,
+// and the ginbot-server service must set GINBOT_GRPC_HOST to a wildcard.
+//
+// The two halves are one rule. The probe dials healthProbeHost, which is
+// loopback, because it runs inside the server's own container — while the
+// server binds exactly the one address GINBOT_GRPC_HOST names. Binding a
+// specific name or address and probing loopback is the failure that shipped.
+//
+// Pinning the probe COMMAND matters as much as pinning the address, and for a
+// second reason: a plaintext `wget` probe passes every test and every local
+// run with GINBOT_GRPC_TLS unset, then makes the container permanently
+// unhealthy the moment TLS is switched on, because the listener then demands a
+// client certificate wget cannot present. Both platform clients gate on
+// `condition: service_healthy`, so that is the whole stack refusing to start,
+// in the configuration ADR 0032 promises works with no compose edit.
 func TestComposeHealthcheckProbesAnAddressTheServerBinds(t *testing.T) {
 	compose := readCompose(t)
 
-	probe := regexp.MustCompile(`wget[^"]*http://([^:/"]+):(\d+)/healthz`).FindStringSubmatch(compose)
+	// The exec-form healthcheck of the service that runs this binary. psql's
+	// CMD-SHELL pg_isready check does not match, and must not.
+	probe := regexp.MustCompile(`(?m)^\s*test:\s*\[\s*"CMD"\s*,\s*"([^"]*ginbot-server)"\s*,\s*"([^"]+)"\s*\]`).
+		FindStringSubmatch(compose)
 	if probe == nil {
-		t.Fatalf("no /healthz wget healthcheck found in %s", composePath)
+		t.Fatalf("no exec-form [\"CMD\", \".../ginbot-server\", ...] healthcheck found in %s; "+
+			"the probe must be this binary, because no external HTTP client in the runtime image "+
+			"can present the client certificate the server requires under GINBOT_GRPC_TLS=true",
+			composePath)
+	}
+
+	if probe[2] != healthProbeArg {
+		t.Errorf("healthcheck runs %q %q; want the probe argument %q",
+			probe[1], probe[2], healthProbeArg)
 	}
 
 	// Every GINBOT_GRPC_HOST in the file: the anchor's (what the clients dial)
@@ -95,12 +117,13 @@ func TestComposeHealthcheckProbesAnAddressTheServerBinds(t *testing.T) {
 		t.Errorf("ginbot-server binds GINBOT_GRPC_HOST=%q but the healthcheck probes %q; "+
 			"the server binds exactly the address that variable names, so a non-wildcard bind "+
 			"leaves the probe's address unbound and the container never becomes healthy",
-			bind, probe[1])
+			bind, healthProbeHost)
 	}
 
-	if probe[2] != "50051" {
-		t.Errorf("healthcheck probes port %s; GINBOT_GRPC_PORT in the anchor is 50051", probe[2])
-	}
+	// No port assertion: the probe reads GINBOT_GRPC_PORT from the same
+	// environment the server binds from, so the two cannot disagree. That is
+	// strictly better than a test comparing two literals, which failed on a
+	// consistent port change and only caught an inconsistent one.
 }
 
 // TestComposeServerCertSANCoversTheDialledHost pins the other cross-artifact
@@ -127,7 +150,18 @@ func TestComposeServerCertSANCoversTheDialledHost(t *testing.T) {
 		t.Fatalf("reading cert/server-ext.conf: %v", err)
 	}
 
-	if !regexp.MustCompile(`DNS:` + regexp.QuoteMeta(dialled) + `\b`).Match(ext) {
+	// Scoped to the subjectAltName line, so a host named only in the file's
+	// comment block does not satisfy the check.
+	sanLine := regexp.MustCompile(`(?m)^\s*subjectAltName\s*=\s*(.+)$`).FindStringSubmatch(string(ext))
+	if sanLine == nil {
+		t.Fatalf("no subjectAltName found in cert/server-ext.conf:\n%s", ext)
+	}
+
+	// Terminated explicitly rather than with \b: "-" is not a word character,
+	// so `DNS:ginbot\b` matches "DNS:ginbot-server" and a rename to a host
+	// that merely PREFIXES a real SAN would pass with no certificate covering
+	// it.
+	if !regexp.MustCompile(`DNS:` + regexp.QuoteMeta(dialled) + `(?:,|\s|$)`).MatchString(sanLine[1]) {
 		t.Errorf("cert/server-ext.conf has no DNS:%s SAN, but the platform clients dial that host "+
 			"(GINBOT_GRPC_HOST in %s); every handshake would fail hostname verification with "+
 			"GINBOT_GRPC_TLS=true.\nserver-ext.conf:\n%s", dialled, composePath, ext)

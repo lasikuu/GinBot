@@ -80,12 +80,13 @@ services:
       # cmd/ginbot-server binds net.JoinHostPort(GINBOT_GRPC_HOST, PORT), so
       # the anchor's "ginbot-server" would bind only the address Docker's DNS
       # resolves that name to — this container's eth0 — leaving 127.0.0.1
-      # unbound. The healthcheck below runs INSIDE this container, so it would
-      # be refused, the container would never become healthy, and both clients
+      # unbound. The healthcheck below runs INSIDE this container and dials
+      # loopback (healthProbeHost in cmd/ginbot-server/main.go), so it would be
+      # refused, the container would never become healthy, and both clients
       # gate on that. Binding all interfaces is not extra exposure either: no
       # port is published to the host, so the only reachable path is still the
       # compose network. The clients keep dialling the service name from the
-      # anchor.
+      # anchor. cmd/ginbot-server/compose_test.go pins the pairing.
       GINBOT_GRPC_HOST: "0.0.0.0"
     volumes:
       - ./cert:/app/cert:ro
@@ -93,12 +94,23 @@ services:
       psql:
         condition: service_healthy
     healthcheck:
-      # The runtime image is alpine:3.20, which ships busybox wget; no image
-      # change needed. `-qO-` writes the body to stdout instead of to a file
-      # and suppresses progress output; a 503 and a refused connection both
-      # exit non-zero, which is all a healthcheck reads. CMD-SHELL propagates
-      # that status, so no explicit `|| exit 1` is needed.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:50051/healthz"]
+      # The server binary probes itself, rather than the runtime image's
+      # busybox wget probing it.
+      #
+      # wget cannot do the job once GINBOT_GRPC_TLS is true: the listener is
+      # then TLS-only and auth.ServerTLSConfig sets RequireAndVerifyClientCert,
+      # so a probe has to present a client certificate — which busybox wget has
+      # no way to do, at any URL or scheme. Both clients below gate on
+      # `condition: service_healthy`, so a probe that cannot pass under TLS
+      # does not just misreport the server, it stops the entire stack from
+      # starting. Running the binary instead means the probe reads
+      # GINBOT_GRPC_TLS, GINBOT_GRPC_PORT and GINBOT_CERTS_PATH from this same
+      # environment and loads certificates through the same internal/auth path
+      # the platform clients use, so the scheme, the port and the credentials
+      # cannot drift from the server's.
+      #
+      # Exec form, no shell: the binary's own exit code is the health status.
+      test: ["CMD", "/usr/local/bin/ginbot-server", "-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
