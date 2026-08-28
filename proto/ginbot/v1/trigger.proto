@@ -23,7 +23,12 @@ service TriggerService {
   rpc UpdateTrigger(UpdateTriggerReq) returns (UpdateTriggerResp);
   rpc DeleteTrigger(DeleteTriggerReq) returns (DeleteTriggerResp);
   rpc GetTriggerStats(GetTriggerStatsReq) returns (GetTriggerStatsResp);
-  rpc GetFile(GetFileReq) returns (GetFileResp);
+  // Server-streaming, not unary. ADR-0022 made it unary because authorisation
+  // was unary-only and a streamed file would have been reachable with no
+  // clearance floor at all; ClearanceInterceptor.WrapStreamingHandler removed
+  // that constraint, so the shape ADR-0007 originally anticipated is now the
+  // one that ships. See the ADR superseding 0022.
+  rpc GetFile(GetFileReq) returns (stream GetFileChunk);
 }
 
 // How a trigger's phrase is matched against a message.
@@ -403,9 +408,27 @@ message GetFileReq {
   ];
 }
 
-message GetFileResp {
-  // File metadata
+// The first and only metadata chunk of a GetFile stream.
+//
+// A wrapper around TriggerFile rather than TriggerFile itself, because this is
+// stream-scoped: anything the stream needs to describe itself — a checksum, a
+// chunk count — belongs here and not on TriggerFile, which is also embedded in
+// TryTriggerResp where none of it would mean anything.
+message GetFileMeta {
+  // File metadata, identical to what TryTriggerResp.file carried.
   TriggerFile file = 1;
-  // The full file contents
-  bytes content = 2;
+}
+
+// One frame of a GetFile stream.
+//
+// The server sends exactly one meta chunk first, then zero or more content
+// chunks in order; concatenating the content chunks reconstructs the file. A
+// client must treat an unset arm, an out-of-order meta, or an arm it does not
+// recognise as ordinary input rather than a bug — the same rule
+// OpenClientActionStreamResp's payload oneof carries, for the same reason.
+message GetFileChunk {
+  oneof chunk {
+    GetFileMeta meta = 1;
+    bytes content = 2;
+  }
 }

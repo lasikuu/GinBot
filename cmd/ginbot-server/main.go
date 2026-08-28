@@ -66,14 +66,17 @@ const (
 	// age out.
 	idleTimeout = 2 * time.Minute
 
-	// baselineMessageBytes bounds a single message on every service that has no
-	// reason to carry a file. Connect applies no cap of its own, so this is the
-	// only thing standing between a public procedure and an
-	// attacker-chosen allocation; see the comment where it is applied.
+	// baselineMessageBytes bounds a single message on every service, including
+	// TriggerService. Connect applies no cap of its own, so this is the only
+	// thing standing between a public procedure and an attacker-chosen
+	// allocation; see the comment where it is applied.
 	//
 	// 4 MiB is grpc-go's own default receive cap, which is what this server ran
 	// under before the port for every service including TriggerService, so
-	// nothing that worked then is refused now.
+	// nothing that worked then is refused now. TriggerService no longer needs a
+	// raised cap of its own: GetFile streams 1 MiB chunks instead of returning
+	// a file inline, so no message on this boundary carries a whole file any
+	// more.
 	baselineMessageBytes = 4 << 20
 
 	// shutdownTimeout bounds how long graceful shutdown waits for in-flight
@@ -179,9 +182,13 @@ func main() {
 	// which is what puts ClearanceInterceptor on
 	// ReverseService/OpenClientActionStream for the first time.
 	//
-	// OriginInterceptor is the exception and deliberately so: its
-	// WrapStreamingHandler is a no-op, because a reverse stream is not scoped to
-	// one guild or channel to bootstrap.
+	// OriginInterceptor runs on WrapStreamingHandler too, now that
+	// TriggerService/GetFile is a streaming RPC whose visibility check needs a
+	// call's own origin. It is a no-op in practice for
+	// ReverseService/OpenClientActionStream, since that stream carries no
+	// origin headers at all — see the comment on OriginInterceptor for why that
+	// is safe rather than something that would start writing destination rows
+	// for control channels.
 	// The baseline message cap is set explicitly and is NOT optional.
 	//
 	// Connect has no default: connect.WithReadMaxBytes is stored as an int that
@@ -204,16 +211,6 @@ func main() {
 		),
 	}
 
-	// TriggerService alone is raised above that baseline: GetFile returns a
-	// file's bytes inline in one unary response, up to storage.MaxFileBytes.
-	// Later options win, so appending here overrides the baseline for this
-	// service and leaves every other one at it.
-	triggerHandlerOpts := append(
-		append([]connect.HandlerOption{}, handlerOpts...),
-		connect.WithReadMaxBytes(config.MaxGRPCMessageBytes),
-		connect.WithSendMaxBytes(config.MaxGRPCMessageBytes),
-	)
-
 	// Trigger media needs somewhere to write blobs before TriggerServer is
 	// constructed: NewTriggerServer reads the package-level store via
 	// storage.Default(), which is nil until this call.
@@ -229,7 +226,7 @@ func main() {
 	// comment on service.Handlers for why that is a security property and not
 	// housekeeping. DiscordService is deliberately absent from it.
 	mux := http.NewServeMux()
-	mounts := service.Handlers(handlerOpts, triggerHandlerOpts)
+	mounts := service.Handlers(handlerOpts)
 	serviceNames := make([]string, 0, len(mounts))
 	for _, mount := range mounts {
 		mux.Handle(mount.Path, mount.Handler)

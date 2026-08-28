@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
-	"github.com/lasikuu/GinBot/internal/config"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/grpc/server"
@@ -26,8 +25,17 @@ import (
 // procedures, where no clearance interceptor runs and the peer choosing the
 // allocation size has not authenticated at all.
 //
-// These tests pin both halves: the baseline exists, and TriggerService alone is
-// raised above it.
+// TriggerService used to be raised above the baseline, to config.MaxGRPCMessageBytes,
+// because GetFile returned a whole file's bytes inline in one unary message.
+// That stopped being true this stage: GetFile is server-streaming now
+// (pkg/grpc/server/trigger.go), sending GetFileChunkBytes-sized chunks rather
+// than the whole file in one message, so nothing about TriggerService still
+// needs a raised cap — the raise, config.MaxGRPCMessageBytes and
+// triggerHandlerOpts are all gone from main.go. Every mounted service,
+// TriggerService included, now goes through the SAME handlerOpts.
+//
+// These tests pin both halves: the baseline exists, and TriggerService is
+// held to it exactly like everything else.
 
 // oversizedBody is a Connect unary request body one byte over n.
 //
@@ -38,8 +46,8 @@ func oversizedBody(n int) string {
 	return strings.Repeat("\x00", n+1)
 }
 
-// mountedForCapTest builds a mux the way main() does, with the same two option
-// sets, over servers that need no database.
+// mountedForCapTest builds a mux the way main() does, with the SAME option set
+// for every service, over servers that need no database.
 func mountedForCapTest(t *testing.T) *httptest.Server {
 	t.Helper()
 
@@ -47,15 +55,10 @@ func mountedForCapTest(t *testing.T) *httptest.Server {
 		connect.WithReadMaxBytes(baselineMessageBytes),
 		connect.WithSendMaxBytes(baselineMessageBytes),
 	}
-	triggerHandlerOpts := append(
-		append([]connect.HandlerOption{}, handlerOpts...),
-		connect.WithReadMaxBytes(config.MaxGRPCMessageBytes),
-		connect.WithSendMaxBytes(config.MaxGRPCMessageBytes),
-	)
 
 	mux := http.NewServeMux()
 	mux.Handle(ginbotv1connect.NewUtilityServiceHandler(server.NewUtilityServer(nil), handlerOpts...))
-	mux.Handle(ginbotv1connect.NewTriggerServiceHandler(server.NewTriggerServer(), triggerHandlerOpts...))
+	mux.Handle(ginbotv1connect.NewTriggerServiceHandler(server.NewTriggerServer(), handlerOpts...))
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -113,33 +116,51 @@ func TestBaselineMessageCapAcceptsAnOrdinaryMessage(t *testing.T) {
 	}
 }
 
-// TriggerService is raised above the baseline, because GetFile returns a file's
-// bytes inline in one unary response. A message between the two limits proves
-// the raise is actually applied and did not get lost behind the baseline that
-// was added after it.
-func TestTriggerServiceIsRaisedAboveTheBaseline(t *testing.T) {
-	if config.MaxGRPCMessageBytes <= baselineMessageBytes {
-		t.Fatalf("MaxGRPCMessageBytes (%d) is not above baselineMessageBytes (%d), so this "+
-			"test cannot distinguish the two caps",
-			config.MaxGRPCMessageBytes, baselineMessageBytes)
-	}
-
+// TestTriggerServiceIsCappedAtTheBaseline is the replacement for the
+// pre-stage-5 TestTriggerServiceIsRaisedAboveTheBaseline: TriggerService is no
+// longer raised above baselineMessageBytes at all. GetFile stopped needing
+// the raise when it stopped returning a whole file inline in one message
+// (pkg/grpc/server/trigger.go's GetFileChunkBytes streaming), and nothing else
+// on TriggerService ever needed one, so main.go now mounts it with exactly
+// the same handlerOpts as every other service.
+//
+// Driven against TriggerService/TryTrigger, not GetFile: GetFile is
+// server-streaming this stage, and postEnvelope's raw unary-envelope POST — a
+// bare serialised message, not connect's streaming frame format — is not a
+// request shape a streaming procedure ever accepts, so sending one there would
+// fail on protocol grounds before the size cap was ever consulted and prove
+// nothing about the cap. TryTrigger is an ordinary unary procedure on the same
+// service and the same handlerOpts apply to both.
+func TestTriggerServiceIsCappedAtTheBaseline(t *testing.T) {
 	srv := mountedForCapTest(t)
 
-	// Over the baseline, under the raised cap. It must NOT be refused for size;
-	// it fails later, on decode, which is a different code.
-	status := postEnvelope(t, srv.URL+ginbotv1connect.TriggerServiceGetFileProcedure, oversizedBody(baselineMessageBytes))
-	if status == http.StatusTooManyRequests {
-		t.Errorf("TriggerService refused a %d-byte message with resource_exhausted; it is "+
-			"capped at the baseline rather than at MaxGRPCMessageBytes, so GetFile cannot "+
-			"return a file of the size storage.MaxFileBytes permits", baselineMessageBytes+1)
-	}
-
-	// Over the raised cap. It must be refused.
-	status = postEnvelope(t, srv.URL+ginbotv1connect.TriggerServiceGetFileProcedure, oversizedBody(config.MaxGRPCMessageBytes))
+	status := postEnvelope(t, srv.URL+ginbotv1connect.TriggerServiceTryTriggerProcedure, oversizedBody(baselineMessageBytes))
 	if status != http.StatusTooManyRequests {
-		t.Errorf("status = %d, want %d: TriggerService accepted a message over "+
-			"MaxGRPCMessageBytes, so its cap is not applied at all",
-			status, http.StatusTooManyRequests)
+		t.Errorf("status = %d, want %d (resource_exhausted): TriggerService accepted a message "+
+			"over the %d-byte baseline, so it is not capped the same way every other service is",
+			status, http.StatusTooManyRequests, baselineMessageBytes)
+	}
+}
+
+// TestBaselineMessageCapExceedsTheGetFileChunkSize pins the relationship that
+// deleting config.MaxGRPCMessageBytes turned from a shared constant into two
+// numbers written down in two packages.
+//
+// TriggerService is no longer raised above the baseline, so the ONLY thing
+// keeping GetFile working is that a single GetFileChunk is smaller than the
+// cap every service is now held to. Lower baselineMessageBytes below
+// server.GetFileChunkBytes, or raise the chunk size above it, and every trigger
+// file playback fails at the transport with resource_exhausted — for every
+// file, not just large ones, since even a one-chunk file sends a full-size
+// frame when the blob is big enough.
+//
+// The integration suite proves this end to end
+// (TestGetFileStreamsAFileLargerThanTheBaselineMessageCap), but that needs
+// Postgres. This is the cheap guard that fails on `go test ./...`.
+func TestBaselineMessageCapExceedsTheGetFileChunkSize(t *testing.T) {
+	if baselineMessageBytes <= server.GetFileChunkBytes {
+		t.Errorf("baselineMessageBytes = %d, want strictly greater than server.GetFileChunkBytes (%d); "+
+			"a single GetFileChunk would be refused by the cap this binary installs",
+			baselineMessageBytes, server.GetFileChunkBytes)
 	}
 }

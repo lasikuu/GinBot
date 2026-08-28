@@ -183,11 +183,56 @@ func TestGetTriggerStatsRequiresInstance(t *testing.T) {
 func TestGetFileRequiresFileID(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
-	_, err := h.Trigger.GetFile(
+	_, _, err := h.Trigger.GetFile(
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.GetFileReq_builder{}.Build(),
 	)
 	requireCode(t, err, codes.InvalidArgument)
+}
+
+// TestGetFileRefusesAnUnauthorisedCallerWithNoChunksSent is the acceptance
+// criterion the streaming port exists for: an unauthorised caller must be
+// rejected before a single byte of the file reaches the wire. Driven with
+// drainGetFileChunks rather than the triggerClient.GetFile adapter so the
+// CHUNK COUNT is directly observable, not just inferred from a nil meta and
+// empty content — a helper bug that silently swallowed a chunk would not be
+// caught by the adapter alone.
+func TestGetFileRefusesAnUnauthorisedCallerWithNoChunksSent(t *testing.T) {
+	h, _ := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
+
+	fileID := "018f0000-0000-7000-8000-000000000abc"
+	chunks, err := drainGetFileChunks(anonymousCtx(), h.Trigger.c, pb.GetFileReq_builder{FileId: &fileID}.Build())
+	if err == nil {
+		t.Fatal("an anonymous caller was admitted to GetFile")
+	}
+	requireCode(t, err, codes.InvalidArgument)
+	if len(chunks) != 0 {
+		t.Errorf("%d chunks arrived for a caller with no identity at all, want 0", len(chunks))
+	}
+}
+
+// TestGetFileRefusesInsufficientClearanceWithNoChunksSent covers the other
+// half of "unauthorised": a real, resolvable caller whose clearance never
+// reaches CLEARANCE_REGISTERED, distinct from carrying no identity at all —
+// and distinct in its own right from TestGetFileRefusesACallerWithNoRelationToTheReferencingTrigger
+// (trigger_media_integration_test.go), which is a REGISTERED caller refused
+// for lacking any relation to the file, not for clearance.
+func TestGetFileRefusesInsufficientClearanceWithNoChunksSent(t *testing.T) {
+	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_UNSPECIFIED)
+
+	fileID := "018f0000-0000-7000-8000-000000000abd"
+	chunks, err := drainGetFileChunks(
+		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
+		h.Trigger.c,
+		pb.GetFileReq_builder{FileId: &fileID}.Build(),
+	)
+	if err == nil {
+		t.Fatal("a caller below CLEARANCE_REGISTERED was admitted to GetFile")
+	}
+	requireCode(t, err, codes.PermissionDenied)
+	if len(chunks) != 0 {
+		t.Errorf("%d chunks arrived for a caller below the clearance floor, want 0", len(chunks))
+	}
 }
 
 // ListTriggers has no test here for refusing another user's id, and cannot
@@ -242,7 +287,7 @@ func TestAllTriggerRPCsRefuseAnAnonymousCaller(t *testing.T) {
 			return err
 		},
 		"GetFile": func() error {
-			_, err := h.Trigger.GetFile(ctx, pb.GetFileReq_builder{}.Build())
+			_, _, err := h.Trigger.GetFile(ctx, pb.GetFileReq_builder{}.Build())
 			return err
 		},
 	}

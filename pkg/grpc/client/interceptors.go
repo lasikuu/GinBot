@@ -80,6 +80,11 @@ const retryMinRoundTrip = 50 * time.Millisecond
 // omitted because both mutate trigger statistics on every call, retryable or
 // not — a retried fire would double-count it even if TryTrigger's own roll
 // was otherwise side-effect-free.
+//
+// GetFile left this list because it became server-streaming, not because
+// retrying it became unsafe — this interceptor is unary-only by design
+// (WrapStreamingClient is not implemented), so an entry for a streaming
+// procedure is dead code that reads as a promise the transport cannot keep.
 var retryableProcedures = map[string]bool{
 	ginbotv1connect.UtilityServicePingProcedure:            true,
 	ginbotv1connect.UtilityServiceHealthCheckProcedure:     true,
@@ -89,7 +94,6 @@ var retryableProcedures = map[string]bool{
 	ginbotv1connect.TriggerServiceGetTriggerProcedure:      true,
 	ginbotv1connect.TriggerServiceListTriggersProcedure:    true,
 	ginbotv1connect.TriggerServiceGetTriggerStatsProcedure: true,
-	ginbotv1connect.TriggerServiceGetFileProcedure:         true,
 }
 
 // retryInterceptor retries a unary call classified connect.CodeUnavailable, on

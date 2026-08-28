@@ -251,6 +251,21 @@ func TestNewRetryInterceptorRespectsADeadlineExpiringMidBackoff(t *testing.T) {
 	}
 }
 
+// TestGetFileIsNotRetryable pins item F of the streaming port: GetFile moved
+// off the unary allowlist this stage. It never mattered functionally —
+// retryInterceptor.WrapUnary only ever runs on a unary call, and GetFile
+// stopped being one — but leaving it declared here would be a stale,
+// misleading entry that outlives the RPC shape it described, and the next
+// person reading retryableProcedures alongside its own "every one of these is
+// read-only and idempotent" reasoning has no way to tell it apart from an
+// entry that still means something.
+func TestGetFileIsNotRetryable(t *testing.T) {
+	if retryableProcedures[ginbotv1connect.TriggerServiceGetFileProcedure] {
+		t.Error("TriggerServiceGetFileProcedure is still in retryableProcedures; " +
+			"GetFile is server-streaming now and was removed from the unary retry allowlist")
+	}
+}
+
 // fakeStreamingClientConnForRetry mirrors fakeStreamingClientConn in
 // deadline_test.go: WrapStreamingClient's job here is only to prove it passes
 // a streaming call straight through unmodified, so nothing beyond the seam

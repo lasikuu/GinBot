@@ -128,15 +128,33 @@ func (i *OriginInterceptor) WrapStreamingClient(next connect.StreamingClientFunc
 	return next
 }
 
-// WrapStreamingHandler is a no-op. OpenClientActionStream is the only
-// streaming RPC, and it is not scoped to a single origin at all: a platform
-// client's stream serves every guild and room that platform is in for the
-// life of the connection, not one instance or channel the stream itself was
-// "opened from". The actions it carries are addressed to a platform, not to
-// an origin, so there is nothing here to bootstrap and nothing for
-// OriginFromContext to usefully report.
+// WrapStreamingHandler runs the same bootstrap the unary path does. It was a
+// no-op until TriggerService.GetFile became server-streaming: GetFile's
+// visibility check calls callerOriginInstanceID, which reads
+// OriginFromContext, so had this stayed a no-op a file visible only through
+// the caller's origin instance rather than through ownership would have
+// started returning NotFound — a silent authorisation-shaped regression, not a
+// missing feature.
+//
+// For OpenClientActionStream this does nothing, but the reason is a property
+// of THIS REPOSITORY'S CLIENTS, not of the interceptor: RunClientActionStream
+// attaches caller identity and no origin (pkg/grpc/client/reverse.go), because
+// a platform client's stream serves every guild and room that platform is in
+// for the life of the connection rather than one instance or channel it was
+// "opened from". With no origin headers, callermeta.OriginFromHeader reports
+// ok == false and bootstrap returns the context untouched.
+//
+// A registered caller that set the origin headers on a reverse stream by hand
+// WOULD bootstrap a row. That is deliberately not special-cased: it is exactly
+// what the same caller can already do on any unary call, originCache bounds
+// the repeat inserts identically, and the write requires a caller
+// ClearanceInterceptor has already resolved (see bootstrap). Excluding one
+// procedure by name here would buy nothing and add a second place where the
+// interceptor has to know which RPC it is running on.
 func (i *OriginInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		return next(i.bootstrap(ctx, conn.RequestHeader()), conn)
+	}
 }
 
 // bootstrap is the unary implementation: it stashes the call's own origin into

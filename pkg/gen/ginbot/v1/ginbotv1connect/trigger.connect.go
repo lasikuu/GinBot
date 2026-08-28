@@ -71,7 +71,12 @@ type TriggerServiceClient interface {
 	UpdateTrigger(context.Context, *connect.Request[v1.UpdateTriggerReq]) (*connect.Response[v1.UpdateTriggerResp], error)
 	DeleteTrigger(context.Context, *connect.Request[v1.DeleteTriggerReq]) (*connect.Response[v1.DeleteTriggerResp], error)
 	GetTriggerStats(context.Context, *connect.Request[v1.GetTriggerStatsReq]) (*connect.Response[v1.GetTriggerStatsResp], error)
-	GetFile(context.Context, *connect.Request[v1.GetFileReq]) (*connect.Response[v1.GetFileResp], error)
+	// Server-streaming, not unary. ADR-0022 made it unary because authorisation
+	// was unary-only and a streamed file would have been reachable with no
+	// clearance floor at all; ClearanceInterceptor.WrapStreamingHandler removed
+	// that constraint, so the shape ADR-0007 originally anticipated is now the
+	// one that ships. See the ADR superseding 0022.
+	GetFile(context.Context, *connect.Request[v1.GetFileReq]) (*connect.ServerStreamForClient[v1.GetFileChunk], error)
 }
 
 // NewTriggerServiceClient constructs a client for the ginbot.v1.TriggerService service. By default,
@@ -133,7 +138,7 @@ func NewTriggerServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(triggerServiceMethods.ByName("GetTriggerStats")),
 			connect.WithClientOptions(opts...),
 		),
-		getFile: connect.NewClient[v1.GetFileReq, v1.GetFileResp](
+		getFile: connect.NewClient[v1.GetFileReq, v1.GetFileChunk](
 			httpClient,
 			baseURL+TriggerServiceGetFileProcedure,
 			connect.WithSchema(triggerServiceMethods.ByName("GetFile")),
@@ -152,7 +157,7 @@ type triggerServiceClient struct {
 	updateTrigger   *connect.Client[v1.UpdateTriggerReq, v1.UpdateTriggerResp]
 	deleteTrigger   *connect.Client[v1.DeleteTriggerReq, v1.DeleteTriggerResp]
 	getTriggerStats *connect.Client[v1.GetTriggerStatsReq, v1.GetTriggerStatsResp]
-	getFile         *connect.Client[v1.GetFileReq, v1.GetFileResp]
+	getFile         *connect.Client[v1.GetFileReq, v1.GetFileChunk]
 }
 
 // TryTrigger calls ginbot.v1.TriggerService.TryTrigger.
@@ -196,8 +201,8 @@ func (c *triggerServiceClient) GetTriggerStats(ctx context.Context, req *connect
 }
 
 // GetFile calls ginbot.v1.TriggerService.GetFile.
-func (c *triggerServiceClient) GetFile(ctx context.Context, req *connect.Request[v1.GetFileReq]) (*connect.Response[v1.GetFileResp], error) {
-	return c.getFile.CallUnary(ctx, req)
+func (c *triggerServiceClient) GetFile(ctx context.Context, req *connect.Request[v1.GetFileReq]) (*connect.ServerStreamForClient[v1.GetFileChunk], error) {
+	return c.getFile.CallServerStream(ctx, req)
 }
 
 // TriggerServiceHandler is an implementation of the ginbot.v1.TriggerService service.
@@ -210,7 +215,12 @@ type TriggerServiceHandler interface {
 	UpdateTrigger(context.Context, *connect.Request[v1.UpdateTriggerReq]) (*connect.Response[v1.UpdateTriggerResp], error)
 	DeleteTrigger(context.Context, *connect.Request[v1.DeleteTriggerReq]) (*connect.Response[v1.DeleteTriggerResp], error)
 	GetTriggerStats(context.Context, *connect.Request[v1.GetTriggerStatsReq]) (*connect.Response[v1.GetTriggerStatsResp], error)
-	GetFile(context.Context, *connect.Request[v1.GetFileReq]) (*connect.Response[v1.GetFileResp], error)
+	// Server-streaming, not unary. ADR-0022 made it unary because authorisation
+	// was unary-only and a streamed file would have been reachable with no
+	// clearance floor at all; ClearanceInterceptor.WrapStreamingHandler removed
+	// that constraint, so the shape ADR-0007 originally anticipated is now the
+	// one that ships. See the ADR superseding 0022.
+	GetFile(context.Context, *connect.Request[v1.GetFileReq], *connect.ServerStream[v1.GetFileChunk]) error
 }
 
 // NewTriggerServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -268,7 +278,7 @@ func NewTriggerServiceHandler(svc TriggerServiceHandler, opts ...connect.Handler
 		connect.WithSchema(triggerServiceMethods.ByName("GetTriggerStats")),
 		connect.WithHandlerOptions(opts...),
 	)
-	triggerServiceGetFileHandler := connect.NewUnaryHandler(
+	triggerServiceGetFileHandler := connect.NewServerStreamHandler(
 		TriggerServiceGetFileProcedure,
 		svc.GetFile,
 		connect.WithSchema(triggerServiceMethods.ByName("GetFile")),
@@ -335,6 +345,6 @@ func (UnimplementedTriggerServiceHandler) GetTriggerStats(context.Context, *conn
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ginbot.v1.TriggerService.GetTriggerStats is not implemented"))
 }
 
-func (UnimplementedTriggerServiceHandler) GetFile(context.Context, *connect.Request[v1.GetFileReq]) (*connect.Response[v1.GetFileResp], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ginbot.v1.TriggerService.GetFile is not implemented"))
+func (UnimplementedTriggerServiceHandler) GetFile(context.Context, *connect.Request[v1.GetFileReq], *connect.ServerStream[v1.GetFileChunk]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("ginbot.v1.TriggerService.GetFile is not implemented"))
 }

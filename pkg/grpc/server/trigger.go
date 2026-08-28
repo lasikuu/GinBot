@@ -937,30 +937,55 @@ func (s *TriggerServer) GetTriggerStats(ctx context.Context, connReq *connect.Re
 	}.Build()), nil
 }
 
-// GetFile returns a trigger file's metadata and content. A file is readable
-// by a caller who could see a trigger that references it: one they created,
-// or one scoped to their own call origin instance. Content is bounded by
-// storage.MaxFileBytes as a last line of defence — a row whose blob has grown
-// past the cap on disk is refused, not streamed.
-func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb.GetFileReq]) (*connect.Response[pb.GetFileResp], error) {
+// GetFileChunkBytes bounds a single GetFileChunk's content payload. It is a
+// streaming chunk size, not a security limit — storage.MaxFileBytes is still
+// the authority on how much a caller may ever receive; this only keeps one
+// blob read from allocating more than 1 MiB at a time.
+//
+// Exported because it is not merely an internal detail: it must stay strictly
+// below the message caps both ends install (cmd/ginbot-server's
+// baselineMessageBytes and internal/clientopts' messageBytes), or GetFile
+// fails at the transport for every file. Those packages assert the
+// relationship against this constant rather than restating the number.
+const GetFileChunkBytes = 1 << 20
+
+// GetFile streams a trigger file as one metadata chunk followed by zero or
+// more content chunks, in order; the client concatenates the content chunks
+// to reconstruct the file. A file is readable by a caller who could see a
+// trigger that references it: one they created, or one scoped to their own
+// call origin instance.
+//
+// It used to be a unary RPC returning the whole file inline (ADR-0022), which
+// meant buffering an entire file, up to storage.MaxFileBytes, into one
+// message. That stopped being tenable once clearance moved onto the stream
+// path too — interceptor.ClearanceInterceptor.WrapStreamingHandler exists as
+// of stage 3, so nothing about authorisation still requires a unary
+// response — and streaming lets a handler hold at most one chunk in memory
+// at a time instead of the whole file.
+//
+// Every authorisation and existence check runs before the first stream.Send:
+// an unauthorised or unknown caller must be rejected with no bytes sent at
+// all, because once a byte is on the wire a client cannot be told to
+// disregard it.
+func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb.GetFileReq], stream *connect.ServerStream[pb.GetFileChunk]) error {
 	req := connReq.Msg
 
 	caller, err := callerUser(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if !req.HasFileId() {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("file_id is required"))
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("file_id is required"))
 	}
 
 	fileRow, err := db.GetFile(ctx, req.GetFileId())
 	if errors.Is(err, db.ErrNotFound) {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("file not found"))
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("file not found"))
 	}
 	if err != nil {
 		log.Z.Error("failed to get file", zap.Error(err))
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 
 	// A zero instance id (no origin, e.g. a direct message) simply never
@@ -970,39 +995,91 @@ func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb
 	visible, err := db.FileVisibleToCaller(ctx, fileRow.ID, caller.ID, originInstanceID)
 	if err != nil {
 		log.Z.Error("failed to check file visibility", zap.Error(err))
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 	if !visible {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("file not found"))
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("file not found"))
+	}
+
+	// The row's recorded size is checked before anything is opened so the
+	// common oversize case is refused before a single byte reaches the wire.
+	// It is not the last word, though: the row and the blob on disk can
+	// disagree (e.g. a blob overwritten out of band), so the running total
+	// below is still the authority.
+	if int64(fileRow.ByteSize) > storage.MaxFileBytes {
+		log.Z.Error("trigger file row exceeds the size cap", zap.String("file_id", fileRow.ID))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("file exceeds the maximum size"))
 	}
 
 	if s.blobs == nil {
 		log.Z.Error("trigger file storage is not configured")
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 
 	reader, err := s.blobs.Get(ctx, fileRow.Path)
 	if err != nil {
 		log.Z.Error("failed to open trigger file blob", zap.Error(err))
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 	defer func() {
 		_ = reader.Close()
 	}()
 
-	limited := io.LimitReader(reader, storage.MaxFileBytes+1)
-	content, err := io.ReadAll(limited)
-	if err != nil {
-		log.Z.Error("failed to read trigger file blob", zap.Error(err))
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
-	}
-	if int64(len(content)) > storage.MaxFileBytes {
-		log.Z.Error("trigger file blob exceeds the size cap", zap.String("file_id", fileRow.ID))
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("file exceeds the maximum size"))
+	if err := stream.Send(pb.GetFileChunk_builder{
+		Meta: pb.GetFileMeta_builder{
+			File: fileRow.ToProto(displayFilename(fileRow)),
+		}.Build(),
+	}.Build()); err != nil {
+		return err
 	}
 
-	return connect.NewResponse(pb.GetFileResp_builder{
-		File:    fileRow.ToProto(displayFilename(fileRow)),
-		Content: content,
-	}.Build()), nil
+	// One buffer, reused across iterations: the point of streaming is that a
+	// handler never holds more than one chunk of a file in memory, so
+	// allocating per chunk would defeat it.
+	//
+	// Reuse is safe even though buf[:n] is aliased into the message below:
+	// connect's envelope writer copies the marshalled bytes into a buffer of
+	// its own and retains no reference to the message, and Send performs that
+	// write synchronously before returning. Nothing holds the slice past the
+	// Send, so the next Read may overwrite it.
+	buf := make([]byte, GetFileChunkBytes)
+	// read, not "sent": it counts bytes taken off the reader, and it is
+	// incremented BEFORE the cap test below so that an over-cap chunk is
+	// refused rather than transmitted and then complained about.
+	var read int64
+	for {
+		// A client that has gone away must not make the server keep reading a
+		// whole file into a dead stream.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		n, readErr := reader.Read(buf)
+		if n > 0 {
+			read += int64(n)
+			// Unlike the unary version, this can fire with bytes already on
+			// the wire: the row's byte_size passed the check above, but the
+			// blob on disk is larger anyway. Terminating the stream with an
+			// error is exactly what tells the client the file is incomplete
+			// — a client must never treat a stream that ends in an error as
+			// a whole file.
+			if read > storage.MaxFileBytes {
+				log.Z.Error("trigger file blob exceeds the size cap", zap.String("file_id", fileRow.ID))
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("file exceeds the maximum size"))
+			}
+
+			if sendErr := stream.Send(pb.GetFileChunk_builder{
+				Content: buf[:n],
+			}.Build()); sendErr != nil {
+				return sendErr
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			log.Z.Error("failed to read trigger file blob", zap.Error(readErr))
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
+		}
+	}
 }

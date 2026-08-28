@@ -9,7 +9,6 @@ import (
 
 	"connectrpc.com/connect"
 	connectvalidate "connectrpc.com/validate"
-	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/internal/model"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
@@ -30,10 +29,14 @@ import (
 // every RPC shape a handler mounts, unary or streaming. Handler tests
 // therefore exercise caller resolution, clearance, validation and origin
 // bootstrap the way a deployed server does, including the paths where the
-// call never reaches the handler at all, and including OpenClientActionStream
-// for the first time: a connect.Interceptor implements WrapStreamingHandler
-// alongside WrapUnary, so there is no separate stream-only chain to fall out
-// of sync with the unary one the way grpc-go's did.
+// call never reaches the handler at all.
+//
+// Two streaming RPCs go through this chain, not one: OpenClientActionStream
+// (bidirectional) and, since this stage, TriggerService.GetFile
+// (server-streaming, see the trigger client adapter below). A
+// connect.Interceptor implements WrapStreamingHandler alongside WrapUnary, so
+// there is no separate stream-only chain for either to fall out of sync with
+// the unary one the way grpc-go's did.
 //
 // The one difference from production is what the interceptors are given
 // rather than which are installed: both the caller resolver and the origin
@@ -426,8 +429,66 @@ func (a triggerClient) DeleteTrigger(ctx context.Context, req *pb.DeleteTriggerR
 func (a triggerClient) GetTriggerStats(ctx context.Context, req *pb.GetTriggerStatsReq) (*pb.GetTriggerStatsResp, error) {
 	return unary(ctx, a.c.GetTriggerStats, req)
 }
-func (a triggerClient) GetFile(ctx context.Context, req *pb.GetFileReq) (*pb.GetFileResp, error) {
-	return unary(ctx, a.c.GetFile, req)
+
+// GetFile drains a GetFile server stream and reports what arrived: the meta
+// chunk (nil if none arrived), the concatenation of every content chunk in
+// order, and the error the stream ended with (nil for a clean end).
+//
+// GetFile stopped being unary in this stage (server-streaming: one meta chunk
+// then content chunks bounded by GetFileChunkBytes), so the `unary` adapter
+// every other trigger method above still uses cannot cover it — there is no
+// single Response to unwrap. This is the stream-draining replacement, doing
+// the same job the eight other adapters do: give every test in this package
+// back a plain, readable calling convention instead of making each call site
+// drive Receive/Msg/Err/Close by hand.
+//
+// A rejection before the first chunk (unauthorised caller, file not found,
+// ...) is reported here as (nil, nil, err): nothing was ever assembled, which
+// is exactly the "zero chunks arrived" a caller needs to distinguish a refusal
+// from a stream that was admitted and then failed partway through.
+func (a triggerClient) GetFile(ctx context.Context, req *pb.GetFileReq) (*pb.GetFileMeta, []byte, error) {
+	stream, err := a.c.GetFile(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = stream.Close() }()
+
+	var meta *pb.GetFileMeta
+	var content []byte
+	for stream.Receive() {
+		chunk := stream.Msg()
+		switch {
+		case chunk.HasMeta():
+			meta = chunk.GetMeta()
+		case chunk.HasContent():
+			content = append(content, chunk.GetContent()...)
+		}
+	}
+
+	return meta, content, stream.Err()
+}
+
+// drainGetFileChunks is the lower-level counterpart to triggerClient.GetFile,
+// for the tests that need to inspect the raw chunk sequence itself — chunk
+// count, ordering, which arm each one carries — rather than the assembled
+// result. Everything triggerClient.GetFile asserts (meta present, content
+// byte-identical) can be derived from what this returns, but not the reverse.
+func drainGetFileChunks(ctx context.Context, c ginbotv1connect.TriggerServiceClient, req *pb.GetFileReq) ([]*pb.GetFileChunk, error) {
+	stream, err := c.GetFile(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = stream.Close() }()
+
+	var chunks []*pb.GetFileChunk
+	for stream.Receive() {
+		// Msg() allocates a fresh *pb.GetFileChunk inside Receive on every
+		// call, so appending the pointer here is safe: nothing overwrites it
+		// out from under chunks on the next iteration.
+		chunks = append(chunks, stream.Msg())
+	}
+
+	return chunks, stream.Err()
 }
 
 type repostClient struct {
@@ -501,14 +562,6 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		),
 	}
 
-	// TriggerService alone is raised above the baseline, exactly as
-	// cmd/ginbot-server does it, because GetFile returns file bytes inline.
-	triggerHandlerOpts := append(
-		append([]connect.HandlerOption{}, handlerOpts...),
-		connect.WithReadMaxBytes(config.MaxGRPCMessageBytes),
-		connect.WithSendMaxBytes(config.MaxGRPCMessageBytes),
-	)
-
 	mux := http.NewServeMux()
 	mux.Handle(ginbotv1connect.NewUserServiceHandler(NewUserServer(), handlerOpts...))
 	mux.Handle(ginbotv1connect.NewUtilityServiceHandler(NewUtilityServer(nil), handlerOpts...))
@@ -524,7 +577,14 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 	if triggerServer == nil {
 		triggerServer = NewTriggerServer()
 	}
-	mux.Handle(ginbotv1connect.NewTriggerServiceHandler(triggerServer, triggerHandlerOpts...))
+	// TriggerService is mounted with the SAME handlerOpts as every other
+	// service, deliberately: GetFile stopped returning a file's bytes inline in
+	// one message this stage (it streams GetFileChunkBytes-sized chunks
+	// instead), so the raise to config.MaxGRPCMessageBytes cmd/ginbot-server
+	// used to apply here no longer has anything to defend. See
+	// cmd/ginbot-server/messagecap_test.go for the pin that TriggerService is
+	// held to the baseline in production, not just in this harness.
+	mux.Handle(ginbotv1connect.NewTriggerServiceHandler(triggerServer, handlerOpts...))
 
 	repostServer := cfg.repostServer
 	if repostServer == nil {

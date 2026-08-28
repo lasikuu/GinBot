@@ -46,24 +46,6 @@ func (o GRPCServerOptions) ClientBaseURL() string {
 	return scheme + "://" + net.JoinHostPort(o.Host, o.Port)
 }
 
-// MaxGRPCMessageBytes bounds a single Connect message. It must exceed
-// storage.MaxFileBytes, because GetFile returns a file's bytes inline in one
-// unary response rather than as a stream.
-//
-// That used to be the whole reason this lived at the RPC layer rather than
-// only in pkg/storage: a streamed GetFile would have run outside the
-// unary-only clearance interceptor and therefore outside authorization. That
-// specific reason is gone — pkg/grpc/interceptor.ClearanceInterceptor now
-// covers WrapStreamingHandler too — but the cap is not: an unbounded message is
-// still a resource-exhaustion vector independent of authorization, and
-// GetFile's unary shape is still what it is. cmd/ginbot-server applies this
-// limit to TriggerService alone, via connect.WithReadMaxBytes /
-// WithSendMaxBytes on that service's handler options; every other service
-// keeps the Connect default. A test asserts the relationship to
-// storage.MaxFileBytes; that relationship, not the streaming argument, is why
-// the constant stays exactly where it is.
-const MaxGRPCMessageBytes = 12 << 20
-
 func gRPCHost() string {
 	value := os.Getenv("GINBOT_GRPC_HOST")
 	if value == "" {

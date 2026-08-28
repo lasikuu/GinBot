@@ -20,6 +20,17 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/client"
 )
 
+// messageBytes bounds a single Connect message this process sends or
+// receives. It matches the server's own baselineMessageBytes
+// (cmd/ginbot-server/main.go): no message on this boundary carries a whole
+// file any more, the largest is a 1 MiB GetFileChunk, so one value covers
+// every service including TriggerService. This is self-protection against a
+// misbehaving or compromised server, not a DoS boundary — a platform client
+// only ever talks to the ginbot-server it was configured to dial, so there is
+// no untrusted peer here the way there is on the server's own side of this
+// cap.
+const messageBytes = 4 << 20
+
 // Dial builds the client.Options ginbot-discord and ginbot-matrix dial the
 // Connect boundary with.
 //
@@ -32,18 +43,9 @@ import (
 // for want of certificates it will not use.
 func Dial() (client.Options, error) {
 	opts := client.Options{
-		BaseURL: config.Options.GRPC.ClientBaseURL(),
-		// Both set to the same cap, unlike the server's TriggerService-only
-		// raise to MaxGRPCMessageBytes (cmd/ginbot-server/main.go): the split
-		// there defends against an UNAUTHENTICATED caller choosing how much
-		// this process allocates, which is a real boundary on the server. A
-		// platform client only ever talks to the ginbot-server it was
-		// configured to dial, so there is no untrusted peer to defend against
-		// here — this cap is self-protection against a misbehaving or
-		// compromised server, not a DoS boundary, and one value is enough for
-		// that on every service including TriggerService's file responses.
-		MaxRecvBytes: config.MaxGRPCMessageBytes,
-		MaxSendBytes: config.MaxGRPCMessageBytes,
+		BaseURL:      config.Options.GRPC.ClientBaseURL(),
+		MaxRecvBytes: messageBytes,
+		MaxSendBytes: messageBytes,
 	}
 
 	if !config.Options.GRPC.TLS {

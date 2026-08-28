@@ -110,11 +110,10 @@ func (i *ClearanceInterceptor) WrapStreamingClient(next connect.StreamingClientF
 	return next
 }
 
-// WrapStreamingHandler enforces the same floor on a streaming RPC.
-// OpenClientActionStream is the only streaming RPC, and identity is resolved
-// once here, before the handler runs, exactly as on the unary path — a bidi
-// stream has one set of request headers for its whole lifetime, sent with the
-// opening request, so there is nothing per-message to re-check.
+// WrapStreamingHandler enforces the same floor on a streaming RPC. Identity is
+// resolved once here, before the handler runs, exactly as on the unary path —
+// a stream has one set of request headers for its whole lifetime, sent with
+// the opening request, so there is nothing per-message to re-check.
 func (i *ClearanceInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		procedure := conn.Spec().Procedure

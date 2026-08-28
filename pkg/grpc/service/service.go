@@ -38,10 +38,7 @@ type Mount struct {
 //
 // DiscordService is deliberately absent: its server implementation does not
 // exist yet, so mounting it would advertise an RPC surface nothing serves.
-//
-// triggerOpts is separate because TriggerService alone carries a raised message
-// cap for GetFile's inline file bytes.
-func Handlers(opts []connect.HandlerOption, triggerOpts []connect.HandlerOption) []Mount {
+func Handlers(opts []connect.HandlerOption) []Mount {
 	mount := func(name string, path string, handler http.Handler) Mount {
 		return Mount{Name: name, Path: path, Handler: handler}
 	}
@@ -53,7 +50,7 @@ func Handlers(opts []connect.HandlerOption, triggerOpts []connect.HandlerOption)
 	analyticsPath, analyticsHandler := ginbotv1connect.NewAnalyticsServiceHandler(AnalyticsServer, opts...)
 	entertainmentPath, entertainmentHandler := ginbotv1connect.NewEntertainmentServiceHandler(EntertainmentServer, opts...)
 	reversePath, reverseHandler := ginbotv1connect.NewReverseServiceHandler(ReverseServer, opts...)
-	triggerPath, triggerHandler := ginbotv1connect.NewTriggerServiceHandler(TriggerServer, triggerOpts...)
+	triggerPath, triggerHandler := ginbotv1connect.NewTriggerServiceHandler(TriggerServer, opts...)
 	repostPath, repostHandler := ginbotv1connect.NewRepostServiceHandler(RepostServer, opts...)
 
 	return []Mount{
@@ -76,7 +73,7 @@ func Handlers(opts []connect.HandlerOption, triggerOpts []connect.HandlerOption)
 // package-level server pointers to bind them into a handler, and nothing here
 // looks at the name of anything but the generated constant.
 func RegisteredServiceNames() []string {
-	mounts := Handlers(nil, nil)
+	mounts := Handlers(nil)
 
 	names := make([]string, 0, len(mounts))
 	for _, m := range mounts {

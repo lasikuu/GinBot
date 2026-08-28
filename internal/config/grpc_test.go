@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/lasikuu/GinBot/internal/auth"
-	"github.com/lasikuu/GinBot/pkg/storage"
 )
 
 // Tests for internal/config/grpc.go. TestMain and unsetEnv come from
@@ -15,9 +14,20 @@ import (
 // transport-shaped at all — that is what kills the M4 hazard (the server
 // binary requiring a client certificate) structurally rather than by
 // convention. What is left to test here is the plain data: gRPCHost,
-// gRPCPort, gRPCTLS, certsPath and MaxGRPCMessageBytes. TLS credential
-// loading itself is covered in internal/auth/auth_test.go against generated
-// fixtures.
+// gRPCPort, gRPCTLS and certsPath. TLS credential loading itself is covered
+// in internal/auth/auth_test.go against generated fixtures.
+//
+// MaxGRPCMessageBytes is gone too, this stage: GetFile stopped returning a
+// file's bytes inline in one unary response (it streams
+// GetFileChunkBytes-sized chunks instead, pkg/grpc/server/trigger.go), which
+// was the entire reason this constant existed above storage.MaxFileBytes.
+// internal/clientopts now carries its own local message-size constant instead
+// — see its own doc comment — so there is nothing left here to guard the
+// relationship TestMaxGRPCMessageBytesExceedsTheFileSizeCap used to pin. That
+// test function is REMOVED, not weakened: the guarantee it protected (a
+// message cap that cannot make the largest storable file unreadable) is now
+// structurally true regardless of the constant's value, because no single
+// GetFile message ever carries more than one chunk.
 
 func TestGRPCHost(t *testing.T) {
 	unsetEnv(t, "GINBOT_GRPC_HOST")
@@ -119,23 +129,5 @@ func TestCertsPath(t *testing.T) {
 	t.Setenv("GINBOT_CERTS_PATH", "/etc/ginbot/certs")
 	if got := certsPath(); got != "/etc/ginbot/certs" {
 		t.Errorf("certsPath() = %q, want %q", got, "/etc/ginbot/certs")
-	}
-}
-
-// TestMaxGRPCMessageBytesExceedsTheFileSizeCap pins the relationship
-// MaxGRPCMessageBytes's own doc comment states but the compiler cannot
-// enforce, because pkg/storage is deliberately NOT imported by
-// internal/config: GetFile returns a whole file's bytes inline in one unary
-// response, so a message cap at or below storage.MaxFileBytes would make the
-// largest storable file permanently unreadable — and only at runtime, for the
-// one user who uploaded it.
-//
-// The margin matters too: the response carries the file's metadata and the
-// gRPC framing alongside the content, so parity would not be enough.
-func TestMaxGRPCMessageBytesExceedsTheFileSizeCap(t *testing.T) {
-	if int64(MaxGRPCMessageBytes) <= storage.MaxFileBytes {
-		t.Errorf("MaxGRPCMessageBytes = %d, want strictly greater than storage.MaxFileBytes (%d); "+
-			"GetFile returns file content inline in one unary response",
-			MaxGRPCMessageBytes, storage.MaxFileBytes)
 	}
 }

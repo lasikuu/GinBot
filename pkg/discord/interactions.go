@@ -377,12 +377,15 @@ const triggerAttemptTimeout = 15 * time.Second
 // maxConcurrentTriggerAttempts caps how many trigger attempts are in flight at
 // once.
 //
-// A fired file trigger buffers the whole blob in memory, up to
-// storage.MaxFileBytes, and ADR-0022 records that this happens twice over during
-// unmarshalling with no backpressure anywhere. discordgo dispatches every
-// MessageCreate on its own goroutine, so without a cap the number of concurrent
-// buffers is set by nothing but inbound message rate — an out-of-memory kill
-// reachable by ordinary chat traffic in a busy guild.
+// A fired file trigger still ends up holding the whole blob in memory, up to
+// maxTriggerFileBytes, once GetFile's stream finishes: Discord's attachment
+// upload needs the complete content, so accumulating it chunk-by-chunk (see
+// triggerPlaybackResponse) bounds the peak at one file rather than one
+// message's whole unmarshalled request as it did before GetFile streamed, but
+// does not eliminate it. discordgo dispatches every MessageCreate on its own
+// goroutine, so without a cap the number of concurrent buffers is set by
+// nothing but inbound message rate — an out-of-memory kill reachable by
+// ordinary chat traffic in a busy guild.
 const maxConcurrentTriggerAttempts = 4
 
 // triggerAttemptSlots is that cap. Acquisition is non-blocking: dropping a

@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -57,7 +58,25 @@ const (
 // It is deliberately shorter than triggerAttemptTimeout, which is the whole
 // budget on the message path: a nested deadline longer than the one enclosing it
 // never expires and so bounds nothing.
+//
+// GetFile is server-streaming now, so this bounds the WHOLE stream — meta
+// chunk plus every content chunk — not one round trip. 10s stays sensible:
+// the server caps a trigger file at storage.MaxFileBytes (8 MiB), which is a
+// few chunks at GetFileChunkBytes each, well inside 10s on anything but a
+// badly degraded link, and a link that slow is exactly the case this timeout
+// exists to cut off.
 const triggerFileTimeout = 10 * time.Second
+
+// maxTriggerFileBytes bounds how much of a streamed GetFile this client will
+// accumulate before giving up. It mirrors pkg/storage.MaxFileBytes by VALUE,
+// deliberately, rather than by importing that package: pkg/storage carries
+// the server's URL-fetching machinery, and a platform client — which never
+// touches storage or the database — has no business linking it in just to
+// read one constant. The server already enforces the real cap on its own
+// side (see the running total in TriggerServer.GetFile); this is this
+// client's own defence against a misbehaving or compromised server sending
+// more than that.
+const maxTriggerFileBytes = 8 << 20
 
 // triggerCallTimeout bounds every other outgoing trigger RPC.
 //
@@ -764,14 +783,57 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 		fileID := file.GetFileId()
 		req := pb.GetFileReq_builder{FileId: &fileID}.Build()
 
-		// Bounded: an 8 MiB inline response (ADR-0022) over a wedged connection
-		// would otherwise hold this handler, and on the message path a goroutine
-		// per message, open indefinitely.
+		// Bounded: GetFile streams a file's bytes back in chunks, and a stream
+		// over a wedged connection would otherwise hold this handler — and, on
+		// the message path, a goroutine per message — open indefinitely. The
+		// deadline covers the whole stream, not one round trip; see
+		// triggerFileTimeout's own comment.
 		fileCtx, cancel := context.WithTimeout(ctx, triggerFileTimeout)
 		defer cancel()
 
-		got, err := clientsFrom(ctx).Trigger.GetFile(fileCtx, connect.NewRequest(req))
+		stream, err := clientsFrom(ctx).Trigger.GetFile(fileCtx, connect.NewRequest(req))
 		if err != nil {
+			logCallFailure("GetFile", err)
+			return nil, err
+		}
+		defer func() {
+			_ = stream.Close()
+		}()
+
+		// meta is nil unless the stream's first chunk carried one, which is
+		// the server's contract but not something this client trusts blindly
+		// — see the oneof handling below.
+		var meta *pb.TriggerFile
+		var content bytes.Buffer
+
+		for stream.Receive() {
+			chunk := stream.Msg()
+
+			// The oneof is handled the way the reverse stream's payload is:
+			// an unset arm, an arm this client does not recognise, or — here
+			// — a second meta chunk are ORDINARY INPUT from a server this
+			// client does not fully trust, not bugs. None of them aborts the
+			// whole playback.
+			switch {
+			case chunk.HasMeta():
+				if meta == nil {
+					meta = chunk.GetMeta().GetFile()
+				}
+			case chunk.HasContent():
+				if content.Len()+len(chunk.GetContent()) > maxTriggerFileBytes {
+					// Exceeding this client's own cap is not "nothing fired":
+					// the server enforces storage.MaxFileBytes on its own
+					// side, so a stream that gets here anyway means the two
+					// disagree, which is worth surfacing as a failure rather
+					// than swallowing quietly.
+					log.Z.Error("trigger file exceeds the client's own size cap; aborting playback.",
+						zap.String("file_id", fileID))
+					return nil, connect.NewError(connect.CodeInternal, errors.New("trigger file exceeds the maximum size"))
+				}
+				content.Write(chunk.GetContent())
+			}
+		}
+		if err := stream.Err(); err != nil {
 			logCallFailure("GetFile", err)
 			return nil, err
 		}
@@ -780,12 +842,41 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 		// zero-byte attachment, and Content is empty here by design, so sending
 		// it would be a message with neither text nor a file — which Discord
 		// rejects outright, leaving only a log line behind.
-		if len(got.Msg.GetContent()) == 0 {
+		if content.Len() == 0 {
 			log.Z.Warn("a trigger file has no content.", zap.String("file_id", fileID))
 			return nil, nil
 		}
 
-		return triggerFileResponse(file, got.Msg.GetContent()), nil
+		// A stream can end cleanly and still be short: the server reads the
+		// blob off disk, so a truncated or replaced file yields a normal EOF
+		// with stream.Err() nil, and without this the partial bytes would be
+		// posted to the channel as if they were the whole file. Checking the
+		// declared byte_size is the only thing that distinguishes the two, and
+		// it is what the meta chunk is carried for.
+		//
+		// Guarded on > 0 rather than on presence: byte_size is not optional in
+		// the schema, so a server that genuinely does not know the size sends
+		// zero, and refusing every file in that case would be worse than
+		// posting one.
+		if meta != nil && meta.GetByteSize() > 0 && int64(content.Len()) != meta.GetByteSize() {
+			log.Z.Error("trigger file stream ended short of its declared size.",
+				zap.String("file_id", fileID),
+				zap.Int("received_bytes", content.Len()),
+				zap.Int64("declared_bytes", meta.GetByteSize()),
+			)
+			return nil, connect.NewError(connect.CodeInternal, errors.New("trigger file was incomplete"))
+		}
+
+		// The meta chunk's TriggerFile is preferred for the attachment name
+		// and MIME type when the server sent one; TryTriggerResp's own file
+		// is the fallback, which is what keeps this working against a server
+		// that (impossibly, per the current contract) sent no meta at all.
+		displayFile := file
+		if meta != nil {
+			displayFile = meta
+		}
+
+		return triggerFileResponse(displayFile, content.Bytes()), nil
 	}
 
 	return nil, nil
