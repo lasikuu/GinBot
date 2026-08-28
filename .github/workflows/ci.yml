@@ -179,23 +179,43 @@ jobs:
     #   - On a push to main the ref under test IS main, so comparing against
     #     it would diff main's proto/ against itself and could only ever pass.
     #     This repository pushes to main directly, so skipping the check there
-    #     would leave the ordinary path completely uncovered — the baseline is
-    #     the previous commit instead.
+    #     would leave the ordinary path completely uncovered. The baseline is
+    #     github.event.before — the tip of main BEFORE the push — and not
+    #     HEAD~1: a push carrying more than one commit is the normal case here,
+    #     and HEAD~1 would then compare the push against its own second-to-last
+    #     commit, so a break introduced anywhere but the final commit would be
+    #     present in both sides and pass unnoticed.
     #
-    # The initial-commit case (no HEAD~1) is skipped rather than failed: there
-    # is nothing to be compatible with yet.
+    # Two push cases have no usable baseline and are skipped rather than
+    # failed: a brand new branch, where github.event.before is all zeros, and a
+    # force push, where it names a commit that is no longer reachable. Both fall
+    # back to HEAD~1, and the initial commit — which has no HEAD~1 either — is
+    # skipped outright, there being nothing to be compatible with yet.
+    #
+    # --exclude-imports scopes the check to this repository's own files. Without
+    # it buf compares the protovalidate schema too, which is a BSR dependency
+    # pinned in proto/buf.lock, so bumping that pin (AGENTS.md requires moving
+    # it in step with go.mod) would report a dozen breaking changes in
+    # buf/validate/validate.proto that no proto edit here could ever fix. It
+    # does NOT weaken the check on our own schema: deleting one of our files,
+    # messages, fields or RPCs is still reported.
     - name: Breaking change check
       run: |
+        zero='0000000000000000000000000000000000000000'
+        before='${{ github.event.before }}'
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           against='../.git#ref=refs/remotes/origin/main,subdir=proto'
+        elif [ -n "$before" ] && [ "$before" != "$zero" ] && git cat-file -e "${before}^{commit}" 2>/dev/null; then
+          against="../.git#ref=${before},subdir=proto"
         elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+          echo "No usable github.event.before; falling back to HEAD~1."
           against='../.git#ref=HEAD~1,subdir=proto'
         else
           echo "No previous commit to compare against; skipping."
           exit 0
         fi
         echo "Comparing proto/ against ${against}"
-        cd proto && buf breaking --against "$against"
+        cd proto && buf breaking --against "$against" --exclude-imports
 
     # The same class of silent drift as the protovalidate pin below, one layer
     # up: the generator and the runtime it generates against are two independent
