@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	validate "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -25,7 +25,7 @@ import (
 // perfectly declared and still be unreachable if the interceptor is not
 // installed, and the harness alone cannot tell one rejection from another.
 //
-// Every rejection here is asserted as codes.InvalidArgument AND paired with an
+// Every rejection here is asserted as connect.CodeInvalidArgument AND paired with an
 // otherwise identical request that must NOT be rejected that way. Without the
 // pair, a request that failed for an unrelated reason would look identical.
 
@@ -122,7 +122,7 @@ func TestOversizedInstanceListIsRejectedByTheChain(t *testing.T) {
 		h := newHarness(t, withDirectory(dir))
 
 		_, err := h.Trigger.CreateTrigger(unregisteredCtx(), createTriggerWith(harnessInstances(t, bound+1)))
-		requireCode(t, err, codes.InvalidArgument)
+		requireCode(t, err, connect.CodeInvalidArgument)
 
 		if n := dir.resolveCount(); n != 0 {
 			t.Errorf("the caller was resolved %d times for a request the schema refuses; "+
@@ -140,7 +140,7 @@ func TestOversizedInstanceListIsRejectedByTheChain(t *testing.T) {
 		// FailedPrecondition, not InvalidArgument: the request passed the
 		// schema and was stopped by the clearance interceptor instead, which is
 		// as far as an unregistered caller gets.
-		requireCode(t, err, codes.FailedPrecondition)
+		requireCode(t, err, connect.CodeFailedPrecondition)
 
 		if n := dir.resolveCount(); n != 1 {
 			t.Errorf("the caller was resolved %d times, want 1: the request did not reach clearance", n)
@@ -164,7 +164,7 @@ func TestMalformedTriggerIdIsRejectedByTheChain(t *testing.T) {
 
 		id := malformed
 		_, err := h.Trigger.GetTrigger(unregisteredCtx(), pb.GetTriggerReq_builder{Id: &id}.Build())
-		requireCode(t, err, codes.InvalidArgument)
+		requireCode(t, err, connect.CodeInvalidArgument)
 
 		if n := dir.resolveCount(); n != 0 {
 			t.Errorf("the caller was resolved %d times for a malformed id, want 0", n)
@@ -177,7 +177,7 @@ func TestMalformedTriggerIdIsRejectedByTheChain(t *testing.T) {
 
 		id := wellFormed
 		_, err := h.Trigger.GetTrigger(unregisteredCtx(), pb.GetTriggerReq_builder{Id: &id}.Build())
-		requireCode(t, err, codes.FailedPrecondition)
+		requireCode(t, err, connect.CodeFailedPrecondition)
 
 		if n := dir.resolveCount(); n != 1 {
 			t.Errorf("the caller was resolved %d times, want 1: a valid id did not reach clearance", n)
@@ -210,7 +210,7 @@ func TestAbsurdListTriggersLimitIsNotRejectedByTheChain(t *testing.T) {
 				pb.ListTriggersReq_builder{Limit: &tt.limit, Offset: &tt.offset}.Build())
 
 			// The clearance interceptor is what stops it, not the schema.
-			requireCode(t, err, codes.FailedPrecondition)
+			requireCode(t, err, connect.CodeFailedPrecondition)
 		})
 	}
 }
@@ -240,7 +240,7 @@ func TestChanceBoundariesSurviveTheChain(t *testing.T) {
 				Chance: &chance,
 			}.Build())
 
-			requireCode(t, err, codes.FailedPrecondition)
+			requireCode(t, err, connect.CodeFailedPrecondition)
 		})
 	}
 }

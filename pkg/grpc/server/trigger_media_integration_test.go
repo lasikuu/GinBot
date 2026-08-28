@@ -24,12 +24,12 @@ import (
 	"net/url"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/storage"
-	"google.golang.org/grpc/codes"
 )
 
 // pngSignature is the 8-byte PNG magic header. http.DetectContentType, which
@@ -314,7 +314,7 @@ func TestGetFileRefusesACallerWithNoRelationToTheReferencingTrigger(t *testing.T
 	// adapter's assembled (nil, nil, err) result would only imply, not prove —
 	// a helper bug that dropped a legitimately-sent chunk would look identical.
 	chunks, err := drainGetFileChunks(strangerCtx, h.Trigger.c, pb.GetFileReq_builder{FileId: &fileID}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 	if len(chunks) != 0 {
 		t.Errorf("%d chunks arrived for a caller with no relation to the file, want 0", len(chunks))
 	}

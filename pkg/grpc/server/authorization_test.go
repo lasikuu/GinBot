@@ -3,9 +3,9 @@ package server
 import (
 	"testing"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
-	"google.golang.org/grpc/codes"
 )
 
 // Handler-level authorization tests that need no database, driven through the
@@ -16,7 +16,7 @@ import (
 // GetUser case below, the fact that no database was touched is itself the
 // property under test. The harness leaves pkg/db's pool nil on purpose, so a
 // handler that did query would panic and the recovery interceptor would turn
-// that into codes.Internal.
+// that into connect.CodeInternal.
 //
 // Everything requiring real rows lives in authorization_integration_test.go.
 
@@ -98,7 +98,7 @@ func TestGetUserForAnotherUserIsRefusedBeforeTheDatabase(t *testing.T) {
 				pb.GetUserReq_builder{Id: &someoneElse}.Build(),
 			)
 
-			requireCode(t, err, codes.PermissionDenied)
+			requireCode(t, err, connect.CodePermissionDenied)
 		})
 	}
 }
@@ -179,7 +179,7 @@ func TestInstanceScopedRPCsWithNoOriginAreFailedPrecondition(t *testing.T) {
 
 	for name, call := range calls {
 		t.Run(name, func(t *testing.T) {
-			requireCode(t, call(), codes.FailedPrecondition)
+			requireCode(t, call(), connect.CodeFailedPrecondition)
 		})
 	}
 }

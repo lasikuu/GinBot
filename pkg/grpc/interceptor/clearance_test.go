@@ -16,7 +16,6 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/log"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
 )
 
 func TestMain(m *testing.M) {
@@ -141,7 +140,7 @@ func wellFormedHeader(platform pb.Platform, platformUID string) http.Header {
 }
 
 // requireCode asserts the exact Connect code carried by err.
-func requireCode(t *testing.T, err error, want codes.Code) {
+func requireCode(t *testing.T, err error, want connect.Code) {
 	t.Helper()
 
 	if err == nil {
@@ -149,9 +148,8 @@ func requireCode(t *testing.T, err error, want codes.Code) {
 	}
 
 	got := connect.CodeOf(err)
-	wantConnect := connect.Code(uint32(want))
-	if got != wantConnect {
-		t.Fatalf("code = %v, want %v (error: %v)", got, wantConnect, err)
+	if got != want {
+		t.Fatalf("code = %v, want %v (error: %v)", got, want, err)
 	}
 }
 
@@ -175,14 +173,14 @@ func TestClearanceErrorMapping(t *testing.T) {
 		method   string
 		header   http.Header
 		resolver *recordingResolver
-		want     codes.Code
+		want     connect.Code
 	}{
 		{
 			name:     "no header at all",
 			method:   registeredMethod,
 			header:   make(http.Header),
 			resolver: owner(),
-			want:     codes.InvalidArgument,
+			want:     connect.CodeInvalidArgument,
 		},
 		{
 			// The pre-callermeta client sent the enum number; the server reads names.
@@ -190,35 +188,35 @@ func TestClearanceErrorMapping(t *testing.T) {
 			method:   registeredMethod,
 			header:   rawHeader(callermeta.HeaderPlatformEnum, "1", callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
-			want:     codes.InvalidArgument,
+			want:     connect.CodeInvalidArgument,
 		},
 		{
 			name:     "platform_enum is not a known name",
 			method:   registeredMethod,
 			header:   rawHeader(callermeta.HeaderPlatformEnum, "PLATFORM_CARRIER_PIGEON", callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
-			want:     codes.InvalidArgument,
+			want:     connect.CodeInvalidArgument,
 		},
 		{
 			name:     "platform_enum is empty",
 			method:   registeredMethod,
 			header:   rawHeader(callermeta.HeaderPlatformEnum, "", callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
-			want:     codes.InvalidArgument,
+			want:     connect.CodeInvalidArgument,
 		},
 		{
 			name:     "platform_enum is missing",
 			method:   registeredMethod,
 			header:   rawHeader(callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
-			want:     codes.InvalidArgument,
+			want:     connect.CodeInvalidArgument,
 		},
 		{
 			name:     "platform_enum is unspecified",
 			method:   registeredMethod,
 			header:   rawHeader(callermeta.HeaderPlatformEnum, pb.Platform_PLATFORM_UNSPECIFIED.String(), callermeta.HeaderUserID, "platform-uid"),
 			resolver: owner(),
-			want:     codes.InvalidArgument,
+			want:     connect.CodeInvalidArgument,
 		},
 		{
 			// A guarded method cannot run without knowing who is calling.
@@ -226,7 +224,7 @@ func TestClearanceErrorMapping(t *testing.T) {
 			method:   registeredMethod,
 			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, ""),
 			resolver: owner(),
-			want:     codes.InvalidArgument,
+			want:     connect.CodeInvalidArgument,
 		},
 		{
 			// db.GetUserByPlatformUID is the production resolver and reports a
@@ -235,14 +233,14 @@ func TestClearanceErrorMapping(t *testing.T) {
 			method:   registeredMethod,
 			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"),
 			resolver: &recordingResolver{err: db.ErrNotFound},
-			want:     codes.FailedPrecondition,
+			want:     connect.CodeFailedPrecondition,
 		},
 		{
 			name:     "clearance below the minimum",
 			method:   adminMethod,
 			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"),
 			resolver: &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))},
-			want:     codes.PermissionDenied,
+			want:     connect.CodePermissionDenied,
 		},
 		{
 			// A resolver failure is the server's problem, not the caller's; it
@@ -251,7 +249,7 @@ func TestClearanceErrorMapping(t *testing.T) {
 			method:   registeredMethod,
 			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"),
 			resolver: &recordingResolver{err: errors.New("connection refused")},
-			want:     codes.Internal,
+			want:     connect.CodeInternal,
 		},
 	}
 
@@ -273,7 +271,7 @@ func TestUnregisteredCallerIsToldToRegister(t *testing.T) {
 
 	got := call(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "unknown"), testRequirements(), resolver.resolve)
 
-	requireCode(t, got.err, codes.FailedPrecondition)
+	requireCode(t, got.err, connect.CodeFailedPrecondition)
 	if message := got.err.Error(); !strings.Contains(strings.ToLower(message), "regist") {
 		t.Errorf("message = %q, want it to mention registration", message)
 	}
@@ -449,7 +447,7 @@ func TestClearanceBoundaries(t *testing.T) {
 				return
 			}
 
-			requireCode(t, got.err, codes.PermissionDenied)
+			requireCode(t, got.err, connect.CodePermissionDenied)
 			if got.reached {
 				t.Error("handler ran despite insufficient clearance")
 			}
@@ -513,7 +511,7 @@ func TestNilResolverFailsClosedOnAGuardedMethod(t *testing.T) {
 
 	// Internal, not PermissionDenied or FailedPrecondition: the caller did
 	// nothing wrong and must not be told to register or to ask for access.
-	requireCode(t, guarded.err, codes.Internal)
+	requireCode(t, guarded.err, connect.CodeInternal)
 	if guarded.reached {
 		t.Error("handler ran on a guarded method with no caller resolver configured")
 	}
@@ -538,7 +536,7 @@ func TestResolverErrorIsRejectedWithoutPanicking(t *testing.T) {
 
 	got := call(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"), testRequirements(), resolver.resolve)
 
-	requireCode(t, got.err, codes.Internal)
+	requireCode(t, got.err, connect.CodeInternal)
 	if got.reached {
 		t.Error("handler ran after the resolver failed")
 	}

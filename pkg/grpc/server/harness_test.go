@@ -19,7 +19,6 @@ import (
 	"github.com/lasikuu/GinBot/pkg/repost/fingerprint"
 	"github.com/lasikuu/GinBot/pkg/repost/urlnorm"
 	"github.com/lasikuu/GinBot/pkg/storage"
-	"google.golang.org/grpc/codes"
 )
 
 // This file is the shared harness for the pkg/grpc/server tests. It boots a
@@ -643,7 +642,7 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 }
 
 // requireCode asserts the exact Connect code carried by err.
-func requireCode(t *testing.T, err error, want codes.Code) {
+func requireCode(t *testing.T, err error, want connect.Code) {
 	t.Helper()
 
 	if err == nil {
@@ -651,16 +650,15 @@ func requireCode(t *testing.T, err error, want codes.Code) {
 	}
 
 	got := connect.CodeOf(err)
-	wantConnect := connect.Code(uint32(want))
-	if got != wantConnect {
-		t.Fatalf("code = %v, want %v (error: %v)", got, wantConnect, err)
+	if got != want {
+		t.Fatalf("code = %v, want %v (error: %v)", got, want, err)
 	}
 }
 
 // requireNotCode asserts that err — which may be nil — is not a particular
 // rejection. It exists for the calls that get past the interceptor chain and
 // then fail further in, at the database, which most of these tests do not have.
-func requireNotCode(t *testing.T, err error, unwanted ...codes.Code) {
+func requireNotCode(t *testing.T, err error, unwanted ...connect.Code) {
 	t.Helper()
 
 	if err == nil {
@@ -669,7 +667,7 @@ func requireNotCode(t *testing.T, err error, unwanted ...codes.Code) {
 
 	got := connect.CodeOf(err)
 	for _, code := range unwanted {
-		if got == connect.Code(uint32(code)) {
+		if got == code {
 			t.Fatalf("code = %v, want anything else (error: %v)", got, err)
 		}
 	}

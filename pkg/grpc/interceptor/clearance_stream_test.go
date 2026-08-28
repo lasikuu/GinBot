@@ -8,7 +8,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/codes"
 )
 
 // ClearanceInterceptor.WrapStreamingHandler is new in this stage:
@@ -74,7 +73,7 @@ func TestClearanceWrapStreamingHandlerRejectsAnUnauthorisedCaller(t *testing.T) 
 
 	got := streamCall(registeredMethod, make(http.Header), testRequirements(), resolver.resolve)
 
-	requireCode(t, got.err, codes.InvalidArgument)
+	requireCode(t, got.err, connect.CodeInvalidArgument)
 	if got.reached {
 		t.Error("handler ran on a guarded stream with no identity headers at all")
 	}
@@ -90,7 +89,7 @@ func TestClearanceWrapStreamingHandlerRejectsAnUnregisteredCaller(t *testing.T) 
 
 	got := streamCall(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "unregistered"), testRequirements(), resolver.resolve)
 
-	requireCode(t, got.err, codes.FailedPrecondition)
+	requireCode(t, got.err, connect.CodeFailedPrecondition)
 	if got.reached {
 		t.Error("handler ran for an unregistered caller")
 	}
@@ -103,7 +102,7 @@ func TestClearanceWrapStreamingHandlerRejectsInsufficientClearance(t *testing.T)
 
 	got := streamCall(adminMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "uid"), testRequirements(), resolver.resolve)
 
-	requireCode(t, got.err, codes.PermissionDenied)
+	requireCode(t, got.err, connect.CodePermissionDenied)
 	if got.reached {
 		t.Error("handler ran despite insufficient clearance")
 	}

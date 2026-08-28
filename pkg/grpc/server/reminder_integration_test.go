@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lasikuu/GinBot/pkg/db"
@@ -24,7 +25,6 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"github.com/lasikuu/GinBot/pkg/reminder"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -251,7 +251,7 @@ func TestUpdateReminderRefusesAnotherUsersRow(t *testing.T) {
 			Destination: destinationFor(t, pool, uniqueUID("upd-dest")),
 		}.Build(),
 	)
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 }
 
 // TestDeleteReminderRefusesAnotherUsersRow: same privacy boundary for delete.
@@ -273,7 +273,7 @@ func TestDeleteReminderRefusesAnotherUsersRow(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, attackerUID),
 		pb.DeleteReminderReq_builder{Id: &id}.Build(),
 	)
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 
 	// The owner can still see it.
 	got, err := h.Reminder.GetReminder(
@@ -378,7 +378,7 @@ func TestCreateReminderRefusedAtPerUserCap(t *testing.T) {
 			Destination: destinationFor(t, pool, uniqueUID("cap-over")),
 		}.Build(),
 	)
-	requireCode(t, err, codes.FailedPrecondition)
+	requireCode(t, err, connect.CodeFailedPrecondition)
 }
 
 func uuidV7(t *testing.T) string {
@@ -602,7 +602,7 @@ func TestConfirmDeliveryRefusesAnotherUsersRow(t *testing.T) {
 				callerCtx(pb.Platform_PLATFORM_DISCORD, attackerUID),
 				pb.ConfirmDeliveryReq_builder{Id: &id, Delivered: &value}.Build(),
 			)
-			requireCode(t, err, codes.NotFound)
+			requireCode(t, err, connect.CodeNotFound)
 		})
 	}
 
@@ -649,7 +649,7 @@ func TestConfirmDeliveryForAnUnknownIdIsNotFound(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, callerUID),
 		pb.ConfirmDeliveryReq_builder{Id: &unknown, Delivered: &delivered}.Build(),
 	)
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 }
 
 // TestUpdateReminderKeepsAnUnsuppliedRepeat is AC6 end to end, through the RPC
@@ -769,7 +769,7 @@ func TestUpdateReminderRejectsATooFrequentRepeat(t *testing.T) {
 			Destination: destinationFor(t, pool, uniqueUID("floor-dest")),
 		}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestListRemindersCarriesDestinations: the listing joins each reminder's

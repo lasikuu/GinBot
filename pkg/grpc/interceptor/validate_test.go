@@ -8,7 +8,6 @@ import (
 	"connectrpc.com/connect"
 	connectvalidate "connectrpc.com/validate"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -83,8 +82,8 @@ func TestPastDatetimeIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected past datetime to be rejected")
 	}
-	if got := connect.CodeOf(err); got != connect.Code(uint32(codes.InvalidArgument)) {
-		t.Errorf("code = %v, want %v", got, codes.InvalidArgument)
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
 	}
 	if reached {
 		t.Error("handler was reached despite invalid request")

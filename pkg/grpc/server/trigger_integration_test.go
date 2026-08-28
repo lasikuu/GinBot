@@ -16,11 +16,11 @@ import (
 	"context"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
-	"google.golang.org/grpc/codes"
 )
 
 // liveTriggerHarness wires both the caller resolver and the origin resolver to
@@ -135,7 +135,7 @@ func TestTriggerCreateTryGetDeleteRoundTrip(t *testing.T) {
 	}
 
 	_, err = h.Trigger.GetTrigger(ctx, pb.GetTriggerReq_builder{Id: &id}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 }
 
 // TestTryTriggerFiresDeterministicallyAtChance100: an effective chance of 100
@@ -170,7 +170,7 @@ func TestTryTriggerFiresDeterministicallyAtChance100(t *testing.T) {
 
 // TestTriggerInstanceScopingEndToEnd is AC15: a trigger scoped to instance A
 // does not fire via TryTrigger on instance B, and ExecTrigger for it from
-// instance B is codes.NotFound.
+// instance B is connect.CodeNotFound.
 func TestTriggerInstanceScopingEndToEnd(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -211,7 +211,7 @@ func TestTriggerInstanceScopingEndToEnd(t *testing.T) {
 		Id:       &id,
 		Instance: triggerInstanceFor(originB),
 	}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 
 	// The owner, on instance A, can still fire it explicitly.
 	execRespA, err := h.Trigger.ExecTrigger(ctxA, pb.ExecTriggerReq_builder{
@@ -247,10 +247,10 @@ func TestDeleteAndUpdateTriggerRefuseAnotherUsersRowWithNotFound(t *testing.T) {
 
 	newReply := "hijacked"
 	_, err := h.Trigger.UpdateTrigger(attackerCtx, pb.UpdateTriggerReq_builder{Id: &id, Reply: &newReply}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 
 	_, err = h.Trigger.DeleteTrigger(attackerCtx, pb.DeleteTriggerReq_builder{Id: &id}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 
 	// Untouched: the owner can still read the original reply and delete it
 	// themselves.
@@ -288,7 +288,7 @@ func TestCreateTriggerDuplicateExactPhraseReturnsAlreadyExists(t *testing.T) {
 	_, err := h.Trigger.CreateTrigger(ctx, pb.CreateTriggerReq_builder{
 		Phrase: &phrase, Reply: &reply, Chance: &chance, Mode: &mode,
 	}.Build())
-	requireCode(t, err, codes.AlreadyExists)
+	requireCode(t, err, connect.CodeAlreadyExists)
 }
 
 // TestExecTriggerRecordsTriggerCalledActionRecord is AC10: ExecTrigger fires
@@ -428,7 +428,7 @@ func TestTryTriggerNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 		Instance: triggerInstanceFor(originB),
 		Phrase:   &phrase,
 	}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 }
 
 // TestExecTriggerNamingAnotherInstanceReturnsNotFound: the trigger genuinely
@@ -457,7 +457,7 @@ func TestExecTriggerNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 		Id:       &id,
 		Instance: triggerInstanceFor(originB),
 	}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 }
 
 // TestGetTriggerStatsNamingAnotherInstanceReturnsNotFound: a recorded fire on
@@ -494,7 +494,7 @@ func TestGetTriggerStatsNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 	_, err := h.Trigger.GetTriggerStats(ctxA, pb.GetTriggerStatsReq_builder{
 		Instance: triggerInstanceFor(originB),
 	}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 }
 
 // TestCreateTriggerNamingAnotherInstanceIsRefusedAndCreatesNothing: a request
@@ -525,7 +525,7 @@ func TestCreateTriggerNamingAnotherInstanceIsRefusedAndCreatesNothing(t *testing
 		Chance:    &chance,
 		Instances: []*pb.TriggerInstance{triggerInstanceFor(originB)},
 	}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 
 	instanceB, err := db.GetInstanceByMeta(context.Background(), pb.Platform_PLATFORM_DISCORD, originB.InstanceMeta())
 	if err != nil {

@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/repost"
 	"github.com/lasikuu/GinBot/pkg/repost/fingerprint"
 	"github.com/lasikuu/GinBot/pkg/repost/urlnorm"
 	"github.com/lasikuu/GinBot/pkg/storage"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -101,7 +101,7 @@ func TestCheckRepostRequiresAResolvableOrigin(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid), // identity, but NO NewOutgoingOrigin
 		baseCheckRepostReq(linkCandidate("https://example.com/a")),
 	)
-	requireCode(t, err, codes.FailedPrecondition)
+	requireCode(t, err, connect.CodeFailedPrecondition)
 }
 
 // ── Clearance / caller resolution ────────────────────────────────────────────
@@ -151,7 +151,7 @@ func TestCheckRepostValidationRejectsEmptyCandidates(t *testing.T) {
 	h := newHarness(t, withDirectory(dir))
 
 	_, err := h.Repost.CheckRepost(anonymousCtx(), baseCheckRepostReq() /* no candidates */)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 
 	if got := dir.resolveCount(); got != 0 {
 		t.Errorf("resolveCount() = %d, want 0 (validation must reject before clearance resolves anyone)", got)
@@ -169,7 +169,7 @@ func TestCheckRepostValidationRejectsTooManyCandidates(t *testing.T) {
 	}
 
 	_, err := h.Repost.CheckRepost(anonymousCtx(), baseCheckRepostReq(candidates...))
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestCheckRepostValidationRejectsMissingMessageUID covers message_uid's
@@ -184,7 +184,7 @@ func TestCheckRepostValidationRejectsMissingMessageUID(t *testing.T) {
 	}.Build()
 
 	_, err := h.Repost.CheckRepost(anonymousCtx(), req)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestCheckRepostValidationRejectsMissingAuthorUID covers author_uid's
@@ -199,7 +199,7 @@ func TestCheckRepostValidationRejectsMissingAuthorUID(t *testing.T) {
 	}.Build()
 
 	_, err := h.Repost.CheckRepost(anonymousCtx(), req)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestCheckRepostValidationRejectsACandidateWithNoURL covers url's required +
@@ -211,7 +211,7 @@ func TestCheckRepostValidationRejectsACandidateWithNoURL(t *testing.T) {
 	req := baseCheckRepostReq(pb.RepostCandidate_builder{Kind: &kind}.Build())
 
 	_, err := h.Repost.CheckRepost(anonymousCtx(), req)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestCheckRepostValidationRejectsAnOverlongURL covers url's max_len = 2048.
@@ -222,7 +222,7 @@ func TestCheckRepostValidationRejectsAnOverlongURL(t *testing.T) {
 	req := baseCheckRepostReq(linkCandidate(overlong))
 
 	_, err := h.Repost.CheckRepost(anonymousCtx(), req)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // Excluded links, unparseable URLs and refused attachment fetches are all

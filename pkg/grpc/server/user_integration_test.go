@@ -19,12 +19,12 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lasikuu/GinBot/internal/config"
 	"github.com/lasikuu/GinBot/pkg/db"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/log"
-	"google.golang.org/grpc/codes"
 )
 
 var (
@@ -161,7 +161,7 @@ func TestRegisterTwiceReturnsAlreadyExists(t *testing.T) {
 		pb.RegisterReq_builder{Username: &username, Locale: &locale}.Build(),
 	)
 
-	requireCode(t, err, codes.AlreadyExists)
+	requireCode(t, err, connect.CodeAlreadyExists)
 
 	// The failed attempt must not have left a second account behind.
 	var accounts int
@@ -282,7 +282,7 @@ func TestGetUserRefusesAnotherUserBelowModerator(t *testing.T) {
 			setClearance(t, pool, callerID, clearance)
 
 			_, err := h.User.GetUser(ctx, pb.GetUserReq_builder{Id: &subjectID}.Build())
-			requireCode(t, err, codes.PermissionDenied)
+			requireCode(t, err, connect.CodePermissionDenied)
 		})
 	}
 
@@ -334,5 +334,5 @@ func TestGuardedRPCRejectsAnUnknownIdentity(t *testing.T) {
 		pb.SetLocaleReq_builder{Locale: &locale}.Build(),
 	)
 
-	requireCode(t, err, codes.FailedPrecondition)
+	requireCode(t, err, connect.CodeFailedPrecondition)
 }

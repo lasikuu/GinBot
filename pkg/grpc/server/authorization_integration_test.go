@@ -27,10 +27,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/storage"
-	"google.golang.org/grpc/codes"
 )
 
 // ── SetLocale / SetTimezone act on the caller and on nobody else ─────────────
@@ -141,7 +141,7 @@ func TestGetReminderRefusesAnotherUsersRowWithNotFound(t *testing.T) {
 
 	strangerCtx := callerCtx(pb.Platform_PLATFORM_DISCORD, strangerUID)
 	_, err := h.Reminder.GetReminder(strangerCtx, pb.GetReminderReq_builder{Id: &id}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 }
 
 // TestGetReminderForAnUnknownIdIsIndistinguishableFromAnotherUsersRow is the
@@ -167,8 +167,8 @@ func TestGetReminderForAnUnknownIdIsIndistinguishableFromAnotherUsersRow(t *test
 	_, existingErr := h.Reminder.GetReminder(strangerCtx, pb.GetReminderReq_builder{Id: &existingID}.Build())
 	_, missingErr := h.Reminder.GetReminder(strangerCtx, pb.GetReminderReq_builder{Id: &missingID}.Build())
 
-	requireCode(t, existingErr, codes.NotFound)
-	requireCode(t, missingErr, codes.NotFound)
+	requireCode(t, existingErr, connect.CodeNotFound)
+	requireCode(t, missingErr, connect.CodeNotFound)
 }
 
 // ── The forced-fire rate limit is keyed on the CALLER ────────────────────────
@@ -323,7 +323,7 @@ func TestGetTriggerIsVisibleToItsOwnerAndToTheInstanceItIsScopedTo(t *testing.T)
 
 	t.Run("a caller from another instance gets NotFound", func(t *testing.T) {
 		_, err := h.Trigger.GetTrigger(outsiderCtx, pb.GetTriggerReq_builder{Id: &id}.Build())
-		requireCode(t, err, codes.NotFound)
+		requireCode(t, err, connect.CodeNotFound)
 	})
 
 	t.Run("a non-owner with no origin at all gets NotFound", func(t *testing.T) {
@@ -333,7 +333,7 @@ func TestGetTriggerIsVisibleToItsOwnerAndToTheInstanceItIsScopedTo(t *testing.T)
 		dmCtx := callerCtx(pb.Platform_PLATFORM_DISCORD, memberUID)
 
 		_, err := h.Trigger.GetTrigger(dmCtx, pb.GetTriggerReq_builder{Id: &id}.Build())
-		requireCode(t, err, codes.NotFound)
+		requireCode(t, err, connect.CodeNotFound)
 	})
 }
 
@@ -435,7 +435,7 @@ func TestUpdateTriggerIntoRegexModeIsGatedBelowModerator(t *testing.T) {
 
 	t.Run("refused below moderator", func(t *testing.T) {
 		_, err := h.Trigger.UpdateTrigger(ctx, pb.UpdateTriggerReq_builder{Id: &id, Mode: &regex}.Build())
-		requireCode(t, err, codes.PermissionDenied)
+		requireCode(t, err, connect.CodePermissionDenied)
 
 		// The refusal must not have applied anyway.
 		var mode int32
@@ -546,7 +546,7 @@ func TestUpdateTriggerRefusesAnotherUsersRowBeforeFetchingAFile(t *testing.T) {
 	_, err = h.Trigger.UpdateTrigger(attackerCtx, pb.UpdateTriggerReq_builder{
 		Id: &id, FileUrl: &fileURL,
 	}.Build())
-	requireCode(t, err, codes.NotFound)
+	requireCode(t, err, connect.CodeNotFound)
 
 	if got := fetches.Load(); got != 0 {
 		t.Errorf("the media server was called %d times by an update that was refused with NotFound, want 0; "+

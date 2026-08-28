@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/trigger"
-	"google.golang.org/grpc/codes"
 )
 
 // triggerHarness registers one Discord identity at the given clearance,
@@ -32,7 +32,7 @@ func TestCreateTriggerRequiresPhrase(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.CreateTriggerReq_builder{Reply: &reply}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestCreateTriggerRequiresReplyOrFileURL.
@@ -44,7 +44,7 @@ func TestCreateTriggerRequiresReplyOrFileURL(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.CreateTriggerReq_builder{Phrase: &phrase}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // createRegexReq builds an otherwise-valid CreateTriggerReq in REGEX mode, so
@@ -62,7 +62,7 @@ func TestCreateTriggerRegexModeIsGatedBelowModerator(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
 	_, err := h.Trigger.CreateTrigger(callerCtx(pb.Platform_PLATFORM_DISCORD, uid), createRegexReq())
-	requireCode(t, err, codes.PermissionDenied)
+	requireCode(t, err, connect.CodePermissionDenied)
 }
 
 // TestCreateTriggerRegexModeIsAdmittedAtModerator is the other half of AC5: a
@@ -74,7 +74,7 @@ func TestCreateTriggerRegexModeIsAdmittedAtModerator(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_MODERATOR)
 
 	_, err := h.Trigger.CreateTrigger(callerCtx(pb.Platform_PLATFORM_DISCORD, uid), createRegexReq())
-	requireNotCode(t, err, codes.PermissionDenied)
+	requireNotCode(t, err, connect.CodePermissionDenied)
 }
 
 // TestCreateTriggerRejectsUncompilableRegex is AC6: an uncompilable regex is
@@ -90,7 +90,7 @@ func TestCreateTriggerRejectsUncompilableRegex(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.CreateTriggerReq_builder{Phrase: &phrase, Reply: &reply, Mode: &mode}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestCreateTriggerRejectsAPhraseOverMaxPatternLength is AC6's other half.
@@ -103,7 +103,7 @@ func TestCreateTriggerRejectsAPhraseOverMaxPatternLength(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.CreateTriggerReq_builder{Phrase: &phrase, Reply: &reply}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestCreateTriggerRejectsChanceOutsideRange.
@@ -119,7 +119,7 @@ func TestCreateTriggerRejectsChanceOutsideRange(t *testing.T) {
 				callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 				pb.CreateTriggerReq_builder{Phrase: &phrase, Reply: &reply, Chance: &c}.Build(),
 			)
-			requireCode(t, err, codes.InvalidArgument)
+			requireCode(t, err, connect.CodeInvalidArgument)
 		})
 	}
 }
@@ -132,7 +132,7 @@ func TestTryTriggerRequiresFields(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.TryTriggerReq_builder{}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestExecTriggerRequiresFields.
@@ -143,7 +143,7 @@ func TestExecTriggerRequiresFields(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.ExecTriggerReq_builder{}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestGetTriggerRequiresID.
@@ -154,7 +154,7 @@ func TestGetTriggerRequiresID(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.GetTriggerReq_builder{}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestDeleteTriggerRequiresID.
@@ -165,7 +165,7 @@ func TestDeleteTriggerRequiresID(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.DeleteTriggerReq_builder{}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestGetTriggerStatsRequiresInstance.
@@ -176,7 +176,7 @@ func TestGetTriggerStatsRequiresInstance(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.GetTriggerStatsReq_builder{}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestGetFileRequiresFileID.
@@ -187,7 +187,7 @@ func TestGetFileRequiresFileID(t *testing.T) {
 		callerCtx(pb.Platform_PLATFORM_DISCORD, uid),
 		pb.GetFileReq_builder{}.Build(),
 	)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestGetFileRefusesAnUnauthorisedCallerWithNoChunksSent is the acceptance
@@ -205,7 +205,7 @@ func TestGetFileRefusesAnUnauthorisedCallerWithNoChunksSent(t *testing.T) {
 	if err == nil {
 		t.Fatal("an anonymous caller was admitted to GetFile")
 	}
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 	if len(chunks) != 0 {
 		t.Errorf("%d chunks arrived for a caller with no identity at all, want 0", len(chunks))
 	}
@@ -229,7 +229,7 @@ func TestGetFileRefusesInsufficientClearanceWithNoChunksSent(t *testing.T) {
 	if err == nil {
 		t.Fatal("a caller below CLEARANCE_REGISTERED was admitted to GetFile")
 	}
-	requireCode(t, err, codes.PermissionDenied)
+	requireCode(t, err, connect.CodePermissionDenied)
 	if len(chunks) != 0 {
 		t.Errorf("%d chunks arrived for a caller below the clearance floor, want 0", len(chunks))
 	}
@@ -247,8 +247,8 @@ func TestGetFileRefusesInsufficientClearanceWithNoChunksSent(t *testing.T) {
 // clearance interceptor for a guarded method with no metadata is
 // InvalidArgument (see TestGuardedMethodWithoutMetadataIsRejected in
 // user_test.go for the same behaviour on UserService); what matters here is
-// that it is never codes.OK, i.e. never treated as a legitimate, answered
-// request.
+// that it is never treated as a success, i.e. never treated as a legitimate,
+// answered request.
 func TestAllTriggerRPCsRefuseAnAnonymousCaller(t *testing.T) {
 	h, _ := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 	ctx := anonymousCtx()

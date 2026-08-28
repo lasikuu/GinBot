@@ -13,7 +13,6 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -589,7 +588,7 @@ func TestOpenClientActionStreamPastTheCapIsResourceExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("the stream was admitted past the registry cap")
 	}
-	requireCode(t, err, codes.ResourceExhausted)
+	requireCode(t, err, connect.CodeResourceExhausted)
 
 	if got := h.reverseServer.clientCount(); got != maxStreamClients {
 		t.Errorf("clientCount() = %d after a refused stream, want it unchanged at %d", got, maxStreamClients)
@@ -829,7 +828,7 @@ func TestAnUnauthorisedCallerCannotOpenTheReverseStream(t *testing.T) {
 	if err == nil {
 		t.Fatal("an anonymous caller was admitted to the reverse stream")
 	}
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 
 	if got := h.reverseServer.clientCount(); got != 0 {
 		t.Errorf("clientCount() = %d, want 0: an unauthorised caller must not take a registry slot", got)

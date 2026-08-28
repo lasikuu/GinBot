@@ -8,7 +8,6 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
-	"google.golang.org/grpc/codes"
 )
 
 // This file used to pin protovalidate rejecting OpenClientActionStreamReq's
@@ -143,7 +142,7 @@ func TestAnUnspecifiedPlatformHeaderIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("the server admitted a stream whose ginbot-platform-enum header was PLATFORM_UNSPECIFIED")
 	}
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 
 	if n := dir.resolveCount(); n != 0 {
 		t.Errorf("resolver ran %d times for an unspecified platform, want 0: "+
@@ -166,7 +165,7 @@ func TestAnUnrecognisedPlatformHeaderIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("the server admitted a stream whose ginbot-platform-enum header names no Platform value")
 	}
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestAMissingPlatformHeaderIsRejected is what callermeta.FromHeader's
@@ -183,7 +182,7 @@ func TestAMissingPlatformHeaderIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("the server admitted a stream with no ginbot-platform-enum header at all")
 	}
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
 // TestAValidPlatformHeaderStillOpensTheStream is the other half of every

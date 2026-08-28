@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
-	"google.golang.org/grpc/codes"
 )
 
 // Identities the in-memory directory hands out. The ids are UUIDs because
@@ -87,7 +87,7 @@ func TestGuardedMethodWithoutMetadataIsRejected(t *testing.T) {
 	id := callerUserID
 	_, err := h.User.GetUser(anonymousCtx(), pb.GetUserReq_builder{Id: &id}.Build())
 
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 	if n := dir.resolveCount(); n != 0 {
 		t.Errorf("caller resolved %d times without metadata, want 0", n)
 	}
@@ -101,7 +101,7 @@ func TestUnregisteredCallerIsRejectedWithFailedPrecondition(t *testing.T) {
 	id := callerUserID
 	_, err := h.User.GetUser(callerCtx(pb.Platform_PLATFORM_DISCORD, strangerUID), pb.GetUserReq_builder{Id: &id}.Build())
 
-	requireCode(t, err, codes.FailedPrecondition)
+	requireCode(t, err, connect.CodeFailedPrecondition)
 }
 
 // The same platform uid on a different platform is a different person, so the
@@ -112,7 +112,7 @@ func TestCallerIsResolvedPerPlatform(t *testing.T) {
 	id := callerUserID
 	_, err := h.User.GetUser(callerCtx(pb.Platform_PLATFORM_MATRIX_PROTOCOL, callerUID), pb.GetUserReq_builder{Id: &id}.Build())
 
-	requireCode(t, err, codes.FailedPrecondition)
+	requireCode(t, err, connect.CodeFailedPrecondition)
 }
 
 func TestInstanceMutationIsRejectedBelowAdministrator(t *testing.T) {
@@ -132,7 +132,7 @@ func TestInstanceMutationIsRejectedBelowAdministrator(t *testing.T) {
 				pb.DeleteInstanceReq_builder{Id: &id}.Build(),
 			)
 
-			requireCode(t, err, codes.PermissionDenied)
+			requireCode(t, err, connect.CodePermissionDenied)
 		})
 	}
 }
@@ -154,7 +154,7 @@ func TestInstanceMutationIsAdmittedAtAdministrator(t *testing.T) {
 				pb.DeleteInstanceReq_builder{Id: &id}.Build(),
 			)
 
-			requireNotCode(t, err, codes.PermissionDenied, codes.FailedPrecondition, codes.InvalidArgument)
+			requireNotCode(t, err, connect.CodePermissionDenied, connect.CodeFailedPrecondition, connect.CodeInvalidArgument)
 			if n := dir.resolveCount(); n != 1 {
 				t.Errorf("caller resolved %d times, want exactly 1 per call", n)
 			}
@@ -208,14 +208,14 @@ func TestSetTimezoneRejectsUnresolvableNames(t *testing.T) {
 			)
 
 			if tt.wantRejected {
-				requireCode(t, err, codes.InvalidArgument)
+				requireCode(t, err, connect.CodeInvalidArgument)
 				return
 			}
 
 			// A resolvable zone must get past validation. The write itself needs
 			// a database this harness does not have, so only the rejection codes
 			// are asserted; the round trip is covered by the integration tests.
-			requireNotCode(t, err, codes.InvalidArgument, codes.PermissionDenied, codes.FailedPrecondition)
+			requireNotCode(t, err, connect.CodeInvalidArgument, connect.CodePermissionDenied, connect.CodeFailedPrecondition)
 		})
 	}
 }
@@ -245,11 +245,11 @@ func TestSetLocaleRejectionsSurviveTheChain(t *testing.T) {
 			)
 
 			if tt.wantRejected {
-				requireCode(t, err, codes.InvalidArgument)
+				requireCode(t, err, connect.CodeInvalidArgument)
 				return
 			}
 
-			requireNotCode(t, err, codes.InvalidArgument, codes.PermissionDenied, codes.FailedPrecondition)
+			requireNotCode(t, err, connect.CodeInvalidArgument, connect.CodePermissionDenied, connect.CodeFailedPrecondition)
 		})
 	}
 }
@@ -282,7 +282,7 @@ func TestValidationRunsBeforeCallerResolution(t *testing.T) {
 		pb.GetUserReq_builder{Id: &notAUUID}.Build(),
 	)
 
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, connect.CodeInvalidArgument)
 	if n := dir.resolveCount(); n != 0 {
 		t.Errorf("caller resolved %d times for an unparseable request, want 0", n)
 	}
