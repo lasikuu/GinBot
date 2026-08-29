@@ -1,0 +1,165 @@
+name: "Publish images"
+
+# Three images, one per Dockerfile stage, published to this repository's owner
+# on the GitHub Container Registry:
+#
+#   ghcr.io/lasikuu/ginbot-server
+#   ghcr.io/lasikuu/ginbot-discord
+#   ghcr.io/lasikuu/ginbot-matrix
+#
+# `cmd/ginbot-migrate` deliberately has no image: the server applies the
+# embedded goose migrations itself at boot unless GINBOT_DB_MIGRATIONS=false,
+# so that binary is an operator tool, not a deployed component.
+#
+# This workflow does NOT wait for CI. See ADR 0036: `:main`, `:edge` and
+# `:sha-...` are development tags with no green-build guarantee behind them,
+# and a release is a `v*.*.*` tag a human cuts from a commit they have already
+# watched pass.
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*.*.*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# `:main` and `:edge` are mutable and this repository pushes to main directly,
+# often several commits at a time. Two overlapping runs would both write those
+# tags and the winner would be whichever finished last, which is not
+# necessarily the newer commit. Tag refs are unique, so a release build is
+# never the one cancelled.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+      # actions/attest-build-provenance mints a short-lived Sigstore signing
+      # certificate from the OIDC token and records the attestation.
+      id-token: write
+      attestations: write
+
+    strategy:
+      # One image failing should not hide whether the other two are publishable.
+      fail-fast: false
+      matrix:
+        include:
+        - target: server
+          image: ginbot-server
+          description: "GinBot Connect API server: owns Postgres, migrations and cron."
+        - target: discord
+          image: ginbot-discord
+          description: "GinBot Discord client. Talks to ginbot-server over Connect."
+        - target: matrix
+          image: ginbot-matrix
+          description: "GinBot Matrix client. Talks to ginbot-server over Connect."
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    - name: Set up Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to GHCR
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Tag policy:
+    #
+    #   push to main      :main, :edge, :sha-<full sha>
+    #   tag v1.2.3        :1.2.3, :1.2, :latest, :sha-<full sha>
+    #   pull request       :pr-<n>  (computed, never pushed)
+    #
+    # `:latest` comes from the default `latest=auto` flavour, which applies it
+    # to a semver tag only — never to a main push, and never to a prerelease
+    # such as v1.2.3-rc1.
+    #
+    # There is deliberately no `{{major}}` pattern. The repository has no tags
+    # yet, so the first releases are 0.x, where a `:0` moving across breaking
+    # minor bumps would mean the opposite of what a major tag usually promises.
+    # Add it when 1.0 is cut.
+    #
+    # `format=long` on the sha tag: the 7-character default is a prefix that
+    # collides, and this is the one tag meant to be pinned in a deployment.
+    - name: Derive tags and labels
+      id: meta
+      uses: docker/metadata-action@v5
+      env:
+        DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+      with:
+        images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,format=long
+          type=raw,value=edge,enable={{is_default_branch}}
+        labels: |
+          org.opencontainers.image.title=${{ matrix.image }}
+          org.opencontainers.image.description=${{ matrix.description }}
+
+    - name: Build and push
+      id: build
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile
+        target: ${{ matrix.target }}
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        annotations: ${{ steps.meta.outputs.annotations }}
+        provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
+        sbom: ${{ github.event_name != 'pull_request' }}
+        # Scoped per image. The three share the module-download layer but not
+        # the compile, and a single shared scope would have three concurrent
+        # jobs overwriting each other's cache manifest.
+        cache-from: type=gha,scope=${{ matrix.image }}
+        cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+    - name: Attest build provenance
+      if: github.event_name != 'pull_request'
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+        subject-digest: ${{ steps.build.outputs.digest }}
+        push-to-registry: true
+
+    # The digest is the only identifier here that is immutable, and it is otherwise buried in the build log.
+    - name: Summarise
+      if: github.event_name != 'pull_request'
+      env:
+        IMAGE: ${{ matrix.image }}
+        DIGEST: ${{ steps.build.outputs.digest }}
+        TAGS: ${{ steps.meta.outputs.tags }}
+      run: |
+        {
+          echo "### ${IMAGE}"
+          echo
+          echo "Digest: \`${DIGEST}\`"
+          echo
+          echo '```'
+          echo "${TAGS}"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

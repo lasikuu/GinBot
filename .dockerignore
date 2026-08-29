@@ -1,0 +1,32 @@
+# Nothing here may exclude `pkg/db/migrations`: it is `//go:embed`-ed into the server binary (pkg/db/db.go:18),
+# so dropping it yields an image that builds cleanly and fails at boot.
+
+# Version control and CI metadata
+.git
+.gitignore
+.github
+
+# Editor and tooling state.
+.idea
+.vscode
+*.iml
+
+# Secrets and live data
+.env
+.env.*
+/cert/
+/storage/
+
+# Build and test output
+/ginbot-server
+/ginbot-discord
+/ginbot-matrix
+/ginbot-migrate
+coverage.out
+coverage.hand-written.out
+
+# Documentation and compose files
+docs/
+*.md
+docker-compose*.yml
+example.env
