@@ -171,7 +171,7 @@ func declaredMaxItems(t *testing.T, msg proto.Message, field protoreflect.Name) 
 func declaredMaxLen(t *testing.T, msg proto.Message, field protoreflect.Name) int {
 	t.Helper()
 
-	str := declaredRules(t, msg, field).GetString_()
+	str := declaredRules(t, msg, field).GetString()
 	if !str.HasMaxLen() {
 		t.Fatalf("%s.%s declares no string.max_len",
 			msg.ProtoReflect().Descriptor().FullName(), field)

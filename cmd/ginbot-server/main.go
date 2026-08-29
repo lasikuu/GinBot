@@ -35,8 +35,6 @@ import (
 	"github.com/lasikuu/GinBot/pkg/log"
 	"github.com/lasikuu/GinBot/pkg/storage"
 	"go.uber.org/zap"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 const (
@@ -61,12 +59,16 @@ const (
 
 	// idleTimeout bounds an HTTP/2 connection with no open streams.
 	//
-	// ReadHeaderTimeout does not cover this: after the h2c preface the
-	// connection is hijacked out from under net/http, so an idle-but-open
-	// connection is otherwise bounded by nothing at all. It is the
-	// streaming-safe knob — unlike ReadTimeout, it counts only while no stream
-	// is open, so a reverse action stream parked waiting for an action does not
-	// age out.
+	// ReadHeaderTimeout does not cover this: once the client preface is read the
+	// connection is handed to the HTTP/2 server, which clears the read deadline
+	// net/http set, so an idle-but-open connection is otherwise bounded by
+	// nothing at all. It is the streaming-safe knob — unlike ReadTimeout, it
+	// counts only while no stream is open, so a reverse action stream parked
+	// waiting for an action does not age out.
+	//
+	// It is set on http.Server rather than on an HTTP/2 config of its own
+	// because net/http derives the HTTP/2 idle timeout from this field, so one
+	// value covers HTTP/1.1 and both HTTP/2 transports.
 	idleTimeout = 2 * time.Minute
 
 	// baselineMessageBytes bounds a single message on every service, including
@@ -182,7 +184,7 @@ func probeHealth(ctx context.Context, url string, tlsConf *tls.Config) error {
 	if err != nil {
 		return fmt.Errorf("probe %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// Drained so the connection is reusable and CloseIdleConnections has
 	// something to close, rather than leaving a half-read response behind.
 	_, _ = io.Copy(io.Discard, resp.Body)
@@ -398,30 +400,50 @@ func main() {
 		mux.Handle(grpcreflect.NewHandlerV1Alpha(reflector))
 	}
 
-	// h2s is registered with both transports below: h2c.NewHandler for
-	// plaintext, and http2.ConfigureServer for TLS. One instance means
-	// maxConcurrentStreams is enforced identically either way, rather than the
-	// TLS path silently falling back to Go's own internal HTTP/2 defaults.
-	h2s := &http2.Server{
-		MaxConcurrentStreams: maxConcurrentStreams,
-		IdleTimeout:          idleTimeout,
-	}
+	// All three protocols are enabled on the one server, because which of them
+	// a connection actually uses is decided per connection and this process
+	// serves whichever GINBOT_GRPC_TLS selects:
+	//
+	//   - HTTP1 for GET /healthz, which the container healthcheck and any
+	//     ordinary prober speak, and as the ALPN fallback under TLS.
+	//   - HTTP2 for ALPN-negotiated HTTP/2 when TLS is on.
+	//   - UnencryptedHTTP2 for plaintext HTTP/2 when TLS is off. This one is
+	//     load-bearing and easy to lose: Go negotiates HTTP/2 automatically
+	//     only over TLS, via ALPN, so without it a plaintext deployment
+	//     silently serves HTTP/1.1 — where bidi streaming does not work at
+	//     all. Every unary RPC would still pass and only
+	//     ReverseService/OpenClientActionStream would fail, in exactly the
+	//     GINBOT_GRPC_TLS=false configuration production ships.
+	//     pkg/grpc/server/reverse_h2c_test.go and
+	//     pkg/grpc/client/reverse_h2c_test.go exist to catch that.
+	//
+	// This replaces h2c.NewHandler, which golang.org/x/net deprecated in favour
+	// of exactly this field. Rather than a handler wrapper that sniffs the
+	// client preface, net/http now recognises it itself, so the mux is mounted
+	// unwrapped and the same setting covers both transports — where the old
+	// wiring needed a second, separate http2.ConfigureServer call for TLS.
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
 
 	srv := &http.Server{
-		Handler:           h2c.NewHandler(mux, h2s),
+		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       idleTimeout,
+		Protocols:         &protocols,
+		// Applies to every HTTP/2 connection this server accepts, encrypted or
+		// not, so the plaintext and TLS paths cannot drift apart on it. The
+		// HTTP/2 idle timeout is not set here because net/http derives it from
+		// srv.IdleTimeout above.
+		HTTP2: &http.HTTP2Config{MaxConcurrentStreams: maxConcurrentStreams},
 	}
 
 	if config.Options.GRPC.TLS {
+		// NextProtos is deliberately not set here: ServeTLS configures HTTP/2
+		// from srv.Protocols and appends "h2" itself. Setting it by hand would
+		// duplicate that and risk disagreeing with it.
 		srv.TLSConfig = auth.LoadServerTLSConfig(config.Options.GRPC.CertsPath)
-		// ConfigureServer is what adds "h2" to TLSConfig.NextProtos and wires
-		// h2s in as the HTTP/2 server used for ALPN-negotiated connections.
-		// Setting NextProtos by hand instead would duplicate what this already
-		// does and risks disagreeing with it.
-		if err := http2.ConfigureServer(srv, h2s); err != nil {
-			log.Z.Fatal("failed to configure HTTP/2.", zap.Error(err))
-		}
 	}
 
 	// Cancelled on SIGINT or SIGTERM. Serve is run in a goroutine so the signal

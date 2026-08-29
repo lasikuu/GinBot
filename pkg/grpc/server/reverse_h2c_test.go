@@ -15,34 +15,34 @@ import (
 	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 // This file is the single highest-value test in the whole Connect port.
 //
 // Go negotiates HTTP/2 automatically only over TLS, via ALPN. Plaintext
-// HTTP/2 needs h2c.NewHandler on the server and an http2.Transport with
-// AllowHTTP plus an explicit plaintext DialTLSContext on the client, both
-// spelled out by hand. Get either wrong and the connection silently falls
-// back to HTTP/1.1 — where every unary RPC still passes, because Connect's
-// unary protocol works fine over HTTP/1.1, and only OpenClientActionStream's
-// bidirectional stream fails. That lands exactly in the GINBOT_GRPC_TLS=false
-// configuration cmd/ginbot-server ships by default in
-// docker-compose.prod.yml. The general harness in harness_test.go cannot
+// HTTP/2 needs UnencryptedHTTP2 in http.Server.Protocols on the server and an
+// http2.Transport with AllowHTTP plus an explicit plaintext DialTLSContext on
+// the client, both spelled out by hand. Get either wrong and the connection
+// silently falls back to HTTP/1.1 — where every unary RPC still passes,
+// because Connect's unary protocol works fine over HTTP/1.1, and only
+// OpenClientActionStream's bidirectional stream fails. That lands exactly in
+// the GINBOT_GRPC_TLS=false configuration cmd/ginbot-server ships by default
+// in docker-compose.prod.yml. The general harness in harness_test.go cannot
 // catch this class of bug at all: it deliberately runs over TLS (StartTLS),
-// where Go's http2 support is automatic and the h2c wiring this file is
+// where Go's http2 support is automatic and the plaintext wiring this file is
 // about is never exercised.
 //
 // newPlaintextH2CServer below reproduces cmd/ginbot-server's OWN
-// construction — h2c.NewHandler wrapping the mux, handed to a plain (non-TLS)
-// http.Server — rather than reusing the general harness, because reusing it
-// would test httptest's h2c support instead of production's.
+// construction — the mux mounted unwrapped on a plain (non-TLS) http.Server
+// whose Protocols include UnencryptedHTTP2 — rather than reusing the general
+// harness, because reusing it would test httptest's HTTP/2 support instead of
+// production's.
 
 // newPlaintextH2CServer mirrors cmd/ginbot-server/main.go's construction for
-// the GINBOT_GRPC_TLS=false path: an http2.Server wrapped by h2c.NewHandler,
-// served over a plain (non-TLS) listener. It mounts ReverseService alone —
-// enough to prove the transport carries a bidi stream, without pulling in
-// every other service's dependencies main.go wires (storage, cron, database).
+// the GINBOT_GRPC_TLS=false path: an http.Server with UnencryptedHTTP2 in its
+// Protocols, served over a plain (non-TLS) listener. It mounts ReverseService
+// alone — enough to prove the transport carries a bidi stream, without pulling
+// in every other service's dependencies main.go wires (storage, cron, database).
 func newPlaintextH2CServer(t *testing.T, reverse *ReverseServer, dir *directory) *httptest.Server {
 	t.Helper()
 
@@ -58,12 +58,20 @@ func newPlaintextH2CServer(t *testing.T, reverse *ReverseServer, dir *directory)
 	mux := http.NewServeMux()
 	mux.Handle(ginbotv1connect.NewReverseServiceHandler(reverse, handlerOpts...))
 
-	// The same h2s := &http2.Server{...}; srv.Handler = h2c.NewHandler(mux, h2s)
-	// pairing cmd/ginbot-server/main.go uses. MaxConcurrentStreams is left at
-	// its zero value here — that setting is unrelated to what this test is
-	// checking — but the h2c wiring itself is byte-for-byte the same shape.
-	h2s := &http2.Server{}
-	srv := httptest.NewUnstartedServer(h2c.NewHandler(mux, h2s))
+	// The same Protocols set cmd/ginbot-server/main.go builds. HTTP2 is
+	// included even though nothing here negotiates ALPN, and HTTP2Config is
+	// left unset — neither is what this test is checking — but the
+	// UnencryptedHTTP2 wiring itself is byte-for-byte the same shape.
+	//
+	// Set on srv.Config before Start, because httptest only reads it when it
+	// hands the listener to http.Server.Serve.
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
+
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = &protocols
 	// Deliberately NOT srv.StartTLS(): plaintext is the point. This is the
 	// GINBOT_GRPC_TLS=false configuration, which is also cmd/ginbot-server's
 	// default.

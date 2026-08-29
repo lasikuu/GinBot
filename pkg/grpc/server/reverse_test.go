@@ -54,22 +54,6 @@ func preserveObservedLogs() {
 	log.S = log.Z.Sugar()
 }
 
-// hasDurationField reports whether an entry carries want as one of its fields.
-//
-// Matched on the value and not on the field name, so the log line stays free to
-// be reworded or its fields renamed. What must not change is that the bound the
-// handler gave up on is recoverable from the record: an overrun warning that
-// does not say how long it waited tells an operator nothing actionable.
-func hasDurationField(entry observer.LoggedEntry, want time.Duration) bool {
-	for _, value := range entry.ContextMap() {
-		if duration, ok := value.(time.Duration); ok && duration == want {
-			return true
-		}
-	}
-
-	return false
-}
-
 // clientCount reports how many clients are registered.
 func (s *ReverseServer) clientCount() int {
 	s.mu.RLock()

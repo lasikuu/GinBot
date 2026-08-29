@@ -57,10 +57,10 @@ func loadCredentials(certsDir, caCertPEM, keyPEM, certPEM string) (tls.Certifica
 
 // ServerTLSConfig builds the server's mutual TLS configuration from certsDir.
 //
-// NextProtos is deliberately left unset: Go's http2.ConfigureServer (invoked
-// indirectly by cmd/ginbot-server when it enables TLS) sets it to advertise
-// "h2" over ALPN itself, and hardcoding it here as well would only create a
-// second place that has to agree with the first.
+// NextProtos is deliberately left unset: http.Server.ServeTLS configures
+// HTTP/2 from http.Server.Protocols and appends "h2" itself, so the ALPN list
+// cmd/ginbot-server advertises comes from there. Hardcoding it here as well
+// would only create a second place that has to agree with the first.
 func ServerTLSConfig(certsDir string) (*tls.Config, error) {
 	tlsCert, certPool, err := loadCredentials(certsDir, "ca-cert.pem", "server-key.pem", "server-cert.pem")
 	if err != nil {

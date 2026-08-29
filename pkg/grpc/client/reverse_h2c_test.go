@@ -19,7 +19,6 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
 	"github.com/lasikuu/GinBot/pkg/grpc/server"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 // This file is TestARefusedClientBacksOffRatherThanRetryingEverySecond,
@@ -131,8 +130,18 @@ func newRealReverseH2CServer(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.Handle(ginbotv1connect.NewReverseServiceHandler(reverseServer, handlerOpts...))
 
-	h2s := &http2.Server{}
-	srv := httptest.NewUnstartedServer(h2c.NewHandler(mux, h2s))
+	// The same Protocols set cmd/ginbot-server/main.go builds, set on
+	// srv.Config before Start because httptest only reads it when it hands the
+	// listener to http.Server.Serve. UnencryptedHTTP2 is the load-bearing
+	// member: without it this server answers HTTP/1.1 and the bidi stream
+	// below cannot open at all.
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
+
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = &protocols
 	// Deliberately NOT srv.StartTLS(): plaintext h2c is the point, and it is
 	// cmd/ginbot-server's default.
 	srv.Start()
