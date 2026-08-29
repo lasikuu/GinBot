@@ -5,6 +5,80 @@ All notable changes of this project will be documented in this file.
 > The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 > to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The wire layer moved from `google.golang.org/grpc` to [Connect](https://connectrpc.com), and the
+schema took every breaking change it had been deferring while nothing outside this repository
+consumed it. That window is now closed: `buf breaking` runs in CI and the schema is settled.
+
+**All of this is breaking.** Server and both clients must be deployed together; there is no
+compatibility path from any earlier build. Stored data is unaffected — `instance_meta` and
+`destination_meta` keep their shape and their jsonb keys, deliberately.
+
+### Changed
+
+- **The transport is Connect over `net/http`.** `google.golang.org/grpc` is no longer a dependency,
+  directly or transitively. The handlers serve the Connect, gRPC and gRPC-Web protocols on one
+  endpoint, so a unary procedure is now reachable with plain `curl` and a JSON body.
+- **The proto package is `ginbot.v1`** (was `ginbot.proto`), with sources under `proto/ginbot/v1/`
+  and generated Go under `pkg/gen/ginbot/v1/`.
+- **Caller identity travels as prefixed HTTP headers** — `ginbot-platform-enum`, `ginbot-user-id`,
+  `ginbot-instance-uid`, `ginbot-destination-uid` — including on the reverse stream, which used to
+  take its platform from the request body.
+- **`TriggerService/GetFile` streams.** It returns one metadata chunk followed by content chunks of
+  at most 1 MiB instead of a whole file inline, so no handler buffers an entire file. Every service
+  is now capped at the same 4 MiB per message; `TriggerService`'s raised cap is gone.
+- Eight vestigial identity fields were deleted from request messages, and thirteen RPCs that
+  returned `google.protobuf.Empty` now return named response messages.
+- The reverse stream's action payload is a typed `oneof` rather than a `google.protobuf.Struct`.
+- Errors are `connect.Code*` rather than gRPC status codes. `Unavailable` now reaches a Discord user
+  as a distinct message instead of a generic "Something went wrong."
+
+### Added
+
+- **Authorisation covers streaming RPCs.** Every interceptor — recovery, validation, clearance,
+  origin — runs on streams as well as unary calls, so `OpenClientActionStream` is guarded for the
+  first time and a streamed `GetFile` is refused before a single byte is sent.
+- A reflection-driven test fails the build when a mounted procedure is missing from the clearance
+  requirements map, which is default-open.
+- protovalidate rules on the trigger and instance schemas, including a bound on how many instances
+  one `CreateTrigger` may name.
+- `GET /healthz` alongside the gRPC health protocol and `UtilityService/HealthCheck`, all three
+  backed by one database probe. `docker-compose.prod.yml` uses it, and both clients now wait for the
+  server to report healthy rather than merely for its container to start.
+- Bounded, graceful shutdown: open reverse streams are released first, the health endpoint reports
+  503 for a few seconds so a prober can observe it, then connections drain. A second interrupt skips
+  the wait.
+- Transport defaults on the platform clients: keepalive, a default deadline for calls that supply
+  none, and automatic retry of `Unavailable` on an allowlist of read-only procedures.
+- Mutual TLS certificates are mounted on all three services in production compose, so enabling
+  `GINBOT_GRPC_TLS` needs no deployment-file edit.
+- **Container images are published to the GitHub Container Registry** — `ghcr.io/lasikuu/`
+  `ginbot-server`, `ginbot-discord` and `ginbot-matrix`, for `linux/amd64` and `linux/arm64`.
+  A push to `main` publishes `:main`, `:edge` and `:sha-<commit>`; a `v*.*.*` tag publishes
+  `:1.2.3`, `:1.2` and `:latest`. Every digest carries a provenance attestation and an SBOM, so
+  `gh attestation verify oci://... --repo lasikuu/GinBot` can tie an image back to the commit that
+  produced it. Deploying no longer means compiling on the target host. See
+  [ADR 0036](adr/0036-images-are-published-to-ghcr.md), including why `:main` and `:edge` are not
+  release tags.
+- A `.dockerignore`. The build context is the repository root and the Dockerfile copies all of it,
+  so `.env`, `cert/*.pem` and the `/rin` export were previously baked into any image built by hand.
+
+### Fixed
+
+- A reverse-stream handler could block forever on a client message that never came, so the server
+  could not shut down cleanly and was killed after the grace period.
+- A failed send left a client holding a registry slot and a full buffer for a stream it could no
+  longer be written to.
+- Reconnect backoff now escalates when the server refuses a stream, instead of resetting and
+  retrying once a second for as long as the refusal lasts.
+- A panic in a client action handler took the whole client process down; it now costs one delivery.
+- The Matrix client never started its action stream, so it received no server-pushed actions.
+- A failed Discord session close called `os.Exit`, skipping the log flush.
+- `ListTriggers` no longer forces the Discord client into an extra round trip purely to learn the
+  caller's own id.
+- `GINBOT_CERTS_PATH` is now actually used; it was parsed into config and ignored.
+
 ## [0.1.0] - 2025-01-04
 
 ### Added
