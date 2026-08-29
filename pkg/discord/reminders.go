@@ -17,30 +17,15 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// reminderCallTimeout bounds every outgoing reminder/user RPC in this file
-// other than the delete loop, which additionally carries its own overall
-// budget — see deleteRemindersOverallTimeout. None of these calls inherits a
-// deadline of its own: commandContext roots the handler context at
-// context.Background.
+// Handler contexts carry no deadline of their own.
 const reminderCallTimeout = 20 * time.Second
 
-// boundedReminderCall derives the context an RPC in this file is made on, and
-// the cancel its caller must defer.
 func boundedReminderCall(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, reminderCallTimeout)
 }
 
-// reminderGroup nests the five reminder commands under one Discord parent, so
-// they appear as /reminder add, /reminder list and so on instead of five
-// unrelated top-level commands.
-//
-// The flat Name of each member is unchanged, so ??remindme and ??reminderdel
-// keep working; ??reminder add reaches the same handler via
-// Registry.ResolveChat.
 const reminderGroup = "reminder"
 
-// Sub names within reminderGroup. They are short because Discord shows them as
-// the second word of /reminder <sub>, where the group already says "reminder".
 const (
 	reminderSubAdd  = "add"
 	reminderSubList = "list"
@@ -49,42 +34,25 @@ const (
 	reminderSubInfo = "info"
 )
 
-// reminderListLimit caps how many reminders the list command renders, so a user
-// with many reminders gets a readable reply rather than one truncated mid-line.
 // The server lists soonest-first, so this shows the reminders about to fire.
 const reminderListLimit = 25
 
-// repeatArgDescription documents the accepted repeat forms once, for both the
-// create and the modify command.
 const repeatArgDescription = "Repeat schedule: 5-field cron (\"0 9 * * *\"), @daily, or @every 12h"
 
-// clearRepeatSentinel is what a user types to REMOVE an existing repeat with
-// remindermod.
-//
-// An omitted repeat argument cannot mean "clear": /remindermod also changes the
-// time and message, and treating absence as a clear is exactly the bug where
-// editing a reminder's text silently turned a repeating reminder into a one-shot.
-// So absence means "leave the schedule alone" and clearing needs saying out loud.
+// Clearing a repeat must be said out loud: an omitted argument means "leave the
+// schedule alone", so editing a reminder's text cannot silently unset it.
 const clearRepeatSentinel = "none"
 
 func remindCommand() command.Command {
 	return command.Command{
-		Name: "remind",
-		// remindme was the old bot's name for this, so it is the one people have
-		// in muscle memory. reminderadd matches the reminderdel/mod/info family.
-		Aliases: []string{"remindme", "reminderadd"},
-		// No command name in the example: this text is shown both as the flat
-		// command's description and as the /reminder add subcommand's, so naming
-		// either form would read wrong in the other.
+		Name:        "remind",
+		Aliases:     []string{"remindme", "reminderadd"},
 		Description: "Set a reminder, e.g. \"in 2 hours\" \"stretch\"",
 		Group:       reminderGroup,
 		Sub:         reminderSubAdd,
 		Args: []command.Arg{
 			{
-				// The time phrase is a single argument. In chat it must therefore
-				// be quoted when it spans words ("in 2 hours"); a single-token
-				// duration ("2h30m") needs no quotes. As a slash command it is one
-				// option and quoting is irrelevant.
+				// One argument, so a multi-word phrase must be quoted in chat.
 				Name:        "when",
 				Description: "When to remind, e.g. \"in 2 hours\", 2h30m, \"next tuesday at 9\"",
 				Type:        command.ArgString,
@@ -97,9 +65,6 @@ func remindCommand() command.Command {
 				Required:    true,
 			},
 			{
-				// Optional: without this argument the repeat feature had no
-				// client surface at all and repeat_cron was reachable only by
-				// hand-crafted gRPC.
 				Name:        "repeat",
 				Description: repeatArgDescription,
 				Type:        command.ArgString,
@@ -134,8 +99,7 @@ func remind(ctx context.Context, inv *command.Invocation) (*command.Response, er
 		Message:     &message,
 		Destination: destination,
 	}
-	// There is nothing to clear at create time, so the sentinel is simply "no
-	// repeat" here rather than a special case.
+	// Nothing to clear at create time, so the sentinel just means "no repeat".
 	if repeat != "" && !strings.EqualFold(repeat, clearRepeatSentinel) {
 		b.RepeatCron = &repeat
 	}
@@ -200,7 +164,7 @@ func listReminders(ctx context.Context, _ *command.Invocation) (*command.Respons
 func reminderInfoCommand() command.Command {
 	return command.Command{
 		Name: "reminderinfo",
-		// reminderdetails was the old bot's name for this.
+
 		Aliases:     []string{"reminderdetails"},
 		Description: "Show one of your reminders",
 		Group:       reminderGroup,
@@ -237,12 +201,7 @@ func reminderInfo(ctx context.Context, inv *command.Invocation) (*command.Respon
 	}, nil
 }
 
-// formatReminderInfo renders the full detail view of one reminder: when,
-// message, repeat, created, updated and destination.
-//
-// It is a pure function of the protobuf so it can be unit-tested without a
-// Discord session or a Connect client. Every timestamp is a Discord timestamp tag,
-// so the whole view reads on the viewer's own clock rather than mixing zones.
+// Every timestamp is a Discord tag, so the view reads on the viewer's clock.
 func formatReminderInfo(r *pb.Reminder) string {
 	var b strings.Builder
 
@@ -258,8 +217,6 @@ func formatReminderInfo(r *pb.Reminder) string {
 	return b.String()
 }
 
-// repeatOrNone renders a repeat schedule, or says there is none, so the line is
-// always present and a user can see that a reminder does not repeat.
 func repeatOrNone(repeatCron string) string {
 	if repeatCron == "" {
 		return "none"
@@ -268,13 +225,8 @@ func repeatOrNone(repeatCron string) string {
 	return "`" + repeatCron + "`"
 }
 
-// destinationMention renders where a reminder will be posted as a Discord
-// channel mention.
-//
-// The channel id lives in the destination's destination_meta under the storage
-// key owned by callermeta, which is also what wrote it. A reminder with no
-// resolvable channel (its destination row is gone, or it is a direct message)
-// renders as an em dash rather than a broken `<#>`.
+// The channel id lives in destination_meta under callermeta's own key. An
+// unresolvable channel renders as an em dash rather than a broken `<#>`.
 func destinationMention(destination *pb.ReminderDestination) string {
 	meta := destination.GetDestinationMeta()
 	if meta == nil {
@@ -289,17 +241,7 @@ func destinationMention(destination *pb.ReminderDestination) string {
 	return "<#" + value.GetStringValue() + ">"
 }
 
-// renderReminderStamp renders a created/updated instant as a RELATIVE Discord
-// timestamp tag, or an em dash when the server did not send one.
-//
-// Relative alone, unlike the fire time: what a reader wants from an audit line
-// is "edited 10 minutes ago", not a wall-clock stamp they have to compare
-// against now. The exact instant is one hover away in every Discord client, so
-// nothing is actually lost.
-//
-// Like the fire time, this no longer uses the reminder's stored timezone — the
-// tag renders in the viewer's. See renderReminderTime for why that column is
-// still load-bearing.
+// Relative only, unlike the fire time: an audit line wants "10 minutes ago".
 func renderReminderStamp(present bool, instant time.Time) string {
 	if !present {
 		return emptyDash("")
@@ -327,18 +269,11 @@ func reminderDelCommand() command.Command {
 	}
 }
 
-// deleteRemindersOverallTimeout bounds the WHOLE loop across every id
-// deleteReminders is given, on top of reminderCallTimeout bounding each
-// individual call within it. Without an overall budget, N unresponsive ids
-// would serialise into N waits of reminderCallTimeout each — a caller who
-// pastes ten stale ids would hold the handler open ten times as long as any
-// single DeleteReminder call is allowed to take.
+// Bounds the whole loop, so N unresponsive ids cannot serialise into N waits of
+// reminderCallTimeout each.
 const deleteRemindersOverallTimeout = 60 * time.Second
 
-// deleteReminders accepts several space-separated ids. Chat tokenising splits on
-// whitespace, so a slash-command user passes them as one option and a chat user
-// as trailing words; the ids argument re-splits either form. The RPC deletes one
-// id, so this loops.
+// deleteReminders accepts several space-separated ids; the RPC deletes one.
 func deleteReminders(ctx context.Context, inv *command.Invocation) (*command.Response, error) {
 	ids := strings.Fields(inv.String("ids"))
 	if len(ids) == 0 {
@@ -354,15 +289,13 @@ func deleteReminders(ctx context.Context, inv *command.Invocation) (*command.Res
 	for _, id := range ids {
 		req := pb.DeleteReminderReq_builder{Id: &id}.Build()
 
-		// Derived from overallCtx, not ctx: context.WithTimeout takes the
-		// EARLIER of the two deadlines, so this never outlives the loop's own
-		// budget even when reminderCallTimeout alone would have allowed it to.
+		// From overallCtx, not ctx: WithTimeout takes the earlier deadline, so
+		// this cannot outlive the loop's own budget.
 		callCtx, cancel := boundedReminderCall(overallCtx)
 		_, err := clients.Reminder.DeleteReminder(callCtx, connect.NewRequest(req))
 		cancel()
 		if err != nil {
-			// NotFound covers "not yours" too; keep going so one bad id does not
-			// abort the rest.
+			// Keep going, so one bad id does not abort the rest.
 			failed++
 			continue
 		}
@@ -403,9 +336,8 @@ func reminderModCommand() command.Command {
 				Required:    true,
 			},
 			{
-				// Kept short deliberately: Discord rejects an option description
-				// over maxOptionDescription characters, and the combined
-				// "schedule plus how to clear it" wording went over it.
+				// Short on purpose: Discord caps an option description at
+				// maxOptionDescription characters.
 				Name:        "repeat",
 				Description: "New repeat; omit to keep it, \"" + clearRepeatSentinel + "\" to remove it",
 				Type:        command.ArgString,
@@ -443,13 +375,11 @@ func modifyReminder(ctx context.Context, inv *command.Invocation) (*command.Resp
 		Destination: destination,
 	}
 
-	// repeat_cron is patch-shaped on the server: unset leaves the stored schedule
-	// alone, an explicit empty string clears it. So the argument maps to three
-	// distinct outcomes, and only one of them touches the repeat.
+	// repeat_cron is patch-shaped: unset leaves the schedule alone, an explicit
+	// empty string clears it.
 	repeatNote := ""
 	switch {
 	case repeat == "":
-		// Left alone. Nothing to say and nothing to send.
 	case strings.EqualFold(repeat, clearRepeatSentinel):
 		cleared := ""
 		b.RepeatCron = &cleared
@@ -473,16 +403,9 @@ func modifyReminder(ctx context.Context, inv *command.Invocation) (*command.Resp
 	}, nil
 }
 
-// callerLocation resolves the caller's timezone by asking the server for their
-// user row. It falls back to UTC when the user has no timezone set or the lookup
-// fails, so a reminder can always be created — just interpreted in UTC.
-//
-// Both return values are still load-bearing even though Discord now renders
-// times as viewer-local tags. loc is what "in 2 hours" and "next tuesday at 9"
-// are resolved against, and the returned name is STORED on the reminder: the
-// server's NextOccurrence advances a repeat in that zone, which is what keeps a
-// @daily reminder at 09:00 local across a DST change, and it is what clients
-// with no native timestamp format render with. Do not stop sending it.
+// callerLocation resolves the caller's timezone, falling back to UTC. loc
+// resolves relative phrases; the name is stored so the server's NextOccurrence
+// advances a repeat in that zone across DST. Do not stop sending it.
 func callerLocation(ctx context.Context) (*time.Location, string) {
 	callCtx, cancel := boundedReminderCall(ctx)
 	defer cancel()
@@ -508,9 +431,8 @@ func callerLocation(ctx context.Context) (*time.Location, string) {
 	return loc, timezone
 }
 
-// currentDestination builds the ReminderDestination for where the command was
-// typed, using the canonical jsonb shapes from callermeta so the server resolves
-// the same instance and destination rows the interceptor would.
+// Uses callermeta's canonical jsonb shapes, so the server resolves the same
+// instance and destination rows the interceptor would.
 func currentDestination(ctx context.Context) (*pb.ReminderDestination, error) {
 	origin, ok := originFromContext(ctx)
 	if !ok {
@@ -527,7 +449,6 @@ func currentDestination(ctx context.Context) (*pb.ReminderDestination, error) {
 	}.Build(), nil
 }
 
-// renderReminderLine renders one reminder for the list.
 func renderReminderLine(r *pb.Reminder) string {
 	repeat := ""
 	if r.GetRepeatCron() != "" {
@@ -542,29 +463,16 @@ func renderReminderLine(r *pb.Reminder) string {
 	)
 }
 
-// renderReminderTime renders a reminder's fire time as a Discord timestamp tag,
-// absolute plus relative.
-//
-// THIS IS A DELIBERATE BEHAVIOUR CHANGE. The time used to be rendered in the
-// reminder's OWN stored timezone via reminder.RenderInZone; a Discord tag is
-// rendered by each viewer's client, so it now shows in the VIEWER's zone and
-// locale instead. For a reminder posted into a shared channel that is strictly
-// better: everyone reads it on their own clock.
-//
-// The stored timezone is NOT dead as a result. It is still what the server's
-// NextOccurrence uses to advance a repeating reminder correctly across DST, and
-// it is still what a client without native timestamps renders with — Matrix, or
-// anything else, via reminder.RenderInZone. Do not remove the column.
+// A Discord tag renders in each viewer's own zone, not the reminder's stored
+// one. That column is still used by the server and by clients without tags.
 func renderReminderTime(r *pb.Reminder) string {
 	return timestampWithRelative(r.GetDatetime().AsTime())
 }
 
-// reminderStatusName turns REMINDER_STATUS_PENDING into "pending".
 func reminderStatusName(s pb.ReminderStatus) string {
 	return strings.ToLower(strings.TrimPrefix(s.String(), "REMINDER_STATUS_"))
 }
 
-// emptyDash renders an em dash for an empty message so a line never ends blank.
 func emptyDash(s string) string {
 	if s == "" {
 		return "—"

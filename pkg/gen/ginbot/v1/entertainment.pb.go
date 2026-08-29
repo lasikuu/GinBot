@@ -400,7 +400,6 @@ func (x *SetBirthdayReq) ClearBirthday() {
 type SetBirthdayReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Birthday to set
 	Birthday *timestamppb.Timestamp
 }
 
@@ -499,9 +498,7 @@ func (x *SetBirthdayResp) ClearBirthday() {
 type SetBirthdayResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// User UUIDv7 of the user with the set birthday
-	UserId *string
-	// Birthday of the user
+	UserId   *string
 	Birthday *timestamppb.Timestamp
 }
 

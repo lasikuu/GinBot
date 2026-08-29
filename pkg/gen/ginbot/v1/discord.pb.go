@@ -164,10 +164,8 @@ func (x *SetDiscordActivityTypeReq) ClearName() {
 type SetDiscordActivityTypeReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Status to set
 	Status *DiscordActivity
-	// Activity name
-	Name *string
+	Name   *string
 }
 
 func (b0 SetDiscordActivityTypeReq_builder) Build() *SetDiscordActivityTypeReq {
@@ -185,10 +183,8 @@ func (b0 SetDiscordActivityTypeReq_builder) Build() *SetDiscordActivityTypeReq {
 	return m0
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 type SetDiscordActivityTypeResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields

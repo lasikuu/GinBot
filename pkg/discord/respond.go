@@ -152,20 +152,9 @@ type responsePlan struct {
 	files          []*discordgo.File
 }
 
-// planResponse decides how a command result is delivered.
-//
-// A re-roll is the odd one out. Discord's interaction callback payload has no
-// message_reference — discordgo.InteractionResponseData has no Reference field
-// to put one in — so a callback can never itself be a reply. The click is
-// therefore only acknowledged, which leaves the clicked message untouched and
-// its button live, and the new roll follows as a separate reply to it. That
-// reply carries no button of its own, so the chain stops after one hop and
-// clicking the original again simply adds another reply to the same original.
-//
-// An attachment rides on EVERY branch, unlike the re-roll button. A file is the
-// response's substance rather than a control on it, so a trigger that replies
-// with an image has to arrive whether it was played back by a slash command, a
-// chat command or a re-roll.
+// A re-roll is the odd one out: an interaction callback carries no
+// message_reference, so it can never be a reply. The click is acknowledged and
+// the new roll follows as a separate reply, without a button of its own.
 func planResponse(source commandSource, resp *command.Response) responsePlan {
 	switch source {
 	case sourceReRoll:
@@ -183,7 +172,6 @@ func planResponse(source commandSource, resp *command.Response) responsePlan {
 		}
 	}
 
-	// A slash command is the only path where the callback carries the content.
 	return responsePlan{
 		interactionResponse: discordgo.InteractionResponseChannelMessageWithSource,
 		components:          reRollComponents(resp),
@@ -191,7 +179,6 @@ func planResponse(source commandSource, resp *command.Response) responsePlan {
 	}
 }
 
-// respondCommand renders a command response to an interaction.
 func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *command.Response) {
 	if resp == nil {
 		log.Z.Error("command returned no response.", zap.String("command", i.Type.String()))
@@ -217,9 +204,8 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 		}
 	}
 
-	// Acknowledge before sending anything else. The callback has three seconds
-	// or the user sees "This interaction failed", and the send below is a second
-	// round trip that can outlast them.
+	// Acknowledge first: the callback has three seconds, and the send below is
+	// a second round trip that can outlast them.
 	if err := s.InteractionRespond(i.Interaction, response); err != nil {
 		log.Z.Error("failed to respond to command.", zap.Error(err))
 	}
@@ -233,8 +219,7 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 		log.Z.Warn("component interaction carried no message.", zap.String("interaction", i.ID))
 	}
 
-	// Ephemeral is dropped here for the same reason it is on the chat path: a
-	// plain channel message has no such flag.
+	// Ephemeral is dropped: a plain channel message has no such flag.
 	_, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
 		Content:         truncateContent(resp.Content),
 		Components:      plan.components,
@@ -243,27 +228,14 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 		AllowedMentions: noMentions(),
 	})
 	if err != nil {
-		// The interaction is already acknowledged, so the user sees no failure
-		// banner and this log is the only trace.
+		// Already acknowledged, so this log is the only trace.
 		log.Z.Error("failed to send re-roll reply.", zap.Error(err))
 	}
 }
 
-// deferInteraction acknowledges a slow command before its handler runs, and
-// reports whether the acknowledgement landed.
-//
-// Discord invalidates an interaction after three seconds, and a command marked
-// Slow can outlast that — /trigger add with a file makes the SERVER fetch from a
-// CDN, bounded at 30 seconds. Without this the user sees "the application did
-// not respond" while the trigger is in fact created, and the token is dead so
-// nothing can report the outcome afterwards. Deferring buys a fifteen-minute
-// follow-up window.
-//
-// Ephemeral, always. The acknowledgement has to commit to a visibility before
-// the handler has produced a Response to read one from, and an ephemeral
-// deferral cannot later be edited into a public message. Every Slow command
-// today answers ephemerally anyway; a future public one has to post its own
-// channel message the way the re-roll path does.
+// Deferring trades Discord's 3s interaction deadline for a 15-minute follow-up
+// window. Always ephemeral: visibility must be chosen before the handler runs,
+// and an ephemeral deferral cannot later be edited into a public message.
 func deferInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -279,13 +251,8 @@ func deferInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) bool
 	return true
 }
 
-// respondDeferred delivers a slow command's result into the placeholder
-// deferInteraction left behind.
-//
-// It edits rather than sends: the deferral already created the message, so a
-// follow-up would leave the "thinking" placeholder sitting in the channel
-// forever. Content is never left empty — Discord rejects an edit with neither
-// text nor an attachment, and an attachment-only response is legitimate here.
+// Edits rather than sends, or the "thinking" placeholder stays forever. Content
+// is never empty: Discord rejects an edit with neither text nor an attachment.
 func respondDeferred(s *discordgo.Session, i *discordgo.InteractionCreate, resp *command.Response) {
 	if resp == nil {
 		log.Z.Error("slow command returned no response.", zap.String("command", i.Type.String()))
@@ -305,14 +272,11 @@ func respondDeferred(s *discordgo.Session, i *discordgo.InteractionCreate, resp 
 		AllowedMentions: noMentions(),
 	})
 	if err != nil {
-		// The interaction is already acknowledged, so the user sees the
-		// placeholder rather than a failure banner and this log is the only
-		// trace.
+		// Already acknowledged, so this log is the only trace.
 		log.Z.Error("failed to deliver a slow command's response.", zap.Error(err))
 	}
 }
 
-// respondDeferredError reports a failed slow command into its placeholder.
 func respondDeferredError(s *discordgo.Session, i *discordgo.InteractionCreate, err error) {
 	content := errorMessage(err)
 
@@ -324,13 +288,8 @@ func respondDeferredError(s *discordgo.Session, i *discordgo.InteractionCreate, 
 	}
 }
 
-// clickedMessageReference points a re-roll reply at the message whose button
-// was clicked.
-//
-// Interaction.Message is populated only for a component interaction, and
-// discordgo dispatches handlers as bare goroutines with no recover(), so a nil
-// deref here would take the whole process down. A nil reference still posts the
-// roll, just not as a reply.
+// Interaction.Message is populated only for a component interaction. A nil
+// reference still posts the roll, just not as a reply.
 func clickedMessageReference(i *discordgo.InteractionCreate) *discordgo.MessageReference {
 	if i.Message == nil {
 		return nil
@@ -339,9 +298,7 @@ func clickedMessageReference(i *discordgo.InteractionCreate) *discordgo.MessageR
 	return i.Message.Reference()
 }
 
-// respondChat renders a command response to a chat message.
-//
-// Ephemeral has no chat equivalent and is ignored, as Response documents.
+// Ephemeral has no chat equivalent and is ignored.
 func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command.Response) {
 	if resp == nil {
 		log.Z.Error("chat command returned no response.")
@@ -362,14 +319,8 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 	}
 }
 
-// reRollComponents attaches the re-roll button whenever the response asks for
-// one. Only a first roll reaches it: planResponse withholds the button from a
-// re-roll so that the chain stops after one hop.
-//
-// nil is returned for "no button". It used to be an empty slice, because on the
-// old in-place edit path nil left the existing components alone and so could
-// not clear a button; no message is edited any more, and on a message create
-// nil and an empty slice both mean no components.
+// Only a first roll reaches this: planResponse withholds the button from a
+// re-roll so the chain stops after one hop.
 func reRollComponents(resp *command.Response) []discordgo.MessageComponent {
 	if resp.ReRollID == "" {
 		return nil

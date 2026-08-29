@@ -77,7 +77,6 @@ func (x ActionType) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Message representing a ActionRecord
 type ActionRecord struct {
 	state                      protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Id              int64                  `protobuf:"varint,1,opt,name=id" json:"id,omitempty"`
@@ -270,17 +269,13 @@ func (x *ActionRecord) ClearSubjectId() {
 type ActionRecord_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// ID of the Action
-	Id *int64
-	// Type of the Action
-	ActionType *ActionType
-	// Date and time of the Action
+	Id              *int64
+	ActionType      *ActionType
 	ActionTimestamp *timestamppb.Timestamp
-	// Time taken to perform the Action in milliseconds
+	// Milliseconds taken to perform the action.
 	ActionTime *int64
-	// User UUIDv7 of the actor
-	ActorId *string
-	// UUIDv7 of the subject the action was performed on, e.g. the trigger that fired
+	ActorId    *string
+	// Subject acted on, e.g. the trigger that fired.
 	SubjectId *string
 }
 
@@ -428,12 +423,9 @@ func (x *CreateActionRecordReq) ClearSubjectId() {
 type CreateActionRecordReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Type of the Action
 	ActionType *ActionType
-	// Time taken to perform the Action in milliseconds
 	ActionTime *int64
-	// UUIDv7 of the subject the action was performed on, e.g. the trigger that fired
-	SubjectId *string
+	SubjectId  *string
 }
 
 func (b0 CreateActionRecordReq_builder) Build() *CreateActionRecordReq {
@@ -516,7 +508,6 @@ func (x *CreateActionRecordResp) ClearId() {
 type CreateActionRecordResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// ID of the ActionRecord
 	Id *int64
 }
 
@@ -718,18 +709,12 @@ func (x *ListActionRecordsReq) ClearSubjectId() {
 type ListActionRecordsReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Limit the number of recorded actions returned
-	Limit *int64
-	// Offset the recorded actions returned
-	Offset *int64
-	// Type of the action to search for
-	ActionType *ActionType
-	// Search for recorded actions starting from this date
+	Limit       *int64
+	Offset      *int64
+	ActionType  *ActionType
 	PeriodStart *timestamppb.Timestamp
-	// Search for recorded actions ending at this date
-	PeriodEnd *timestamppb.Timestamp
-	// Subject UUIDv7 to filter by
-	SubjectId *string
+	PeriodEnd   *timestamppb.Timestamp
+	SubjectId   *string
 }
 
 func (b0 ListActionRecordsReq_builder) Build() *ListActionRecordsReq {

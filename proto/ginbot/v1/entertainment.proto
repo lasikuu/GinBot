@@ -21,10 +21,7 @@ message GetRandomNumberReq {
     ANY = 2;
   };
 
-  // Reserved defensively: the numbering starts at 3 and skips 4, so these were
-  // most likely used before the file was first committed. Nothing in the history
-  // confirms that, but reserving costs nothing and reusing them would break any
-  // client built against an earlier private revision.
+  // Reserved defensively: likely used before the first commit.
   reserved 1, 2, 4;
 
   REQUEST type = 3;
@@ -40,24 +37,14 @@ message GetRandomNumberResp {
 }
 
 message SetBirthdayReq {
-  // Field 1 previously named the subject whose birthday was being set. The
-  // subject is the caller, identified from gRPC metadata like every other
-  // identity-bearing RPC here, so naming one in the request body could only
-  // ever have let a client write to someone else's account.
-  //
-  // The number and the name stay reserved so they can never be silently reused
-  // with a different meaning.
+  // Was user_id: the subject is the caller from metadata.
   reserved 1;
-  // Editions require reserved names as identifiers, not string literals.
   reserved user_id;
 
-  // Birthday to set
   google.protobuf.Timestamp birthday = 2;
 }
 
 message SetBirthdayResp {
-  // User UUIDv7 of the user with the set birthday
   string user_id = 1;
-  // Birthday of the user
   google.protobuf.Timestamp birthday = 2;
 }

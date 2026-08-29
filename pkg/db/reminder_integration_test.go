@@ -13,7 +13,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// fixtureReminderCap is high enough that a test not about the cap cannot trip it.
 const fixtureReminderCap = 1000
 
 type reminderFixture struct {

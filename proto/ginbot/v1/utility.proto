@@ -14,37 +14,24 @@ enum HealthStatus {
   HEALTH_STATUS_ERROR = 2;
 }
 
-// There is deliberately no Help RPC here. Help is rendered client-side from the
-// command registry in pkg/command, which is the single source of command names,
-// aliases, descriptions and argument specs and lives in the client process. The
-// server holds no registry and would have to be shipped one to answer a help
-// request, so a server-side Help could only ever be a worse copy of what the
-// client already has.
+// No Help RPC: help is rendered client-side from pkg/command's registry, which
+// the server does not hold.
 service UtilityService {
   rpc HealthCheck(HealthCheckReq) returns (HealthCheckResp);
-  // Carries no request fields and returns no timestamp on purpose. Round-trip
-  // latency is measured entirely client-side (stamp before the call, diff after
-  // the response), which needs no clock synchronisation between the two
-  // processes. Diffing a client-supplied timestamp on the server would silently
-  // report clock skew as latency.
+  // No timestamp: latency is measured client-side, needing no clock sync.
   rpc Ping(PingReq) returns (PingResp);
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 message HealthCheckReq {}
 
-// Empty on purpose; see HealthCheckReq.
 message PingReq {}
 
 message HealthCheckResp {
-  // Status of the service
   HealthStatus status = 1;
 }
 
 message PingResp {
-  // Pong message
   string message = 1;
 }

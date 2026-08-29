@@ -9,8 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// instance.id is a Postgres BIGSERIAL, so the smallest id that can exist is 1,
-// and GetId() cannot tell an absent field from an explicit zero.
+// instance.id is a BIGSERIAL, so the smallest valid id is 1.
 func TestInstanceIdsMustBePositive(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -63,8 +62,7 @@ func TestInstanceIdsMustBePositive(t *testing.T) {
 	}
 }
 
-// validCreateInstance must pass validation, so a mutation of it is the only
-// thing wrong with the result.
+// validCreateInstance passes validation, so a mutation of it is the only fault.
 func validCreateInstance() *pb.CreateInstanceReq {
 	channel := "general"
 

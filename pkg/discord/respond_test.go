@@ -13,19 +13,9 @@ import (
 	"github.com/lasikuu/GinBot/pkg/command"
 )
 
-// TestErrorMessage pins which Connect codes are allowed to reach a channel
-// verbatim. InvalidArgument and FailedPrecondition are written for the caller;
-// everything else is internal and must be replaced, so that a database error or
-// a stack detail cannot be echoed into a public guild.
-//
-// errorMessage switched from google.golang.org/grpc/status.FromError to
-// connect.CodeOf as part of the Connect port, and gained a sixth branch for
-// connect.CodeUnavailable — the code a client gets when it cannot reach
-// ginbot-server at all, which previously fell through to the same generic
-// message as codes.Unavailable did. That branch's wording is asserted
-// alongside the five pre-existing ones so a future edit cannot special-case
-// Unavailable without the others noticing, and cannot leave Unavailable
-// producing the bare fallback without ITS case noticing either.
+// TestErrorMessage pins which Connect codes reach a channel verbatim.
+// InvalidArgument and FailedPrecondition are for the caller; everything else is
+// replaced so internal detail cannot leak into a public guild.
 func TestErrorMessage(t *testing.T) {
 	tests := []struct {
 		name string
@@ -63,12 +53,6 @@ func TestErrorMessage(t *testing.T) {
 			want: "Something went wrong.",
 		},
 		{
-			// The sixth branch. Two things at once: the transport error
-			// (connection refused, DNS failure, ...) must not reach a public
-			// channel, AND the caller must be told this one is transient —
-			// which is the only failure here they can usefully act on.
-			// TestUnavailableIsNotTheGenericMessage below is what stops this
-			// silently collapsing back into the default.
 			name: "unavailable gets its own actionable message",
 			err:  connect.NewError(connect.CodeUnavailable, errors.New("dial tcp 10.0.0.9:50051: connect: connection refused")),
 			want: "The bot's backend is unreachable right now. Try again in a moment.",
@@ -79,11 +63,7 @@ func TestErrorMessage(t *testing.T) {
 			want: "Something went wrong.",
 		},
 		{
-			// Not every error reaching errorMessage originated as a Connect
-			// error — a bare error from local validation, or something a
-			// dependency returned unwrapped. connect.CodeOf reports
-			// CodeUnknown for these, which must fall through to the generic
-			// message rather than panic or leak the raw error text.
+			// A non-Connect error is CodeUnknown, which must fall through generic.
 			name: "a non-Connect error is still a generic message",
 			err:  errors.New("some ordinary Go error"),
 			want: "Something went wrong.",
@@ -99,17 +79,8 @@ func TestErrorMessage(t *testing.T) {
 	}
 }
 
-// TestUnavailableIsNotTheGenericMessage pins the POINT of the sixth branch
-// rather than its wording.
-//
-// An earlier version of errorMessage had the CodeUnavailable case assign the
-// same string as the default, on the reasoning that the case's existence was
-// itself the safeguard. It was not: deleting the whole case changed no
-// observable behaviour and the entire package's tests stayed green, so the
-// branch was inert and the requirement it was meant to satisfy — a transient
-// backend outage must not reach the user as "Something went wrong." — was
-// still unmet. Comparing against the generic message rather than a literal is
-// what makes that impossible to reintroduce, whatever the wording becomes.
+// TestUnavailableIsNotTheGenericMessage pins that a transient outage is
+// distinguishable from the generic message, whatever the wording becomes.
 func TestUnavailableIsNotTheGenericMessage(t *testing.T) {
 	generic := errorMessage(errors.New("some ordinary Go error"))
 
@@ -120,13 +91,8 @@ func TestUnavailableIsNotTheGenericMessage(t *testing.T) {
 	}
 }
 
-// TestErrorMessageDoesNotLeakTheConnectCodePrefix guards against a regression
-// specific to connect.Error: its Error() method (and therefore fmt formatting
-// of the error) renders as "invalid_argument: <message>", prefixing the code
-// name onto the text. errorMessage must read st.Message() through the typed
-// accessor — never err.Error() — or every InvalidArgument/FailedPrecondition
-// reply shown to a Discord user would carry a leaked "invalid_argument: "
-// prefix that means nothing to them.
+// TestErrorMessageDoesNotLeakTheConnectCodePrefix: connect.Error.Error() renders
+// as "invalid_argument: <message>", so errorMessage must read Message(), not Error().
 func TestErrorMessageDoesNotLeakTheConnectCodePrefix(t *testing.T) {
 	tests := []struct {
 		name string
@@ -148,9 +114,8 @@ func TestErrorMessageDoesNotLeakTheConnectCodePrefix(t *testing.T) {
 	}
 }
 
-// TestTruncateContent guards the cut. Discord rejects a send above the limit
-// outright, so an over-long echoed argument would otherwise produce no reply at
-// all, and cutting mid-rune would produce invalid UTF-8.
+// TestTruncateContent: Discord rejects a send above the limit, and cutting
+// mid-rune would produce invalid UTF-8.
 func TestTruncateContent(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -182,10 +147,8 @@ func TestTruncateContent(t *testing.T) {
 	}
 }
 
-// TestNoMentionsParsesNothing pins the distinction the mention-injection fix
-// rests on: an empty Parse list means "resolve no mentions", whereas omitting
-// AllowedMentions entirely means "resolve all of them". A nil slice here would
-// silently restore the hole.
+// TestNoMentionsParsesNothing: an empty Parse list suppresses all mentions,
+// whereas omitting AllowedMentions resolves them all — a nil slice reopens the hole.
 func TestNoMentionsParsesNothing(t *testing.T) {
 	allowed := noMentions()
 
@@ -203,9 +166,6 @@ func TestNoMentionsParsesNothing(t *testing.T) {
 	}
 }
 
-// TestReRollComponents covers the mapping from a response onto components: a
-// response asking for a re-roll gets exactly one control, one that does not
-// gets none.
 func TestReRollComponents(t *testing.T) {
 	withButton := reRollComponents(&command.Response{ReRollID: "reroll:doubles"})
 	if len(withButton) != 1 {
@@ -218,13 +178,7 @@ func TestReRollComponents(t *testing.T) {
 }
 
 // TestPlanResponse pins the delivery decision for all three invocation paths.
-// It is the whole of the response path that can be checked directly: the two
-// API calls it drives need a discordgo.Session and there is no fake for one.
-//
-// The re-roll row is the correction. The old code answered a button click with
-// InteractionResponseUpdateMessage, which rewrote the clicked message in place
-// and re-attached the button. A click must instead be acknowledged without
-// touching that message, and the roll posted separately.
+// A button click is acknowledged without editing the clicked message.
 func TestPlanResponse(t *testing.T) {
 	rolled := &command.Response{Content: "444", ReRollID: reRollID("triples")}
 
@@ -290,12 +244,8 @@ func TestPlanResponse(t *testing.T) {
 	}
 }
 
-// TestReRollButtonStopsAfterOneHop is the regression the correction is about.
-// A roll invoked as a slash or chat command carries the die button; the roll
-// produced by clicking that button must not, or every click grows a chain.
-//
-// The button is identified by its custom ID rather than by counting, so a
-// component that is merely present but not a re-roll control cannot pass.
+// TestReRollButtonStopsAfterOneHop: a slash or chat roll carries the button; the
+// roll from clicking it must not, or every click grows a chain.
 func TestReRollButtonStopsAfterOneHop(t *testing.T) {
 	resp := &command.Response{Content: "444", ReRollID: reRollID("triples")}
 
@@ -319,8 +269,6 @@ func TestReRollButtonStopsAfterOneHop(t *testing.T) {
 	}
 }
 
-// hasReRollButton reports whether the components carry a button bound to
-// customID, which is what makes a message clickable again.
 func hasReRollButton(components []discordgo.MessageComponent, customID string) bool {
 	for _, component := range components {
 		row, ok := component.(*discordgo.ActionsRow)
@@ -338,10 +286,8 @@ func hasReRollButton(components []discordgo.MessageComponent, customID string) b
 	return false
 }
 
-// TestClickedMessageReferencePointsAtTheClickedMessage covers the reply target.
-// Interaction.Message is only populated for a component interaction, and
-// discordgo dispatches handlers without recovering panics, so the absent case
-// must degrade to no reference rather than deref nil.
+// TestClickedMessageReferencePointsAtTheClickedMessage: Interaction.Message is
+// only set for a component interaction, so the absent case must not deref nil.
 func TestClickedMessageReferencePointsAtTheClickedMessage(t *testing.T) {
 	clicked := &discordgo.Message{ID: "msg", ChannelID: "chan", GuildID: "guild"}
 
@@ -366,8 +312,6 @@ func TestClickedMessageReferencePointsAtTheClickedMessage(t *testing.T) {
 	}
 }
 
-// responseWithFile is a response carrying one attachment, i.e. what a trigger
-// whose reply is a file produces.
 func responseWithFile(name string, content []byte) *command.Response {
 	return &command.Response{
 		Content: "",
@@ -379,8 +323,8 @@ func responseWithFile(name string, content []byte) *command.Response {
 	}
 }
 
-// readAttachment reads a planned attachment back, which is the only way to tell
-// a real attachment from a header with an exhausted reader behind it.
+// readAttachment reads a planned attachment back to tell it from a header with
+// an exhausted reader.
 func readAttachment(t *testing.T, file *discordgo.File) []byte {
 	t.Helper()
 
@@ -395,12 +339,8 @@ func readAttachment(t *testing.T, file *discordgo.File) []byte {
 	return content
 }
 
-// TestResponseFilesRefusesEveryEmptyShape: no code in this repository sent a
-// file to a platform before this, so all of these reach discordgo for the first
-// time. Each one would otherwise post a zero-byte attachment named "" — a
-// visible, undeletable artefact in the channel — and the nil Response is the
-// shape respondCommand already has to handle, because a handler is free to
-// return (nil, nil).
+// TestResponseFilesRefusesEveryEmptyShape: each empty shape would otherwise post
+// a zero-byte attachment named "", an undeletable artefact in the channel.
 func TestResponseFilesRefusesEveryEmptyShape(t *testing.T) {
 	tests := []struct {
 		name string
@@ -421,14 +361,8 @@ func TestResponseFilesRefusesEveryEmptyShape(t *testing.T) {
 	}
 }
 
-// TestResponseFilesCarriesTheNameTypeAndBytes is the mapping from the neutral
-// response onto discordgo's attachment.
-//
-// The name is what the user sees and what their client saves the file as; the
-// server never stores an original filename, so a blank one is the ordinary case
-// rather than an error, and Discord rejects an attachment with no name at all.
-// ContentType is what decides whether Discord renders the file inline or as a
-// download.
+// TestResponseFilesCarriesTheNameTypeAndBytes maps the neutral response onto
+// discordgo's attachment; a blank name is ordinary and gets the fallback.
 func TestResponseFilesCarriesTheNameTypeAndBytes(t *testing.T) {
 	content := []byte("\x89PNG not really")
 
@@ -462,11 +396,8 @@ func TestResponseFilesCarriesTheNameTypeAndBytes(t *testing.T) {
 	}
 }
 
-// TestResponseFilesGivesAFreshReaderPerCall: an io.Reader is consumed once, so a
-// reader cached alongside the response would be empty the second time it was
-// used. That is not hypothetical — respondCommand plans a response and can both
-// answer the interaction and send a channel message from it, and a send that
-// discordgo retries would replay the same reader.
+// TestResponseFilesGivesAFreshReaderPerCall: an io.Reader is consumed once, and
+// respondCommand can send from one response twice.
 func TestResponseFilesGivesAFreshReaderPerCall(t *testing.T) {
 	content := []byte("the same bytes twice")
 	resp := responseWithFile("cat.png", content)
@@ -482,15 +413,8 @@ func TestResponseFilesGivesAFreshReaderPerCall(t *testing.T) {
 	}
 }
 
-// TestPlanResponseCarriesTheFileOnEveryPath is the acceptance criterion that a
-// file reply arrives as a real attachment, reduced to the part that can be
-// checked without a Discord session.
-//
-// All three sources matter and they deliver differently: a slash command's file
-// rides the interaction callback, a chat command's rides a channel message, and
-// a re-roll acknowledges the click and then sends a separate reply. Wiring the
-// attachment into only the one path that was tried by hand is the obvious way to
-// get this wrong.
+// TestPlanResponseCarriesTheFileOnEveryPath: the file must ride every one of the
+// three delivery paths, which deliver differently.
 func TestPlanResponseCarriesTheFileOnEveryPath(t *testing.T) {
 	content := []byte("attach me")
 
@@ -514,8 +438,6 @@ func TestPlanResponseCarriesTheFileOnEveryPath(t *testing.T) {
 				t.Errorf("attachment content = %q, want %q", got, content)
 			}
 
-			// A response with no file must not grow one, or every text reply
-			// would carry an empty attachment.
 			textOnly := planResponse(source.source, &command.Response{Content: "444"})
 			if len(textOnly.files) != 0 {
 				t.Errorf("a text-only response planned %d attachments, want 0", len(textOnly.files))

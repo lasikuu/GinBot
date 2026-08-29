@@ -15,23 +15,12 @@ import (
 	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 )
 
-// newRetryInterceptor decides what to retry by reading req.Spec().Procedure,
-// which connect.NewRequest alone never populates — that field is filled in by
-// connect.Client.CallUnary from the schema the generated client was built
-// with. So unlike newDeadlineInterceptor's tests, these have to run against a
-// real Connect client and server pair rather than a hand-built
-// connect.AnyRequest, or every case would silently test against Procedure ==
-// "" and prove nothing about the allowlist.
-//
-// The harness here mounts exactly two services — UtilityService (Ping is
-// allowlisted) and ReminderService (CreateReminder is not) — which is the
-// minimum needed to exercise both the "retry" and "do not retry" halves of
-// the allowlist over one real transport.
+// These run against a real Connect client/server pair: req.Spec().Procedure is
+// populated by CallUnary from the schema, not by connect.NewRequest, so a
+// hand-built request would test against Procedure == "".
 
-// scriptedPingServer answers UtilityService.Ping with connect.CodeUnavailable
-// for the first `failures` attempts, then succeeds. code overrides the error
-// code returned on those failing attempts; the zero value is
-// connect.CodeUnavailable.
+// scriptedPingServer answers Ping with a failing code for the first `failures`
+// attempts, then succeeds. code defaults to connect.CodeUnavailable.
 type scriptedPingServer struct {
 	ginbotv1connect.UnimplementedUtilityServiceHandler
 
@@ -65,11 +54,9 @@ func (s *scriptedPingServer) attemptCount() int {
 	return s.attempts
 }
 
-// scriptedCreateReminderServer always fails CreateReminder with
-// CodeUnavailable, the code that WOULD be retried on an allowlisted
-// procedure. CreateReminder is not allowlisted precisely because it mutates:
-// a client that retried it on a response the server never actually sent could
-// double-create the reminder.
+// scriptedCreateReminderServer always fails CreateReminder with CodeUnavailable,
+// the code that would be retried were CreateReminder allowlisted; it is not,
+// because retrying a mutation could double-create the reminder.
 type scriptedCreateReminderServer struct {
 	ginbotv1connect.UnimplementedReminderServiceHandler
 
@@ -81,8 +68,8 @@ func (s *scriptedCreateReminderServer) CreateReminder(context.Context, *connect.
 	return nil, connect.NewError(connect.CodeUnavailable, errors.New("scripted failure"))
 }
 
-// retryHarness is a running server plus clients for both services, built with
-// newRetryInterceptor installed exactly the way Dial would install it.
+// retryHarness is a running server plus clients for both services, with
+// newRetryInterceptor installed as Dial would.
 type retryHarness struct {
 	Utility  ginbotv1connect.UtilityServiceClient
 	Reminder ginbotv1connect.ReminderServiceClient
@@ -111,11 +98,8 @@ func newRetryHarness(t *testing.T, ping *scriptedPingServer, createReminder *scr
 	}
 }
 
-// TestNewRetryInterceptorRetriesAnAllowlistedProcedureOnUnavailable is the
-// happy retry path: two transient CodeUnavailable failures followed by a
-// success must be invisible to the caller, at the cost of exactly two extra
-// attempts — not the deadline interceptor's default budget's worth of
-// hammering, and not zero.
+// Two transient CodeUnavailable failures then success must be invisible to the
+// caller, at the cost of exactly two retries.
 func TestNewRetryInterceptorRetriesAnAllowlistedProcedureOnUnavailable(t *testing.T) {
 	ping := &scriptedPingServer{failures: 2}
 	h := newRetryHarness(t, ping, &scriptedCreateReminderServer{})
@@ -127,17 +111,12 @@ func TestNewRetryInterceptorRetriesAnAllowlistedProcedureOnUnavailable(t *testin
 		t.Fatalf("Ping failed after retries: %v", err)
 	}
 
-	// 1 initial attempt + 2 retries.
 	if got := ping.attemptCount(); got != 3 {
 		t.Errorf("Ping was attempted %d times, want 3 (1 initial + 2 retries)", got)
 	}
 }
 
-// TestNewRetryInterceptorDoesNotRetryAMutatingProcedure is the refusal path
-// that gives the allowlist its whole reason to exist: CreateReminder must be
-// attempted exactly once, whatever the code, because a client-side retry of a
-// write the server may already have applied is a duplicate reminder, not a
-// safety net.
+// A non-allowlisted mutation must be attempted exactly once, whatever the code.
 func TestNewRetryInterceptorDoesNotRetryAMutatingProcedure(t *testing.T) {
 	createReminder := &scriptedCreateReminderServer{}
 	h := newRetryHarness(t, &scriptedPingServer{}, createReminder)
@@ -158,11 +137,7 @@ func TestNewRetryInterceptorDoesNotRetryAMutatingProcedure(t *testing.T) {
 	}
 }
 
-// TestNewRetryInterceptorDoesNotRetryANonUnavailableCode: only
-// CodeUnavailable is transient in the way this interceptor cares about. A
-// caller-facing rejection dressed up as anything else (InvalidArgument,
-// PermissionDenied, ...) retried automatically would just mean the same
-// refusal three times slower.
+// Only CodeUnavailable is retried; any other code is returned on the first try.
 func TestNewRetryInterceptorDoesNotRetryANonUnavailableCode(t *testing.T) {
 	ping := &scriptedPingServer{failures: 100, code: connect.CodeInternal}
 	h := newRetryHarness(t, ping, &scriptedCreateReminderServer{})
@@ -182,9 +157,7 @@ func TestNewRetryInterceptorDoesNotRetryANonUnavailableCode(t *testing.T) {
 	}
 }
 
-// TestNewRetryInterceptorStopsAtTheCeiling: an allowlisted procedure that
-// NEVER recovers must still give up, at most 2 retries in, rather than retry
-// forever inside one logical call.
+// An allowlisted procedure that never recovers must give up after 2 retries.
 func TestNewRetryInterceptorStopsAtTheCeiling(t *testing.T) {
 	ping := &scriptedPingServer{failures: 1000}
 	h := newRetryHarness(t, ping, &scriptedCreateReminderServer{})
@@ -204,26 +177,13 @@ func TestNewRetryInterceptorStopsAtTheCeiling(t *testing.T) {
 	}
 }
 
-// TestNewRetryInterceptorRespectsADeadlineExpiringMidBackoff: the schedule is
-// 100ms then 200ms. A deadline generous enough to survive the first backoff
-// but not the second must make the interceptor give up before reaching the
-// 3-attempt ceiling TestNewRetryInterceptorStopsAtTheCeiling pins under an
-// ample deadline — it must not sleep out a backoff it could not have honoured
-// and only THEN notice the deadline had already passed.
-//
-// The bound is deliberately generous rather than tight: this is timing
-// against a real in-process TLS handshake, which costs a few to a few dozen
-// milliseconds depending on the machine. What is asserted is the invariant
-// that actually matters — the retry ceiling was never reached — not a
-// specific attempt count, which a slow first handshake could shift by one
-// without the interceptor doing anything wrong.
+// A deadline that cannot afford the next backoff must make the interceptor give
+// up rather than sleep out a backoff it could not honour.
 func TestNewRetryInterceptorRespectsADeadlineExpiringMidBackoff(t *testing.T) {
 	ping := &scriptedPingServer{failures: 1000}
 	h := newRetryHarness(t, ping, &scriptedCreateReminderServer{})
 
-	// Long enough to survive one round trip and the first 100ms backoff,
-	// short enough that the remaining budget after the second failure is
-	// under the 200ms second backoff.
+	// Survives one round trip and the first 100ms backoff, but not the second.
 	const budget = 250 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
@@ -241,24 +201,14 @@ func TestNewRetryInterceptorRespectsADeadlineExpiringMidBackoff(t *testing.T) {
 			"a %v deadline cannot afford the full 100ms+200ms backoff schedule", got, budget)
 	}
 
-	// Comfortably under what the full ceiling schedule takes
-	// (TestNewRetryInterceptorStopsAtTheCeiling, ~300ms of backoff alone), so
-	// a regression that ignored the deadline and ran the whole schedule
-	// anyway still fails this even with generous jitter.
+	// Under the full ~300ms backoff schedule, so ignoring the deadline fails here.
 	if elapsed >= 400*time.Millisecond {
 		t.Errorf("Ping took %v to fail, want well under the full backoff schedule; "+
 			"the interceptor does not appear to be respecting the %v deadline", elapsed, budget)
 	}
 }
 
-// TestGetFileIsNotRetryable pins item F of the streaming port: GetFile moved
-// off the unary allowlist this stage. It never mattered functionally —
-// retryInterceptor.WrapUnary only ever runs on a unary call, and GetFile
-// stopped being one — but leaving it declared here would be a stale,
-// misleading entry that outlives the RPC shape it described, and the next
-// person reading retryableProcedures alongside its own "every one of these is
-// read-only and idempotent" reasoning has no way to tell it apart from an
-// entry that still means something.
+// GetFile is server-streaming now, so it must not be in the unary allowlist.
 func TestGetFileIsNotRetryable(t *testing.T) {
 	if retryableProcedures[ginbotv1connect.TriggerServiceGetFileProcedure] {
 		t.Error("TriggerServiceGetFileProcedure is still in retryableProcedures; " +
@@ -266,20 +216,12 @@ func TestGetFileIsNotRetryable(t *testing.T) {
 	}
 }
 
-// fakeStreamingClientConnForRetry mirrors fakeStreamingClientConn in
-// deadline_test.go: WrapStreamingClient's job here is only to prove it passes
-// a streaming call straight through unmodified, so nothing beyond the seam
-// itself needs a real implementation.
 type fakeStreamingClientConnForRetry struct {
 	connect.StreamingClientConn
 }
 
-// TestNewRetryInterceptorWrapStreamingClientIsAPassThrough: the specification
-// is explicit that retries are unary-only. OpenClientActionStream is a
-// long-lived bidi stream — silently retrying a broken one would open a SECOND
-// stream server-side rather than resume the first, doubling the client's
-// registration. Asserted as an identity pass-through: the same conn instance
-// next returns must come back unchanged.
+// Retries are unary-only: retrying a broken bidi stream would open a second one
+// server-side. Asserted as an identity pass-through.
 func TestNewRetryInterceptorWrapStreamingClientIsAPassThrough(t *testing.T) {
 	interceptor := newRetryInterceptor()
 

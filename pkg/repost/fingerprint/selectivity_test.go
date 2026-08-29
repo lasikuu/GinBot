@@ -12,13 +12,10 @@ import (
 	"github.com/lasikuu/GinBot/pkg/repost"
 )
 
-// Selectivity, not correctness: how many rows a chunk-column lookup actually
-// returns. The index design assumes a uniform 8-bit key, i.e. N/256 rows.
-//
-// The selectivity table, measured over a synthetic corpus and so an optimistic
-// bound on real traffic — 292 images, 271 distinct hashes, seed 20260823. A
-// perfectly uniform chunk at n=292 reaches only ~174 distinct values (birthday
-// argument), with a top-bin share near 0.4%:
+// Measured chunk-column selectivity over a synthetic corpus (292 images, 271
+// distinct hashes, seed 20260823). Each chunk is 14-25x worse than a uniform
+// N/256 key; the pigeonhole guarantee holds but the N/256 sizing assumption
+// does not.
 //
 //	  chunk  distinct  top value  top share  candidate set vs the N/256 design
 //	  c0     91        128        8.6%       21.9x
@@ -29,21 +26,13 @@ import (
 //	  c5     140       0          6.2%       15.8x
 //	  c6     146       0          9.9%       25.4x
 //	  c7     149       0          6.5%       16.7x
-//
-// Every chunk is 14-25x worse than uniform, and the worst by top share is c6,
-// not the DC-carrying c0, so low-frequency DCT correlation is spread across
-// the whole hash. The pigeonhole guarantee is unaffected; the "sub-millisecond
-// so retention-forever is free" reasoning built on N/256 is not.
 
-// selectivitySeed is fixed so the reported table is reproducible.
 const selectivitySeed = 20260823
 
-// selectivityImageSize is the generated image edge length, comfortably above
-// the 64x64 PerceptionHash resizes to internally.
+// selectivityImageSize is above the 64x64 PerceptionHash resizes to internally.
 const selectivityImageSize = 160
 
-// gradientImage draws a linear luminance ramp at the given angle, repeating
-// cycles times across the image.
+// gradientImage draws a linear luminance ramp at the given angle, cycles times.
 func gradientImage(size int, angle, cycles float64) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	dx, dy := math.Cos(angle), math.Sin(angle)
@@ -59,7 +48,6 @@ func gradientImage(size int, angle, cycles float64) image.Image {
 	return img
 }
 
-// checkerImage draws a checkerboard of the given cell size, offset by phase.
 func checkerImage(size, cell, phase int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	for y := range size {
@@ -75,8 +63,7 @@ func checkerImage(size, cell, phase int) image.Image {
 	return img
 }
 
-// blockImage fills a grid of cells with pseudo-random luminance: the synthetic
-// analogue of a screenshot, large flat regions with hard edges.
+// blockImage is a screenshot analogue: flat cells with hard edges.
 func blockImage(size, cells int, rng *rand.Rand) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	values := make([]uint8, cells*cells)
@@ -112,7 +99,6 @@ func noiseImage(size int, rng *rand.Rand) image.Image {
 	return img
 }
 
-// radialImage draws concentric rings around an off-centre origin.
 func radialImage(size int, originX, originY, cycles float64) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	for y := range size {
@@ -144,7 +130,6 @@ func shifted(src image.Image, dx, dy int) image.Image {
 	return out
 }
 
-// cropped insets a sub-rectangle and rescales it back to full size.
 func cropped(src image.Image, inset int) image.Image {
 	bounds := src.Bounds().Inset(inset)
 	if bounds.Dx() < 8 || bounds.Dy() < 8 {
@@ -182,7 +167,6 @@ func buildSelectivityCorpus() []image.Image {
 
 	var base []image.Image
 
-	// Gradients: 16 angles x 4 spatial frequencies.
 	for angleStep := range 16 {
 		angle := float64(angleStep) * math.Pi / 16
 		for _, cycles := range []float64{0.5, 1, 2.5, 6} {
@@ -190,26 +174,22 @@ func buildSelectivityCorpus() []image.Image {
 		}
 	}
 
-	// Checkerboards across five scales, both phases.
 	for _, cell := range []int{2, 5, 10, 20, 40} {
 		for _, phase := range []int{0, 3} {
 			base = append(base, checkerImage(size, cell, phase))
 		}
 	}
 
-	// Blocky, screenshot-like content at three grid resolutions.
 	for _, cells := range []int{4, 8, 16} {
 		for range 12 {
 			base = append(base, blockImage(size, cells, rng))
 		}
 	}
 
-	// Flat-spectrum noise.
 	for range 24 {
 		base = append(base, noiseImage(size, rng))
 	}
 
-	// Radial rings from several origins.
 	for _, origin := range [][2]float64{{0.5, 0.5}, {0.2, 0.7}, {0.8, 0.3}, {0.1, 0.1}} {
 		for _, cycles := range []float64{2, 5, 9} {
 			base = append(base, radialImage(size, origin[0], origin[1], cycles))
@@ -233,7 +213,6 @@ func buildSelectivityCorpus() []image.Image {
 	return corpus
 }
 
-// chunkStats is one chunk column's observed distribution.
 type chunkStats struct {
 	distinct  int
 	topValue  int16
@@ -242,15 +221,12 @@ type chunkStats struct {
 	totalSeen int
 }
 
-// goldenChunkDistinct pins the distinct-value counts in the table above, so a
-// goimagehash, decode-path or generator change forces a re-measurement.
+// goldenChunkDistinct pins the distinct-value counts, so a goimagehash,
+// decode-path or generator change forces a re-measurement.
 var goldenChunkDistinct = [repost.ChunkCount]int{91, 132, 133, 141, 133, 140, 146, 149}
 
-// goldenDistinctHashes is the number of distinct hashes the corpus yields.
 const goldenDistinctHashes = 271
 
-// TestPigeonholeChunkSelectivityIsMeasuredAndReported computes, prints and
-// pins the per-chunk distribution. Needs -v to read the table.
 func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 	corpus := buildSelectivityCorpus()
 
@@ -258,8 +234,7 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		t.Fatalf("corpus is %d images, want at least 200 for the distribution to mean anything", len(corpus))
 	}
 
-	// Guards opened up on purpose: they are ingest policy, and applying them
-	// here would bias the measurement toward the images that spread best.
+	// Guards opened up: applying ingest policy here would bias the measurement.
 	hasher := NewHasher(Guards{MinWidth: 1, MinHeight: 1, MinEntropy: 0}, "")
 	ctx := context.Background()
 
@@ -282,8 +257,7 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		}
 	}
 
-	// Guards against a degenerate corpus, under which every assertion below
-	// would pass vacuously.
+	// A degenerate corpus would make every assertion below pass vacuously.
 	if len(distinctHashes) < 16 {
 		t.Fatalf("the corpus produced only %d distinct perceptual hashes, so it is degenerate and the per-chunk numbers below describe the fixtures rather than the chunking",
 			len(distinctHashes))
@@ -308,8 +282,7 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		len(corpus), len(distinctHashes), selectivitySeed)
 	t.Log("chunk 0 is the most significant byte, which carries the DC term and the lowest-frequency coefficients")
 
-	// Calibration: at this sample size even a uniform chunk cannot fill all
-	// 256 bins, so comparing against 256 would make every chunk look bad.
+	// At this sample size even a uniform chunk cannot fill all 256 bins.
 	expectedDistinct := 256 * (1 - math.Pow(255.0/256.0, float64(len(corpus))))
 	t.Logf("baseline for a perfectly uniform 8-bit chunk at n=%d: about %.0f distinct values, "+
 		"and a most-common-value share around %.1f%% (the 1/256 mean, inflated by small-sample noise)",
@@ -320,7 +293,7 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		t.Log(formatChunkStats(chunk, s))
 	}
 
-	// Universal invariants: true of any corpus.
+	// Universal invariants, true of any corpus.
 	for chunk, s := range stats {
 		if s.distinct < 1 {
 			t.Errorf("chunk %d has %d distinct values, want at least 1", chunk, s.distinct)
@@ -340,7 +313,6 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		}
 	}
 
-	// Golden values pin the recorded table, not the index behaviour.
 	if len(distinctHashes) != goldenDistinctHashes {
 		t.Errorf("corpus yields %d distinct hashes, want %d — %s",
 			len(distinctHashes), goldenDistinctHashes, staleMeasurementHint)
@@ -357,8 +329,8 @@ const staleMeasurementHint = "the hashing path or the corpus changed, so the sel
 	"doc comment is stale: re-run with -v, replace the table and the goldens together, and re-check the " +
 	"conclusions drawn from it"
 
-// formatChunkStats renders one table row; the last column is how many times
-// larger a candidate set is than the N/256 the uniform assumption predicts.
+// formatChunkStats renders one table row; the last column is candidate-set
+// inflation versus the N/256 uniform assumption.
 func formatChunkStats(chunk int, s chunkStats) string {
 	inflation := s.topShare * 256
 

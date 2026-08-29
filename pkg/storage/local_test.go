@@ -20,7 +20,6 @@ func mustNewLocal(t *testing.T, base string) *Local {
 	return l
 }
 
-// TestNewLocalCreatesMissingBaseDirectory.
 func TestNewLocalCreatesMissingBaseDirectory(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "does", "not", "exist", "yet")
@@ -40,8 +39,6 @@ func TestNewLocalCreatesMissingBaseDirectory(t *testing.T) {
 	}
 }
 
-// TestPutGetRoundTrip: the returned path is relative to the base, Get returns
-// the same bytes Put stored, and the blob actually exists on disk under base.
 func TestPutGetRoundTrip(t *testing.T) {
 	base := t.TempDir()
 	l := mustNewLocal(t, base)
@@ -81,8 +78,6 @@ func TestPutGetRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPutCreatesIntermediateDirectories: the trigger media key layout
-// "trigger/<hash[0:2]>/<hash>" needs Put to create the fan-out directory.
 func TestPutCreatesIntermediateDirectories(t *testing.T) {
 	base := t.TempDir()
 	l := mustNewLocal(t, base)
@@ -110,9 +105,8 @@ func TestPutCreatesIntermediateDirectories(t *testing.T) {
 	}
 }
 
-// maliciousKeys are keys/paths that, once cleaned, escape the storage base.
-// Shared between Put, Get and Delete: the refusal must be uniform across all
-// three entry points.
+// maliciousKeys, once cleaned, escape the storage base; refusal must be uniform
+// across Put, Get and Delete.
 var maliciousKeys = []string{
 	"../escape",
 	"a/../../escape",
@@ -122,7 +116,6 @@ var maliciousKeys = []string{
 	"",
 }
 
-// TestPathTraversalRefusedOnPut.
 func TestPathTraversalRefusedOnPut(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "storage")
@@ -136,7 +129,6 @@ func TestPathTraversalRefusedOnPut(t *testing.T) {
 				t.Fatalf("Put(%q) err = %v, want ErrInvalidKey", key, err)
 			}
 
-			// No file must exist outside the storage base as a result.
 			escaped := filepath.Join(root, "escape")
 			if _, statErr := os.Stat(escaped); !errors.Is(statErr, fs.ErrNotExist) {
 				t.Errorf("Put(%q) created a file outside the storage base at %q", key, escaped)
@@ -145,7 +137,6 @@ func TestPathTraversalRefusedOnPut(t *testing.T) {
 	}
 }
 
-// TestPathTraversalRefusedOnGet.
 func TestPathTraversalRefusedOnGet(t *testing.T) {
 	base := t.TempDir()
 	l := mustNewLocal(t, base)
@@ -160,7 +151,6 @@ func TestPathTraversalRefusedOnGet(t *testing.T) {
 	}
 }
 
-// TestPathTraversalRefusedOnDelete.
 func TestPathTraversalRefusedOnDelete(t *testing.T) {
 	base := t.TempDir()
 	l := mustNewLocal(t, base)
@@ -175,7 +165,6 @@ func TestPathTraversalRefusedOnDelete(t *testing.T) {
 	}
 }
 
-// TestGetMissingPathWrapsFsErrNotExist.
 func TestGetMissingPathWrapsFsErrNotExist(t *testing.T) {
 	base := t.TempDir()
 	l := mustNewLocal(t, base)
@@ -189,7 +178,6 @@ func TestGetMissingPathWrapsFsErrNotExist(t *testing.T) {
 	}
 }
 
-// TestDeleteMissingPathReturnsNil.
 func TestDeleteMissingPathReturnsNil(t *testing.T) {
 	base := t.TempDir()
 	l := mustNewLocal(t, base)
@@ -199,7 +187,6 @@ func TestDeleteMissingPathReturnsNil(t *testing.T) {
 	}
 }
 
-// TestDeleteExistingPathRemovesIt.
 func TestDeleteExistingPathRemovesIt(t *testing.T) {
 	base := t.TempDir()
 	l := mustNewLocal(t, base)
@@ -218,15 +205,12 @@ func TestDeleteExistingPathRemovesIt(t *testing.T) {
 		t.Errorf("blob still exists on disk after Delete: stat err = %v", err)
 	}
 
-	// And it now reads back as not found, consistently with a path that was
-	// never written.
 	if _, err := l.Get(ctx, path); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Get after Delete err = %v, want fs.ErrNotExist", err)
 	}
 }
 
-// failingReader returns some bytes successfully, then errs on the next Read.
-// Used to simulate a reader that fails partway through a Put.
+// failingReader returns some bytes, then errs on the next Read.
 type failingReader struct {
 	data []byte
 	err  error
@@ -242,9 +226,7 @@ func (r *failingReader) Read(p []byte) (int, error) {
 }
 
 // TestPutOnReadFailureLeavesNothingReadableAndNoTempFile asserts Put's
-// documented atomicity: when the source reader fails partway through, (a) the
-// final path is not readable, and (b) no leftover temporary file remains in
-// the destination directory.
+// atomicity: a mid-read failure leaves no readable final path and no temp file.
 func TestPutOnReadFailureLeavesNothingReadableAndNoTempFile(t *testing.T) {
 	base := t.TempDir()
 	l := mustNewLocal(t, base)
@@ -277,17 +259,9 @@ func TestPutOnReadFailureLeavesNothingReadableAndNoTempFile(t *testing.T) {
 	}
 }
 
-// TestDefaultBeforeAndAfterInit: Default() is nil before Init, and the
-// configured store afterwards.
-//
-// storage.Init sets PACKAGE-LEVEL state, so this is written as a single test
-// that both makes the "before" assertion and performs the only call to Init in
-// this test binary, rather than as two separate test functions ordered by
-// convention — Go does not guarantee test execution order across files, and a
-// second test elsewhere calling Init would make a separate "before" test
-// flaky depending on run order. If any other test in this package ever needs
-// to call Init, this test must be revisited; as written, it is the sole
-// caller, so the ordering hazard cannot arise.
+// TestDefaultBeforeAndAfterInit is the sole caller of Init in this binary:
+// Init sets package-level state and Go does not order tests, so before/after
+// are asserted together to avoid a run-order flake.
 func TestDefaultBeforeAndAfterInit(t *testing.T) {
 	if got := Default(); got != nil {
 		t.Fatalf("Default() before Init = %v, want nil", got)
@@ -303,7 +277,6 @@ func TestDefaultBeforeAndAfterInit(t *testing.T) {
 		t.Fatal("Default() after Init = nil, want the configured store")
 	}
 
-	// The configured store must actually work, not just be non-nil.
 	path, err := got.Put(context.Background(), "smoke-test", bytes.NewReader([]byte("ok")))
 	if err != nil {
 		t.Fatalf("Put through Default(): %v", err)

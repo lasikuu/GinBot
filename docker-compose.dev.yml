@@ -2,7 +2,6 @@ services:
   psql:
     image: postgres:18-alpine
     restart: unless-stopped
-    # shared memory limit
     shm_size: 128mb
     ports:
       - "5432:5432"
@@ -10,7 +9,6 @@ services:
       - POSTGRES_PASSWORD=gin123
       - POSTGRES_USER=ginbot
     volumes:
-      # Named volume so dev data survives `docker compose down` and image updates.
       - ginbot_dev_pgdata:/var/lib/postgresql/data
 
 volumes:

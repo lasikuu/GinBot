@@ -14,31 +14,23 @@ import (
 	"time"
 )
 
-// MaxFileBytes is the largest media file the server will fetch and store.
-// Discord's baseline per-guild upload limit is 8 MiB, so a larger file could
-// not have come from an unboosted guild and cannot be played back to one
-// either.
+// MaxFileBytes matches Discord's baseline per-guild upload limit of 8 MiB.
 const MaxFileBytes int64 = 8 << 20
 
-// maxRedirects caps the redirect chain Fetch will follow before giving up.
 const maxRedirects = 5
 
-// fetchTimeout bounds a whole fetch, redirects and body read included.
 const fetchTimeout = 30 * time.Second
 
-// sniffSampleSize is how much of the body http.DetectContentType inspects.
 const sniffSampleSize = 512
 
-// DefaultAllowedHosts lists the platform CDN hosts media may be fetched from.
-// Fetching an arbitrary user-supplied URL server-side is server-side request
-// forgery; only these hosts are reachable.
+// DefaultAllowedHosts lists the CDN hosts media may be fetched from; fetching
+// an arbitrary user-supplied URL server-side would be SSRF.
 func DefaultAllowedHosts() []string {
 	return []string{"cdn.discordapp.com", "media.discordapp.net"}
 }
 
-// Fetch failure modes, all of which a caller maps to InvalidArgument rather
-// than Internal: they are the user's input being refused, not the server
-// breaking.
+// Fetch failure modes, all of which a caller maps to InvalidArgument: they are
+// the user's input being refused, not the server breaking.
 var (
 	ErrHostNotAllowed  = errors.New("host is not allow-listed")
 	ErrTooLarge        = errors.New("content exceeds the size cap")
@@ -47,13 +39,10 @@ var (
 
 // Fetched is a downloaded blob.
 type Fetched struct {
-	// Content is the full body, never longer than the fetcher's cap.
 	Content []byte
-	// MIMEType is sniffed from the content, not taken from the response header
-	// or the URL extension.
+	// MIMEType is sniffed from the content, not the header or URL extension.
 	MIMEType string
-	// Filename is the last path segment of the URL, with any query string
-	// removed. It is a display name only and is never used as a storage path.
+	// Filename is a display name only, never used as a storage path.
 	Filename string
 	// Hash is the lowercase hex SHA-256 of Content.
 	Hash string
@@ -66,15 +55,9 @@ type Fetcher struct {
 	maxBytes int64
 }
 
-// NewFetcher returns a Fetcher.
-//
-// transport may be nil, in which case http.DefaultTransport is used. The
-// Fetcher always builds its own http.Client so that it owns the redirect
-// policy: a caller-supplied client could not be trusted to re-check the host
-// after a redirect.
-//
-// hosts is the allow-list; an empty slice refuses every URL. maxBytes caps the
-// body; a value <= 0 means MaxFileBytes.
+// NewFetcher returns a Fetcher. transport may be nil (http.DefaultTransport).
+// The Fetcher owns its http.Client so it controls the redirect host re-check.
+// An empty hosts slice refuses every URL; maxBytes <= 0 means MaxFileBytes.
 func NewFetcher(transport http.RoundTripper, hosts []string, maxBytes int64) *Fetcher {
 	if maxBytes <= 0 {
 		maxBytes = MaxFileBytes
@@ -95,13 +78,9 @@ func NewFetcher(transport http.RoundTripper, hosts []string, maxBytes int64) *Fe
 
 	f.client = &http.Client{
 		Transport: transport,
-		// The size cap bounds bytes, not time: an allow-listed host that drips
-		// a response slowly would otherwise pin a handler goroutine for as long
-		// as the caller's context lives, and a gRPC call carries no deadline
-		// unless the client set one.
+		// Bounds a slow-drip response, which the byte cap alone would not.
 		Timeout: fetchTimeout,
-		// Re-checked on every hop: a redirect from an allow-listed host to one
-		// that is not must be refused just as the initial URL would be.
+		// Every redirect hop is re-checked against the allow-list.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxRedirects {
 				return fmt.Errorf("stopped after %d redirects", maxRedirects)
@@ -116,11 +95,9 @@ func NewFetcher(transport http.RoundTripper, hosts []string, maxBytes int64) *Fe
 	return f
 }
 
-// hostAllowed checks the scheme, host and userinfo of u, then compares its
-// hostname against the allow-list case-insensitively. It is deliberately an
-// exact match against Hostname() alone, never a substring or suffix match
-// against the whole URL: "cdn.discordapp.com.evil.test" has a different
-// hostname to "cdn.discordapp.com" and must be refused.
+// hostAllowed requires https, a host, no userinfo, and an exact
+// case-insensitive Hostname() match — never substring/suffix, so
+// "cdn.discordapp.com.evil.test" is refused.
 func (f *Fetcher) hostAllowed(u *url.URL) bool {
 	if u.Scheme != "https" {
 		return false
@@ -153,8 +130,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Fetched, error) {
 
 	resp, err := f.client.Do(req)
 	if err != nil {
-		// CheckRedirect's ErrHostNotAllowed arrives wrapped in a *url.Error;
-		// errors.Is unwraps it.
+		// CheckRedirect's ErrHostNotAllowed arrives wrapped in a *url.Error.
 		if errors.Is(err, ErrHostNotAllowed) {
 			return nil, ErrHostNotAllowed
 		}
@@ -168,15 +144,13 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Fetched, error) {
 		return nil, fmt.Errorf("unexpected response status %d", resp.StatusCode)
 	}
 
-	// A truthful, oversized Content-Length is refused before any of the body
-	// is read.
+	// Refuse a truthful oversized Content-Length before reading the body.
 	if resp.ContentLength >= 0 && resp.ContentLength > f.maxBytes {
 		return nil, ErrTooLarge
 	}
 
-	// A lying or absent Content-Length must not let an oversized body be
-	// buffered in full: the limit reader caps the read at cap+1, and reading
-	// more than cap bytes is the signal that the body is too large.
+	// Cap the read at cap+1; reading more than cap bytes means it is too large,
+	// covering a lying or absent Content-Length.
 	limited := io.LimitReader(resp.Body, f.maxBytes+1)
 	content, err := io.ReadAll(limited)
 	if err != nil {
@@ -215,8 +189,8 @@ func allowedMIMEType(mimeType string) bool {
 	return slices.Contains(AllowedMIMETypes(), mimeType)
 }
 
-// stripMIMEParams drops a trailing "; charset=..." or similar parameter, so
-// the sniffed type compares equal to the bare entries in AllowedMIMETypes.
+// stripMIMEParams drops a trailing "; charset=..." so the sniffed type
+// compares equal to the bare entries in AllowedMIMETypes.
 func stripMIMEParams(mimeType string) string {
 	if before, _, ok := strings.Cut(mimeType, ";"); ok {
 		return strings.TrimSpace(before)
@@ -224,8 +198,7 @@ func stripMIMEParams(mimeType string) string {
 	return mimeType
 }
 
-// filenameFromURL returns the last path segment of u, with no query string:
-// url.URL.Path already excludes it.
+// filenameFromURL returns the last path segment of u; url.URL.Path excludes the query.
 func filenameFromURL(u *url.URL) string {
 	path := u.Path
 	if idx := strings.LastIndexByte(path, '/'); idx >= 0 {

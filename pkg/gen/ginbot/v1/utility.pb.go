@@ -64,10 +64,8 @@ func (x HealthStatus) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 type HealthCheckReq struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -111,7 +109,6 @@ func (b0 HealthCheckReq_builder) Build() *HealthCheckReq {
 	return m0
 }
 
-// Empty on purpose; see HealthCheckReq.
 type PingReq struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -218,7 +215,6 @@ func (x *HealthCheckResp) ClearStatus() {
 type HealthCheckResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Status of the service
 	Status *HealthStatus
 }
 
@@ -297,7 +293,6 @@ func (x *PingResp) ClearMessage() {
 type PingResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Pong message
 	Message *string
 }
 

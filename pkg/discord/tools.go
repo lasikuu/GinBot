@@ -16,35 +16,22 @@ import (
 	"go.uber.org/zap"
 )
 
-// toolsCallTimeout bounds every outgoing RPC in this file. None of them
-// inherits a deadline of its own: commandContext roots the handler context at
-// context.Background, so without an explicit budget an unresponsive server
-// would hold the handler open indefinitely.
+// toolsCallTimeout bounds every outgoing RPC in this file; the handler context
+// is rooted at context.Background with no deadline of its own.
 const toolsCallTimeout = 20 * time.Second
 
-// boundedToolsCall derives the context an RPC in this file is made on, and the
-// cancel its caller must defer.
 func boundedToolsCall(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, toolsCallTimeout)
 }
 
-// startedAt approximates the process start. Package variables are initialised
-// before main runs, so this is a few milliseconds early at worst.
 var startedAt = time.Now()
 
-// unknownVersion is reported when the binary carries no version stamp, which is
-// the normal case for a `go build` from a working tree.
 const unknownVersion = "unknown"
 
-// shortRevisionLength is how much of a VCS revision is shown. Seven hex
-// characters is the conventional abbreviated commit.
 const shortRevisionLength = 7
 
-// unsetValue is shown for a preference the user has never set.
 const unsetValue = "not set"
 
-// defaultTimezone is what the bot assumes for a user who has not set one.
-// Reporting a default beats reporting nothing, and beats failing.
 const defaultTimezone = "UTC"
 
 func pingCommand() command.Command {
@@ -55,21 +42,8 @@ func pingCommand() command.Command {
 	}
 }
 
-// ping measures the round trip entirely on this side: the clock is read before
-// the call and after the response, so no clock agreement with the server is
-// needed. A server-side timestamp diffed against a client one would report
-// clock skew as latency.
-//
-// The Discord gateway heartbeat used to be reported alongside it and was
-// removed, because reading it is a data race that cannot be fixed from here.
-// discordgo's Session.HeartbeatLatency reads LastHeartbeatAck and
-// LastHeartbeatSent under no lock at all, while LastHeartbeatAck is written
-// under Session's own RWMutex and LastHeartbeatSent under the unexported
-// wsMutex, from two other goroutines. ping runs on a discordgo dispatch
-// goroutine, so both reads race. Taking discordSession.RLock() would only
-// serialise the first of them — wsMutex is not reachable from this package — so
-// the race would remain, just less visibly. The Connect round trip is what the
-// requirement asks for, and it is measured correctly.
+// ping measures the round trip entirely on this side, so no clock agreement
+// with the server is needed.
 func ping(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
 	start := time.Now()
 
@@ -113,9 +87,7 @@ func info(_ context.Context, _ *command.Invocation) (*command.Response, error) {
 	return &command.Response{Content: content}, nil
 }
 
-// botVersion reads what the Go toolchain already stamps into the binary. There
-// is no build system here to inject a version, and inventing one for a single
-// command would be out of proportion.
+// botVersion reads what the Go toolchain stamps into the binary.
 func botVersion() string {
 	buildInfo, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -155,23 +127,14 @@ func helpCommand() command.Command {
 	}
 }
 
-// help is answered from the local registry rather than by an RPC, and
-// UtilityService has no Help method for that reason.
-//
-// pkg/command holds the only copy of command names, aliases, descriptions and
-// argument specs, and it lives in this process. A server-side Help would have
-// to be shipped that registry to say anything, and would then be a second copy
-// that can disagree with the one actually dispatching commands. It would also
-// be wrong for whichever client asked, since the registries differ per
-// platform.
+// help is answered from the local registry rather than by an RPC, since
+// pkg/command holds the only copy of command metadata and it lives in-process.
 func help(_ context.Context, inv *command.Invocation) (*command.Response, error) {
 	if name := inv.String("command"); name != "" {
 		cmd, ok := commandRegistry.Lookup(name)
 		if !ok {
-			// InvalidArgument rather than NotFound: the caller supplied a bad
-			// argument, and errorMessage only passes InvalidArgument and
-			// FailedPrecondition through verbatim. Under NotFound the user is told
-			// "Not found." and never learns which command was unknown.
+			// InvalidArgument, not NotFound: errorMessage only passes InvalidArgument
+			// and FailedPrecondition through verbatim, so the user sees which command.
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("there is no %q command", name))
 		}
 
@@ -181,8 +144,6 @@ func help(_ context.Context, inv *command.Invocation) (*command.Response, error)
 	return &command.Response{Content: listCommands(), Ephemeral: true}, nil
 }
 
-// listCommands renders the catalogue. Registry.All is ordered by name, so the
-// listing is stable between invocations.
 func listCommands() string {
 	var b strings.Builder
 	b.WriteString("**Commands**\n")
@@ -202,8 +163,7 @@ func describeCommand(cmd command.Command) string {
 
 	fmt.Fprintf(&b, "**%s** — %s\n", cmd.Name, cmd.Description)
 	fmt.Fprintf(&b, "Usage: `%s`\n", usageLine(cmd))
-	// A grouped command is reachable both ways, and the slash surface exposes
-	// ONLY the grouped form, so listing just the flat one would hide it.
+	// The slash surface exposes only the grouped form, so list it too.
 	if grouped := groupedUsageLine(cmd); grouped != "" {
 		fmt.Fprintf(&b, "Also: `%s` (slash: `/%s %s`)\n", grouped, cmd.Group, cmd.Sub)
 	}
@@ -223,8 +183,7 @@ func describeCommand(cmd command.Command) string {
 		fmt.Fprintf(&b, "\nAliases: %s\n", strings.Join(cmd.Aliases, ", "))
 	}
 
-	// Clearance is enforced by the server, not by the registry, so this is
-	// advisory: it says what will be refused rather than what is refused here.
+	// Advisory only: clearance is enforced by the server, not the registry.
 	if cmd.Clearance != pb.Clearance_CLEARANCE_UNSPECIFIED {
 		fmt.Fprintf(&b, "\nRequires %s clearance.\n", clearanceName(cmd.Clearance))
 	}
@@ -232,16 +191,12 @@ func describeCommand(cmd command.Command) string {
 	return b.String()
 }
 
-// usageLine renders the argument shape: angle brackets for required, square
-// for optional, which is the convention every CLI help uses.
 func usageLine(cmd command.Command) string {
 	return usageLineFor(cmd, cmd.Name)
 }
 
 // groupedUsageLine renders the grouped form, "reminder add <when> …", for a
-// command that has one. Help would otherwise advertise only the flat name while
-// the slash surface exposes only the grouped one, so half of what the bot
-// accepts would be undiscoverable from help.
+// command that has one.
 func groupedUsageLine(cmd command.Command) string {
 	if cmd.Group == "" {
 		return ""
@@ -250,9 +205,8 @@ func groupedUsageLine(cmd command.Command) string {
 	return usageLineFor(cmd, cmd.Group+" "+cmd.Sub)
 }
 
-// usageLineFor renders the argument shape after a given invocation prefix:
-// angle brackets for required, square for optional, which is the convention
-// every CLI help uses.
+// usageLineFor renders the argument shape after a prefix: angle brackets for
+// required, square for optional.
 func usageLineFor(cmd command.Command, prefix string) string {
 	parts := make([]string, 0, 1+len(cmd.Args))
 	parts = append(parts, prefix)
@@ -279,8 +233,7 @@ func argTypeName(argType command.ArgType) string {
 	}
 }
 
-// clearanceName turns CLEARANCE_MODERATOR into "moderator", which is what a
-// user should be shown.
+// clearanceName turns CLEARANCE_MODERATOR into "moderator".
 func clearanceName(clearance pb.Clearance) string {
 	return strings.ToLower(strings.TrimPrefix(clearance.String(), "CLEARANCE_"))
 }
@@ -293,10 +246,8 @@ func registerCommand() command.Command {
 	}
 }
 
-// register takes no arguments on purpose. The platform identity goes over a
-// request header, and the display name is read from the invoking Discord
-// user, so there is nothing for the caller to type — and nothing for them to
-// falsify.
+// register takes no arguments: identity travels in a request header and the
+// display name comes from the invoking Discord user, not from caller input.
 func register(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
 	user, ok := invokerFromContext(ctx)
 	if !ok {
@@ -334,15 +285,8 @@ func userInfoCommand() command.Command {
 	}
 }
 
-// userInfo is self-only, and takes no target argument.
-//
-// Of the two options the server supports — self-only, or another user's row at
-// CLEARANCE_MODERATOR — self-only is what Discord can actually express.
-// GetUser identifies a user by their GinBot account UUID, and a Discord caller
-// only ever has a snowflake or a mention; there is no RPC that maps one to the
-// other, so a target argument would have nothing to send. The server still
-// enforces the moderator floor for a lookup of someone else, for whatever
-// client can name one.
+// userInfo is self-only: GetUser identifies by GinBot UUID, which a Discord
+// caller cannot supply.
 func userInfo(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
 	callCtx, cancel := boundedToolsCall(ctx)
 	defer cancel()
@@ -357,13 +301,7 @@ func userInfo(ctx context.Context, _ *command.Invocation) (*command.Response, er
 	return &command.Response{Content: formatUserInfo(resp.Msg.GetUser()), Ephemeral: true}, nil
 }
 
-// formatUserInfo renders the /userinfo view. Pure so it can be unit-tested
-// without a Connect client.
-//
-// The account line used to be a whole-day age computed here. It is now a
-// relative Discord timestamp tag on the creation instant, which is strictly more
-// informative — the client renders "3 months ago" and hovering shows the exact
-// date, in the viewer's own zone and locale, neither of which this process knows.
+// formatUserInfo renders the /userinfo view.
 func formatUserInfo(user *pb.User) string {
 	timezone := user.GetTimezone()
 	if timezone == "" {
@@ -375,8 +313,7 @@ func formatUserInfo(user *pb.User) string {
 		locale = unsetValue
 	}
 
-	// A missing created_at would otherwise render as <t:0:R>, i.e. "56 years
-	// ago", which reads as data rather than as absence.
+	// A missing created_at would render as <t:0:R> ("56 years ago").
 	created := unsetValue
 	if user.HasCreatedAt() {
 		created = timestampTag(user.GetCreatedAt().AsTime(), timestampRelative)

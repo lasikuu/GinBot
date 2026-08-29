@@ -28,32 +28,20 @@ service UserService {
   rpc SetTimezone(SetTimezoneReq) returns (SetTimezoneResp);
 }
 
-// Message representing a User
 message User {
-  // UUID of the User
   string id = 1;
-  // Username of the User
   string username = 2;
-  // Clearance level of the User
   Clearance clearance = 3;
-  // Avatar URL of the User
   string avatar = 4;
-  // Locale of the User
   string locale = 5;
-  // Timezone of the User
   string timezone = 6;
-  // User ID of the creator
   google.protobuf.Timestamp birthday = 7;
-  // Birthday last congratulated at
   google.protobuf.Timestamp last_congratulated_at = 8;
-  // Created at
   google.protobuf.Timestamp created_at = 9;
-  // Updated at
   google.protobuf.Timestamp updated_at = 10;
 }
 
 message GetUserReq {
-  // User UUIDv7
   string id = 1 [
     (buf.validate.field).string.uuid = true
   ];
@@ -64,65 +52,42 @@ message GetUserResp {
 }
 
 message RegisterReq {
-  // Fields 1 and 2 previously carried the caller's platform identity
-  // (platform, platform_user_id) in the request body. Identity now comes only
-  // from gRPC metadata, like every other RPC in this service, so there is one
-  // channel for it instead of two and every RPC reads the caller the same way.
-  //
-  // This is not authentication. The platform client asserts the identity and
-  // the server trusts it, so a caller that can reach the gRPC port can still
-  // bind an account to an arbitrary platform user. Removing these fields
-  // narrowed the trust boundary; it did not close it.
-  //
-  // The numbers and names stay reserved so they can never be silently reused
-  // with a different meaning.
+  // Was (platform, platform_user_id): identity now comes only from metadata.
+  // Not authentication — the client asserts identity and the server trusts it.
   reserved 1, 2;
-  // Editions require reserved names as identifiers, not string literals.
   reserved platform, platform_user_id;
 
-  // Metadata of the platform (such as other identifiers)
   google.protobuf.Struct platform_metadata = 3;
-  // Verification code for the registration. Not required for new registrations.
+  // Not required for new registrations.
   string verification_code = 4;
-  // Username of the user
   string username = 5;
-  // Locale of the user
   string locale = 6;
 }
 
 message RegisterResp {
-  // User UUID of the registered user
   string user_id = 1;
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 message GetCongratulableBirthdaysReq {}
 
 message GetCongratulableBirthdaysResp {
   repeated User users = 1;
 }
 
-// Carries no user id on purpose: the caller is identified from gRPC metadata
-// (platform_enum, user_id), which is the pattern every identity-bearing RPC in
-// this project follows. Do not add a user_id field — taking the subject from
-// the request body would let a client act on someone else's account.
+// No user id: the caller is identified from metadata. Adding one would let a
+// client act on someone else's account.
 message SetLocaleReq {
-  // BCP-47-ish short code. Supported: en, fi, ja.
+  // Supported: en, fi, ja.
   string locale = 1 [
     (buf.validate.field).string.pattern = "^(en|fi|ja)$"
   ];
 }
 
-// Empty on purpose; see GetCongratulableBirthdaysReq.
 message SetLocaleResp {}
 
-// Carries no user id on purpose: the caller is identified from gRPC metadata
-// (platform_enum, user_id), which is the pattern every identity-bearing RPC in
-// this project follows. Do not add a user_id field — taking the subject from
-// the request body would let a client act on someone else's account.
+// No user id; see SetLocaleReq.
 message SetTimezoneReq {
   // IANA timezone name, e.g. Europe/Helsinki.
   string timezone = 1 [
@@ -130,5 +95,4 @@ message SetTimezoneReq {
   ];
 }
 
-// Empty on purpose; see GetCongratulableBirthdaysReq.
 message SetTimezoneResp {}

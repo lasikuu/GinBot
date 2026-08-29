@@ -10,42 +10,32 @@ import "google/protobuf/go_features.proto";
 
 option features.(pb.go).api_level = API_OPAQUE;
 
-// RepostService is WANHA: it recognises a link or an attachment the community
-// has already seen.
-//
-// There is exactly one RPC. Ingest and match are the same call, because a
-// posted item has to be both looked up and remembered, and splitting that in
-// two would let a client remember without looking up.
-//
-// The instance and the destination are NOT request fields. They are read from
-// the call's origin metadata (pkg/grpc/callermeta), because instance_meta is
-// only the platform's own public guild identifier: trusting a body field would
-// let any caller read or seed another guild's index. Retention is not settable
-// here either — it is instance.repost_retention_days, an operator column.
+// Recognises a link or attachment the community has already seen. One RPC:
+// ingest and match are the same call so a client cannot remember without
+// looking up. Instance and destination come from origin metadata, not the body,
+// so a caller cannot read or seed another guild's index.
 service RepostService {
   rpc CheckRepost(CheckRepostReq) returns (CheckRepostResp);
 }
 
-// What kind of thing was posted.
 enum RepostKind {
   REPOST_KIND_UNSPECIFIED = 0;
-  // A URL in the message text, identified by its canonical source key.
+  // A URL, identified by its canonical source key.
   REPOST_KIND_LINK = 1;
-  // A still image, fingerprinted perceptually as well as exactly.
+  // A still image, fingerprinted perceptually and exactly.
   REPOST_KIND_IMAGE = 2;
-  // Video or animated GIF, fingerprinted on its first frame where a decoder
-  // is available, and exactly regardless.
+  // Video or animated GIF, fingerprinted on its first frame where possible, and exactly.
   REPOST_KIND_VIDEO = 3;
   // Anything else, fingerprinted exactly only.
   REPOST_KIND_FILE = 4;
 }
 
-// How certain the match is. A perceptual match is graded by Hamming distance;
-// a canonical-link or exact-bytes match is always IDENTICAL.
+// A perceptual match is graded by Hamming distance; a canonical-link or
+// exact-bytes match is always IDENTICAL.
 enum RepostConfidence {
   // No match.
   REPOST_CONFIDENCE_UNSPECIFIED = 0;
-  // Distance 0. Same fingerprint: a re-upload or a lossless re-encode.
+  // Distance 0: re-upload or lossless re-encode.
   REPOST_CONFIDENCE_IDENTICAL = 1;
   // Recompression, quality change, rescale. The common repost.
   REPOST_CONFIDENCE_HIGH = 2;
@@ -53,36 +43,25 @@ enum RepostConfidence {
   REPOST_CONFIDENCE_PROBABLE = 3;
 }
 
-// A platform-agnostic reference back to a message, so a client can deep-link
-// to the original and name who posted it without a second lookup.
+// Platform-agnostic reference so a client can deep-link the original and name
+// its poster without a second lookup.
 message MessageRef {
-  // The platform's identifier for the space: a Discord guild.
   string instance_uid = 1;
-  // The platform's identifier for the channel or room.
   string destination_uid = 2;
-  // The platform's identifier for the message itself.
   string message_uid = 3;
-  // The platform's identifier for the author. A platform snowflake, never the
-  // GinBot user_account UUID: the client renders a mention from it.
+  // A platform snowflake, never the user_account UUID; the client renders a mention.
   string author_uid = 4;
 }
 
-// One thing extracted from a message and offered for checking.
 message RepostCandidate {
-  // required alone was not enough: it is a presence check, so an explicit
-  // REPOST_KIND_UNSPECIFIED satisfied it and arrived at a handler that has to
-  // switch on the kind to decide whether to fetch bytes or canonicalise a URL.
-  // See OpenClientActionStreamReq.platform_enum in reverse.proto for why all
-  // three rules are needed.
+  // All three rules needed; see TriggerInstance.platform_enum in trigger.proto.
   RepostKind kind = 1 [
     (buf.validate.field).required = true,
     (buf.validate.field).enum.defined_only = true,
     (buf.validate.field).enum.not_in = 0
   ];
-  // For REPOST_KIND_LINK, the URL exactly as it was posted; the server
-  // canonicalises it. For every other kind, the platform CDN URL the server
-  // fetches the bytes from — subject to the same host allow-list as trigger
-  // media, so an arbitrary URL is refused rather than fetched.
+  // For LINK, the URL as posted (server canonicalises). Otherwise the CDN URL to
+  // fetch, subject to the same host allow-list as trigger media.
   string url = 2 [
     (buf.validate.field).required = true,
     (buf.validate.field).string.min_len = 1,
@@ -91,54 +70,43 @@ message RepostCandidate {
 }
 
 message CheckRepostReq {
-  // Everything the client extracted from the message. Capped so one message
-  // cannot cost an unbounded number of fetches.
+  // Capped so one message cannot cost an unbounded number of fetches.
   repeated RepostCandidate candidates = 1 [
     (buf.validate.field).repeated.min_items = 1,
     (buf.validate.field).repeated.max_items = 20
   ];
-  // The platform's identifier for the message being checked.
   string message_uid = 2 [
     (buf.validate.field).required = true,
     (buf.validate.field).string.min_len = 1,
     (buf.validate.field).string.max_len = 128
   ];
-  // The platform's identifier for its author, stored so a later match can name
-  // the original poster. Identity for authorization still comes from metadata;
-  // this is presentation data.
+  // Presentation data (names the original poster); authorization identity still
+  // comes from metadata.
   string author_uid = 3 [
     (buf.validate.field).required = true,
     (buf.validate.field).string.min_len = 1,
     (buf.validate.field).string.max_len = 128
   ];
-  // True when this is an edit of an existing message. An edit MATCHES but never
-  // INSERTS (W8): seeding the index on an edit would make a message match
-  // itself.
+  // An edit matches but never inserts, so a message cannot match itself.
   bool edit = 4;
-  // When the message was posted. Defaults to the server's clock when unset.
+  // Defaults to the server's clock when unset.
   google.protobuf.Timestamp posted_at = 5;
 }
 
-// One candidate that the community has seen before.
 message RepostMatch {
-  // Which candidate matched, as an index into CheckRepostReq.candidates.
+  // Index into CheckRepostReq.candidates.
   int32 candidate_index = 1;
-  // The kind of the ORIGINAL entry, which may differ from the candidate's own
-  // kind when the same bytes were posted as a different type.
+  // Kind of the original entry, which may differ from the candidate's own kind.
   RepostKind kind = 2;
   RepostConfidence confidence = 3;
-  // Hamming distance of a perceptual match. Zero for a canonical-link or
-  // exact-bytes match, which are not graded by distance.
+  // Zero for a canonical-link or exact-bytes match (not graded by distance).
   int32 distance = 4;
-  // When the original was posted.
   google.protobuf.Timestamp original_posted_at = 5;
-  // Where the original is, for the deep link and the poster's name. Any field
-  // may be empty for an entry stored by a platform that does not carry it.
+  // Any field may be empty for a platform that does not carry it.
   MessageRef original_ref = 6;
 }
 
 message CheckRepostResp {
-  // One entry per candidate that matched, in candidate order. Empty when
-  // nothing was seen before, which is the common case and not an error.
+  // In candidate order; empty when nothing matched (not an error).
   repeated RepostMatch matches = 1;
 }

@@ -16,12 +16,11 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// staleClaimGrace is how long a reminder may sit in SENT before a tick reclaims
-// it. Dispatch is serial, so a large backlog can exceed it and double-post.
+// staleClaimGrace bounds SENT before a reclaim; dispatch is serial, so a large
+// backlog can exceed it and double-post.
 const staleClaimGrace = 2 * time.Minute
 
-// maxDeliveryAttempts caps how often a reminder may be re-claimed, so a
-// confirmation that is permanently rejected cannot re-post it forever.
+// maxDeliveryAttempts stops a permanently rejected confirmation re-posting forever.
 const maxDeliveryAttempts = 5
 
 type ClaimedReminder struct {
@@ -29,12 +28,10 @@ type ClaimedReminder struct {
 	Message        *string
 	PlatformEnum   int32
 	DestinationUID *string
-	// OwnerPlatformUID is nil when the owner has no platform_user row for the
-	// destination's platform, which disables only the DM fallback.
+	// OwnerPlatformUID is nil when the owner is unlinked on that platform.
 	OwnerPlatformUID *string
 }
 
-// ErrReminderCapReached reports that the owner is already at their reminder cap.
 var ErrReminderCapReached = errors.New("reminder cap reached")
 
 // CreateReminder inserts a reminder and returns its UUIDv7, refusing with
@@ -66,8 +63,6 @@ func CreateReminder(
 		}
 	}()
 
-	// A hash collision only queues two unrelated owners' creates behind each
-	// other; it can never let a cap be exceeded.
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, userID,
 	); err != nil {
@@ -107,7 +102,6 @@ func CreateReminder(
 	return reminderID, nil
 }
 
-// GetReminder returns the reminder row for id, or ErrNotFound.
 func GetReminder(ctx context.Context, id string) (*model.Reminder, error) {
 	var reminder model.Reminder
 	err := db().QueryRow(ctx,
@@ -264,8 +258,6 @@ func AdvanceReminderStatusIfSent(ctx context.Context, id string, statusEnum pb.R
 	return tag.RowsAffected() > 0, nil
 }
 
-// RescheduleReminderIfSent re-arms a repeat to PENDING only when currently SENT,
-// and reports whether a row was rescheduled.
 func RescheduleReminderIfSent(ctx context.Context, id string, next time.Time) (bool, error) {
 	tag, err := db().Exec(ctx,
 		`UPDATE reminder
@@ -288,8 +280,6 @@ func RescheduleReminderIfSent(ctx context.Context, id string, next time.Time) (b
 	return tag.RowsAffected() > 0, nil
 }
 
-// activeReminderCountSQL is shared so the enforced cap and the reported one
-// cannot drift apart.
 const activeReminderCountSQL = `SELECT COUNT(*)
 		   FROM reminder
 		  WHERE user_id = $1
@@ -327,8 +317,6 @@ type ListedReminder struct {
 	Destination *pb.ReminderDestination
 }
 
-// ListRemindersByUser returns a caller's reminders soonest fire time first, so a
-// limited listing shows the ones about to fire rather than the furthest out.
 func ListRemindersByUser(ctx context.Context, filter ListRemindersFilter) ([]ListedReminder, error) {
 	// Columns are qualified because `deleted` and the timestamps exist on all
 	// three joined tables.

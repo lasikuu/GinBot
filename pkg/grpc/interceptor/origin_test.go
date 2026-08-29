@@ -63,8 +63,8 @@ type originResult struct {
 	err     error
 }
 
-// originTestCtx builds the context ClearanceInterceptor would have produced:
-// bootstrap reads the platform through MetaFromContext, not from the headers.
+// originTestCtx builds the context ClearanceInterceptor would have produced;
+// bootstrap reads the platform through MetaFromContext, not the headers.
 func originTestCtx(header http.Header, caller *model.User) context.Context {
 	ctx := context.Background()
 	if caller != nil {
@@ -139,12 +139,11 @@ func TestOriginIsNotBootstrappedWithoutOriginHeader(t *testing.T) {
 	}
 }
 
-// An unresolved caller must not cause a write: Discord counts every thread as a
-// channel, so anyone able to create one could grow the table without limit.
+// An unresolved caller must not cause a write, or anyone able to create a
+// Discord thread could grow the table without limit.
 func TestOriginIsNotBootstrappedWithoutAResolvedCaller(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 
-	// Well-formed headers; only the resolved caller is missing.
 	header := originHeader(pb.Platform_PLATFORM_DISCORD, "stranger", testOrigin())
 
 	got := callOrigin(header, resolver.resolve, nil)
@@ -224,8 +223,7 @@ func TestBootstrapPassesTheCanonicalMetaShapes(t *testing.T) {
 	}
 }
 
-// One interceptor instance across every call: the cache lives on it, so a fresh
-// one per call would pass regardless of whether the cache works.
+// One interceptor instance across every call: the cache lives on it.
 func TestBootstrapRunsOncePerOrigin(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
@@ -286,7 +284,7 @@ func TestBootstrapDistinguishesOrigins(t *testing.T) {
 	}
 }
 
-// Under -race, this is the check that the cache is safe to share.
+// Under -race, this checks the cache is safe to share.
 func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
@@ -329,8 +327,8 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 		}
 	}
 
-	// The cache is not held across the resolver call, so a burst can produce
-	// more than one upsert; the upsert is idempotent, so an exact count is flaky.
+	// The cache is not held across the resolver call, so a burst can upsert more
+	// than once; the upsert is idempotent, so an exact count is flaky.
 	burst := resolver.callCount()
 	if burst < 1 {
 		t.Fatalf("resolver never ran for %d concurrent first-contact requests", concurrency)
@@ -345,7 +343,7 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
 		maps.Copy(req.Header(), header)
 		// originTestCtx, not a bare callerContextKey: without the meta value
-		// bootstrap returns before consulting the cache and this passes vacuously.
+		// bootstrap returns before the cache and this passes vacuously.
 		ctx := originTestCtx(header, caller)
 		if _, err := intercept.WrapUnary(handler)(ctx, req); err != nil {
 			t.Fatalf("post-burst request failed: %v", err)
@@ -357,8 +355,8 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 	}
 }
 
-// Only success is cached, so a transient database failure must not permanently
-// stop an origin being recorded.
+// Only success is cached, so a transient failure must not permanently stop an
+// origin being recorded.
 func TestFailedBootstrapIsRetriedAndDoesNotFailTheCall(t *testing.T) {
 	resolver := &fakeOriginResolver{err: errors.New("dial tcp: connection refused")}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))

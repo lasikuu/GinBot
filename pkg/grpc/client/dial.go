@@ -21,22 +21,20 @@ import (
 
 // Options configures the Connect transport to ginbot-server.
 type Options struct {
-	// BaseURL is "http://host:port" or "https://host:port". The scheme must
-	// agree with whether TLS below is set, but does not decide it.
+	// BaseURL is "http://host:port" or "https://host:port"; its scheme must
+	// agree with TLS below but does not decide it.
 	BaseURL string
 	// TLS is the client's mutual TLS configuration; nil dials plaintext h2c.
 	TLS *tls.Config
 	// MaxRecvBytes and MaxSendBytes bound a single Connect message.
 	MaxRecvBytes int
 	MaxSendBytes int
-	// DefaultTimeout applies to a call with no deadline of its own; zero means
-	// defaultCallTimeout.
+	// DefaultTimeout applies to a call with no deadline; zero means defaultCallTimeout.
 	DefaultTimeout time.Duration
 }
 
-// Clients holds every generated Connect client a platform process needs,
-// sharing one underlying transport. Every unexported field is safe at its zero
-// value, so a test can build a literal with only the fields it needs.
+// Clients holds every generated Connect client a platform process needs, sharing
+// one transport. Every unexported field is safe at its zero value.
 type Clients struct {
 	User          ginbotv1connect.UserServiceClient
 	Utility       ginbotv1connect.UtilityServiceClient
@@ -50,12 +48,12 @@ type Clients struct {
 	transport *http2.Transport
 }
 
-// defaultCallTimeout is a backstop, deliberately looser than every explicit
-// per-command budget in pkg/discord so those still win.
+// defaultCallTimeout is a backstop, looser than every per-command budget in
+// pkg/discord so those still win.
 const defaultCallTimeout = 30 * time.Second
 
-// HTTP/2 ping keepalive. A parked reverse stream has no open stream to keep the
-// connection alive, so these must beat the server's 2-minute idle timeout.
+// HTTP/2 ping keepalive: a parked reverse stream keeps no stream open, so these
+// must beat the server's 2-minute idle timeout.
 const (
 	keepaliveReadIdleTimeout = 30 * time.Second
 	keepaliveTimeout         = 15 * time.Second
@@ -73,10 +71,9 @@ func Dial(opts Options) (*Clients, error) {
 	}
 
 	if opts.TLS == nil {
-		// Plaintext h2c: AllowHTTP accepts the "http://" URL, and setting
-		// DialTLSContext is what makes http2.Transport skip the handshake.
-		// http2.Transport directly, not http.Transport with ForceAttemptHTTP2:
-		// there is no HTTP/1.1 path to silently downgrade to.
+		// Plaintext h2c: AllowHTTP accepts the "http://" URL and DialTLSContext
+		// makes http2.Transport skip the handshake. Using http2.Transport
+		// directly leaves no HTTP/1.1 path to silently downgrade to.
 		transport.AllowHTTP = true
 		transport.DialTLSContext = func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 			var dialer net.Dialer
@@ -93,8 +90,8 @@ func Dial(opts Options) (*Clients, error) {
 		timeout = defaultCallTimeout
 	}
 
-	// Outermost first: callermeta writes the headers so every retried attempt
-	// carries them, the deadline sets the budget, and retry runs inside it.
+	// Outermost first: callermeta writes the headers, the deadline sets the
+	// budget, and retry runs inside it.
 	clientOpts := []connect.ClientOption{
 		connect.WithInterceptors(
 			callermeta.NewClientInterceptor(),
@@ -121,9 +118,8 @@ func Dial(opts Options) (*Clients, error) {
 	}, nil
 }
 
-// validateBaseURL fails at dial time instead of per call: connect.NewClient
-// stores a URL parse failure on the client and only surfaces it on each RPC.
-// This is a sanity floor, not a parser.
+// validateBaseURL fails at dial time: connect.NewClient otherwise stores a URL
+// parse failure and only surfaces it on each RPC.
 func validateBaseURL(baseURL string) error {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
@@ -139,11 +135,8 @@ func validateBaseURL(baseURL string) error {
 	return nil
 }
 
-// Close releases the shared transport's idle connections.
-//
-// Safe on a zero-value or struct-literal Clients, where transport is nil: a
-// test injecting fakes for only some service fields still gets a Clients it
-// can defer Close() on unconditionally.
+// Close releases the shared transport's idle connections; safe on a nil or
+// struct-literal Clients.
 func (c *Clients) Close() {
 	if c == nil || c.transport == nil {
 		return

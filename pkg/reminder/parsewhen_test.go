@@ -5,17 +5,12 @@ import (
 	"time"
 )
 
-// ── Assumed symbols from pkg/reminder ────────────────────────────────────────
-//
-//	func ParseWhen(input string, now time.Time, loc *time.Location) (time.Time, error)
-//
-// now is injected so every test is deterministic; no test calls time.Now().
 var (
 	parseWhen = ParseWhen
 )
 
-// helsinki loads Europe/Helsinki once. A missing zoneinfo database is an
-// environment failure, not a test failure, so it fatals.
+// helsinki fatals rather than fails: a missing zoneinfo database is an
+// environment problem, not a test failure.
 func helsinki(t *testing.T) *time.Location {
 	t.Helper()
 	loc, err := time.LoadLocation("Europe/Helsinki")
@@ -25,11 +20,9 @@ func helsinki(t *testing.T) *time.Location {
 	return loc
 }
 
-// TestParseWhenDurationIsNowPlusDuration: a duration input resolves to now plus
-// that duration, in UTC. now is fixed.
 func TestParseWhenDurationIsNowPlusDuration(t *testing.T) {
 	loc := helsinki(t)
-	// A summer instant so the zone is EEST; the result must still be UTC.
+	// A summer instant, so the zone is EEST; the result must still be UTC.
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 
 	got, err := parseWhen("2h30m", now, loc)
@@ -42,9 +35,8 @@ func TestParseWhenDurationIsNowPlusDuration(t *testing.T) {
 	}
 }
 
-// TestParseWhenZonelessAbsoluteInterpretedInLoc: an absolute zoneless datetime
-// is read in loc, then converted to UTC. 2026-08-22 18:00 in Helsinki summer
-// (EEST, UTC+3) is 15:00 UTC. Computed independently below.
+// TestParseWhenZonelessAbsoluteInterpretedInLoc: 18:00 Helsinki summer (EEST,
+// UTC+3) is 15:00 UTC.
 func TestParseWhenZonelessAbsoluteInterpretedInLoc(t *testing.T) {
 	loc := helsinki(t)
 	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -54,7 +46,6 @@ func TestParseWhenZonelessAbsoluteInterpretedInLoc(t *testing.T) {
 		t.Fatalf("ParseWhen(2026-08-22 18:00) error = %v", err)
 	}
 
-	// 18:00 local in Helsinki summer == 15:00 UTC. Built directly in loc.
 	want := time.Date(2026, 8, 22, 18, 0, 0, 0, loc).UTC()
 	if !got.UTC().Equal(want) {
 		t.Errorf("ParseWhen(2026-08-22 18:00) = %v, want %v (15:00 UTC)", got.UTC(), want)
@@ -64,9 +55,8 @@ func TestParseWhenZonelessAbsoluteInterpretedInLoc(t *testing.T) {
 	}
 }
 
-// TestParseWhenAbsoluteWithOffsetRespected: an explicit offset in the input is
-// authoritative; loc must not override it. 2026-08-22T18:00:00+00:00 is 18:00
-// UTC regardless of loc being Helsinki.
+// TestParseWhenAbsoluteWithOffsetRespected: an explicit offset is authoritative;
+// loc must not override it.
 func TestParseWhenAbsoluteWithOffsetRespected(t *testing.T) {
 	loc := helsinki(t)
 	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -81,8 +71,7 @@ func TestParseWhenAbsoluteWithOffsetRespected(t *testing.T) {
 	}
 }
 
-// TestParseWhenISOWithAndWithoutSeconds: both 2026-08-22T18:00 and
-// 2026-08-22T18:00:30 parse. The seconds field, when present, is honoured.
+// TestParseWhenISOWithAndWithoutSeconds: the seconds field, when present, is honoured.
 func TestParseWhenISOWithAndWithoutSeconds(t *testing.T) {
 	loc := helsinki(t)
 	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -96,7 +85,6 @@ func TestParseWhenISOWithAndWithoutSeconds(t *testing.T) {
 		t.Fatalf("ParseWhen(2026-08-22T18:00:30) error = %v", err)
 	}
 
-	// The seconds variant is exactly 30s past the minute variant.
 	if diff := withSecs.Sub(withoutSecs); diff != 30*time.Second {
 		t.Errorf("seconds not honoured: withSecs - withoutSecs = %v, want 30s", diff)
 	}
@@ -121,14 +109,8 @@ func TestParseWhenDayFirstAmbiguity(t *testing.T) {
 	}
 }
 
-// TestParseWhenYearlessSlashDateUsesInjectedNow is the purity contract: a
-// two-field slash date has no year, and the year it defaults to must come from
-// the INJECTED now, not from the wall clock.
-//
-// It used to read time.Now(), which made ParseWhen impure despite documenting
-// otherwise and made "01/02" untestable — the assertion below would have
-// depended on the year the suite happened to run in. Two far-apart injected
-// years prove the default follows the argument.
+// TestParseWhenYearlessSlashDateUsesInjectedNow: a yearless slash date defaults
+// to the injected now's year, not the wall clock's.
 func TestParseWhenYearlessSlashDateUsesInjectedNow(t *testing.T) {
 	loc := helsinki(t)
 
@@ -204,9 +186,7 @@ func TestParseWhenYearlessSlashDateUsesTheYearInLoc(t *testing.T) {
 }
 
 // TestParseWhenSlashDateWithTimeHonoursTheTime: "01.02.2026 18:00" carries both
-// a date and a wall-clock time, and both must survive. The time half was
-// parsed into locals that the function then discarded through a dead
-// `_ = haveTime`; this pins the behaviour the parse actually has.
+// a date and a wall-clock time, and both must survive.
 func TestParseWhenSlashDateWithTimeHonoursTheTime(t *testing.T) {
 	loc := helsinki(t)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -225,9 +205,7 @@ func TestParseWhenSlashDateWithTimeHonoursTheTime(t *testing.T) {
 	}
 }
 
-// TestParseWhenNaturalLanguage: a supported natural-language form resolves to a
-// plausible future instant. "in 3 days" is deterministic relative to now, so the
-// day is asserted; it must also be strictly after now.
+// TestParseWhenNaturalLanguage: a natural-language form resolves to a future instant.
 func TestParseWhenNaturalLanguage(t *testing.T) {
 	loc := helsinki(t)
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
@@ -239,16 +217,12 @@ func TestParseWhenNaturalLanguage(t *testing.T) {
 	if !got.After(now) {
 		t.Errorf("ParseWhen(in 3 days) = %v, want an instant after now %v", got, now)
 	}
-	// now + 3 days lands on 25 August 2026 regardless of the time-of-day rule
-	// the parser applies, because 12:00 UTC + 72h stays inside that day in loc.
 	if wantDay := now.Add(72 * time.Hour).In(loc).Day(); got.In(loc).Day() != wantDay {
 		t.Errorf("ParseWhen(in 3 days) local day = %d, want %d", got.In(loc).Day(), wantDay)
 	}
 }
 
-// TestParseWhenRefusesGibberish is the refusal boundary: pure gibberish must
-// return an error, not a guessed time. A parser that invents a time here fires
-// reminders at random.
+// TestParseWhenRefusesGibberish: gibberish must error, never guess a time.
 func TestParseWhenRefusesGibberish(t *testing.T) {
 	loc := helsinki(t)
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
@@ -259,9 +233,8 @@ func TestParseWhenRefusesGibberish(t *testing.T) {
 	}
 }
 
-// TestParseWhenPastAbsoluteParses: a past absolute datetime PARSES. Rejecting a
-// past time is the handler's job, not the parser's, so this asserts only that it
-// resolves without error and lands before now.
+// TestParseWhenPastAbsoluteParses: a past absolute datetime parses; rejecting a
+// past time is the handler's job, not the parser's.
 func TestParseWhenPastAbsoluteParses(t *testing.T) {
 	loc := helsinki(t)
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)

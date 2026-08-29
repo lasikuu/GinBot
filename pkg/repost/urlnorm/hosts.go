@@ -28,7 +28,6 @@ func hostSet(hosts ...string) map[string]struct{} {
 	return set
 }
 
-// hostSources is the rule table itself.
 var hostSources = []hostSource{
 	{
 		source: "youtube",

@@ -34,8 +34,6 @@ func TestMain(m *testing.M) {
 	InitDB()
 	sharedPool := dbpool
 
-	// Without migrations every test fails on empty schema with a misleading
-	// "relation does not exist".
 	if !config.Options.DB.Migrations {
 		fatalf("GINBOT_DB_MIGRATIONS is disabled, so the throwaway database cannot be migrated; " +
 			"unset it or set it to anything but the exact literal \"false\" to run the integration suite")
@@ -82,7 +80,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// fatalf reports a setup failure to stderr, where CI output will show it.
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "pkg/db integration setup: "+format+"\n", args...)
 	os.Exit(1)
@@ -402,8 +399,6 @@ func TestCreateAndReadReminder(t *testing.T) {
 	}
 }
 
-// The unique indexes plus ON CONFLICT are what stop concurrent callers all
-// missing the SELECT and each inserting a duplicate row.
 func TestGetOrCreateDestinationIsRaceSafe(t *testing.T) {
 	ctx := context.Background()
 	suffix := time.Now().Format("150405.000000")

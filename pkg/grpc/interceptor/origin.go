@@ -13,20 +13,18 @@ import (
 	"go.uber.org/zap"
 )
 
-// OriginResolver creates the instance and destination rows for a platform
-// origin when they do not exist yet, returning the destination id. It must
-// upsert in one transaction: concurrent first calls from one guild race.
+// OriginResolver creates the instance and destination rows for a platform origin
+// when absent, returning the destination id. It must upsert in one transaction:
+// concurrent first calls from one guild race.
 type OriginResolver func(ctx context.Context, destination *pb.ReminderDestination) (int64, error)
 
-// originCacheMaxEntries bounds the set of origins already bootstrapped.
 const originCacheMaxEntries = 4096
 
-// originCacheEvictDivisor drops one entry in this many on overflow; dropping
-// the whole set would make the cache useless above the bound.
+// originCacheEvictDivisor drops one entry in this many on overflow.
 const originCacheEvictDivisor = 4
 
-// originCache remembers which origins have already been written, so that the
-// upsert runs on first contact instead of on every request.
+// originCache remembers which origins have been written, so the upsert runs on
+// first contact instead of on every request.
 type originCache struct {
 	mu   sync.Mutex
 	seen map[string]struct{}
@@ -55,7 +53,7 @@ func (c *originCache) remember(key string) {
 	c.seen[key] = struct{}{}
 }
 
-// evictLocked drops a fraction of the set; map order makes the victims arbitrary.
+// evictLocked drops a fraction of the set; the victims are arbitrary.
 func (c *originCache) evictLocked() {
 	remaining := len(c.seen) / originCacheEvictDivisor
 	if remaining == 0 {
@@ -73,9 +71,9 @@ func (c *originCache) evictLocked() {
 
 type originContextKey struct{}
 
-// OriginInterceptor creates the instance and destination rows for a guild or
-// channel the bot has not seen before, and exposes the call's own origin via
-// OriginFromContext. Must be chained after ClearanceInterceptor; best effort.
+// OriginInterceptor bootstraps rows for an unseen guild or channel and exposes
+// the call's origin via OriginFromContext. Chain after ClearanceInterceptor;
+// best effort.
 type OriginInterceptor struct {
 	resolve OriginResolver
 	cache   *originCache
@@ -91,13 +89,12 @@ func (i *OriginInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc 
 	}
 }
 
-// WrapStreamingClient is a no-op: origin bootstrap is server-side only.
 func (i *OriginInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return next
 }
 
-// WrapStreamingHandler runs the same bootstrap the unary path does; streaming
-// GetFile's visibility check reads OriginFromContext.
+// WrapStreamingHandler bootstraps like the unary path; streaming GetFile's
+// visibility check reads OriginFromContext.
 func (i *OriginInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		return next(i.bootstrap(ctx, conn.RequestHeader()), conn)
@@ -113,7 +110,7 @@ func (i *OriginInterceptor) bootstrap(ctx context.Context, header http.Header) c
 
 	origin, ok := callermeta.OriginFromHeader(header)
 	if !ok {
-		// The normal path for a direct message, which belongs to no guild.
+		// Normal for a direct message, which belongs to no guild.
 		return ctx
 	}
 	ctx = context.WithValue(ctx, originContextKey{}, origin)
@@ -128,7 +125,6 @@ func (i *OriginInterceptor) bootstrap(ctx context.Context, header http.Header) c
 
 	meta, ok := MetaFromContext(ctx)
 	if !ok {
-		// An origin without a platform cannot be stored.
 		return ctx
 	}
 
@@ -140,8 +136,8 @@ func (i *OriginInterceptor) bootstrap(ctx context.Context, header http.Header) c
 	return ctx
 }
 
-// originKey joins on NUL, which cannot occur in any part, so two different
-// origins cannot collide by running together.
+// originKey joins on NUL, which cannot occur in any part, so two origins cannot
+// collide by running together.
 func originKey(platform pb.Platform, origin callermeta.Origin) string {
 	return strings.Join([]string{platform.String(), origin.InstanceUID, origin.DestinationUID}, "\x00")
 }
@@ -173,8 +169,7 @@ func bootstrapOrigin(ctx context.Context, resolve OriginResolver, platform pb.Pl
 	return true
 }
 
-// OriginFromContext returns ok false when the call carried no origin, which is
-// normal for a direct message.
+// OriginFromContext returns ok false when the call carried no origin.
 func OriginFromContext(ctx context.Context) (callermeta.Origin, bool) {
 	origin, ok := ctx.Value(originContextKey{}).(callermeta.Origin)
 	return origin, ok

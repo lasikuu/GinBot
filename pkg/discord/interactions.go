@@ -81,8 +81,8 @@ func discordOrigin(guildID string, channelID string) callermeta.Origin {
 	return callermeta.Origin{InstanceUID: guildID, DestinationUID: channelID}
 }
 
-// commandContext assembles every handler's context. Caller identity and origin
-// go in as request headers, never as request fields.
+// commandContext assembles every handler's context; caller identity and origin
+// travel as request headers, never as request fields.
 func commandContext(clients *client.Clients, user *discordgo.User, guildID string, channelID string) context.Context {
 	ctx := callermeta.NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, user.ID)
 	ctx = callermeta.NewOutgoingOrigin(ctx, discordOrigin(guildID, channelID))
@@ -159,9 +159,8 @@ func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cli
 	}
 }
 
-// For /reminder add, data.Name is the group and data.Options[0] is the
-// subcommand, whose own .Options are the arguments — one level deeper than a
-// top-level command.
+// For a group like /reminder add, data.Options[0] is the subcommand and its
+// .Options are the arguments — one level deeper than a top-level command.
 func resolveApplicationCommand(data discordgo.ApplicationCommandInteractionData) (command.Command, []*discordgo.ApplicationCommandInteractionDataOption, bool) {
 	if cmd, found := commandRegistry.Lookup(data.Name); found {
 		return cmd, data.Options, true
@@ -187,7 +186,6 @@ func resolveApplicationCommand(data discordgo.ApplicationCommandInteractionData)
 		return command.Command{}, nil, false
 	}
 
-	// ResolveChat, so the slash and chat paths cannot reach different handlers.
 	cmd, _, found := commandRegistry.ResolveChat(data.Name, []string{sub.Name})
 	if !found {
 		log.Z.Warn("unknown subcommand.",
@@ -247,7 +245,7 @@ func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd co
 }
 
 // messageContentRequired reports whether the privileged MESSAGE_CONTENT intent
-// is needed. WANHA's own need for it is applied at the call site in discord.go.
+// is needed.
 func messageContentRequired(prefixes []string, messageContent bool) bool {
 	return len(prefixes) > 0 || messageContent
 }
@@ -264,9 +262,8 @@ func triggerCandidate(content string, prefixes []string) bool {
 	return strings.TrimSpace(content) != ""
 }
 
-// mentionsBot reports whether a message DELIBERATELY mentions the bot. Matching
-// by id defeats impostors, and requiring the <@id> token in the text as well as
-// in Mentions excludes Discord's automatic reply ping.
+// mentionsBot reports a deliberate mention: the <@id> token must be in the text
+// as well as in Mentions, which excludes Discord's automatic reply ping.
 func mentionsBot(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 	if s == nil || s.State == nil || s.State.User == nil {
 		return false
@@ -310,9 +307,8 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate, clients *cl
 		return
 	}
 
-	// Unconditional, before the prefix branch: a prefixed or attachment-only
-	// message can still carry a repost. Its own goroutine because work follows
-	// it here, and a CDN fetch would delay every command and trigger behind it.
+	// Before the prefix branch: a prefixed or attachment-only message can still
+	// carry a repost. Its own goroutine so a CDN fetch cannot delay commands.
 	if config.Options.Repost.Enabled {
 		go attemptRepost(s, m.Message, false, clients)
 	}
@@ -330,8 +326,6 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate, clients *cl
 	// A mention is an explicit ask, so it bypasses the chance roll server-side.
 	forced := mentionsBot(s, m)
 
-	// Inline: discordgo already dispatches each handler on its own goroutine,
-	// so this cannot stall the gateway receive loop.
 	attemptTrigger(s, m, forced, clients)
 }
 

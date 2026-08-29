@@ -17,52 +17,12 @@ import (
 	"time"
 )
 
-// ── Assumed symbols from pkg/storage (spec §6.2) ─────────────────────────────
-//
-//	const MaxFileBytes int64 = 8 << 20
-//
-//	func DefaultAllowedHosts() []string
-//	func AllowedMIMETypes() []string
-//
-//	var (
-//		ErrHostNotAllowed  = errors.New("host is not allow-listed")
-//		ErrTooLarge        = errors.New("content exceeds the size cap")
-//		ErrUnsupportedType = errors.New("unsupported content type")
-//	)
-//
-//	type Fetched struct {
-//		Content  []byte
-//		MIMEType string
-//		Filename string
-//		Hash     string
-//	}
-//
-//	type Fetcher struct { /* unexported fields */ }
-//
-//	func NewFetcher(transport http.RoundTripper, hosts []string, maxBytes int64) *Fetcher
-//	func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Fetched, error)
-//
-// Fetch, in order: rejects a non-https scheme / no host / userinfo, rejects a
-// hostname not on the allow-list (hostname-only, case-insensitive, no
-// substring/suffix match), re-checks every redirect target against the same
-// rule (cap 5 hops), rejects non-2xx, rejects Content-Length over the cap
-// BEFORE reading the body, reads via a cap+1-byte LimitReader and rejects an
-// oversized body found that way even when Content-Length lied or was absent,
-// sniffs the type with http.DetectContentType (never trusting the header or
-// the URL extension) and rejects one outside AllowedMIMETypes(), then hashes
-// with SHA-256. None of these exist yet; pkg/storage does not exist as of
-// this writing.
-
-// pngSignature is enough of a PNG file for http.DetectContentType to sniff
-// "image/png" — the sniffer only inspects the magic bytes, not a valid image.
+// pngSignature is enough magic bytes for http.DetectContentType to sniff "image/png".
 var pngSignature = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0}
 
-// newTLSServerOn starts an httptest TLS server bound to a specific loopback
-// address, so two servers in one test have genuinely different hostnames
-// (httptest.NewTLSServer always uses 127.0.0.1, which would make every
-// allow-list/redirect test comparing two servers compare a host against
-// itself). 127.0.0.0/8 is entirely loopback on Linux, so 127.0.0.2 is valid
-// and requires no DNS.
+// newTLSServerOn binds to a specific loopback address so two servers in one
+// test have genuinely different hostnames (httptest.NewTLSServer always uses
+// 127.0.0.1). 127.0.0.0/8 is entirely loopback on Linux, needing no DNS.
 func newTLSServerOn(t *testing.T, addr string, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 
@@ -79,17 +39,13 @@ func newTLSServerOn(t *testing.T, addr string, handler http.HandlerFunc) *httpte
 	return server
 }
 
-// insecureTransport trusts any TLS certificate, which is required to make one
-// Fetcher's client cross-trust two independently self-signed httptest servers.
-// This only weakens the TEST's own transport, exercising the Fetcher's
-// application-level host allow-list rather than its (irrelevant, in this
-// package) TLS trust behaviour.
+// insecureTransport trusts any TLS cert so one client can reach two
+// independently self-signed httptest servers; exercises the app-level
+// allow-list, not TLS trust.
 func insecureTransport() *http.Transport {
 	return &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // test-only, see doc comment
 }
 
-// mustHostname extracts the hostname the way the allow-list is specified to
-// compare against: the URL's Hostname(), not the whole authority.
 func mustHostname(t *testing.T, rawURL string) string {
 	t.Helper()
 	u, err := url.Parse(rawURL)
@@ -99,7 +55,6 @@ func mustHostname(t *testing.T, rawURL string) string {
 	return u.Hostname()
 }
 
-// TestDefaultAllowedHostsExactSet.
 func TestDefaultAllowedHostsExactSet(t *testing.T) {
 	want := []string{"cdn.discordapp.com", "media.discordapp.net"}
 	got := DefaultAllowedHosts()
@@ -108,7 +63,6 @@ func TestDefaultAllowedHostsExactSet(t *testing.T) {
 	}
 }
 
-// TestAllowedMIMETypesExactSet.
 func TestAllowedMIMETypesExactSet(t *testing.T) {
 	want := []string{
 		"image/png", "image/jpeg", "image/gif", "image/webp",
@@ -131,9 +85,6 @@ func TestAllowedMIMETypesExactSet(t *testing.T) {
 	}
 }
 
-// TestFetcherHappyPath: correct content, sniffed MIME type, lowercase hex
-// SHA-256 hash, and the filename derived from the URL path with the query
-// string dropped.
 func TestFetcherHappyPath(t *testing.T) {
 	body := append(append([]byte{}, pngSignature...), []byte("more-bytes-after-the-signature")...)
 
@@ -184,7 +135,6 @@ func strLower(s string) string {
 	return string(b)
 }
 
-// TestFetcherRefusesHostNotAllowed.
 func TestFetcherRefusesHostNotAllowed(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler was invoked; the host check must happen before any request is sent")
@@ -200,11 +150,6 @@ func TestFetcherRefusesHostNotAllowed(t *testing.T) {
 	}
 }
 
-// TestFetcherRefusesRedirectToNonAllowedHost: an allow-listed server redirects
-// to a server on a different hostname that is not allow-listed. Two distinct
-// loopback addresses (127.0.0.1 / 127.0.0.2) give genuinely different
-// hostnames, so the allow-list comparison is real rather than comparing a host
-// to itself.
 func TestFetcherRefusesRedirectToNonAllowedHost(t *testing.T) {
 	var disallowedHits atomic.Int32
 	disallowed := newTLSServerOn(t, "127.0.0.2", func(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +172,6 @@ func TestFetcherRefusesRedirectToNonAllowedHost(t *testing.T) {
 	}
 }
 
-// TestFetcherRefusesNonHTTPSScheme.
 func TestFetcherRefusesNonHTTPSScheme(t *testing.T) {
 	fetcher := NewFetcher(nil, []string{"cdn.discordapp.com"}, 0)
 
@@ -237,7 +181,6 @@ func TestFetcherRefusesNonHTTPSScheme(t *testing.T) {
 	}
 }
 
-// TestFetcherRefusesURLWithNoHost.
 func TestFetcherRefusesURLWithNoHost(t *testing.T) {
 	fetcher := NewFetcher(nil, []string{"cdn.discordapp.com"}, 0)
 
@@ -247,7 +190,6 @@ func TestFetcherRefusesURLWithNoHost(t *testing.T) {
 	}
 }
 
-// TestFetcherRefusesUserinfoInURL.
 func TestFetcherRefusesUserinfoInURL(t *testing.T) {
 	fetcher := NewFetcher(nil, []string{"cdn.discordapp.com"}, 0)
 
@@ -257,9 +199,8 @@ func TestFetcherRefusesUserinfoInURL(t *testing.T) {
 	}
 }
 
-// TestFetcherRefusesHostnameThatMerelyContainsAnAllowedHost: the comparison
-// must be exact, not substring/suffix, or an attacker-controlled subdomain of
-// an attacker-controlled domain could impersonate an allow-listed CDN.
+// TestFetcherRefusesHostnameThatMerelyContainsAnAllowedHost: the match must be
+// exact, not substring/suffix, so "cdn.discordapp.com.evil.test" is refused.
 func TestFetcherRefusesHostnameThatMerelyContainsAnAllowedHost(t *testing.T) {
 	fetcher := NewFetcher(nil, []string{"cdn.discordapp.com"}, 0)
 
@@ -270,11 +211,8 @@ func TestFetcherRefusesHostnameThatMerelyContainsAnAllowedHost(t *testing.T) {
 }
 
 // TestFetcherRefusesOversizedContentLengthBeforeReadingTheBody: the handler
-// declares a Content-Length over the cap, then blocks instead of ever sending
-// a body. If Fetch tried to read the body before checking Content-Length, this
-// test would hang (and eventually fail on the suite's own test timeout)
-// instead of passing quickly — that is deliberate: it is what makes the
-// ordering assertion real rather than cosmetic.
+// declares an over-cap Content-Length then blocks forever; if Fetch read the
+// body before checking Content-Length the test would hang instead of passing.
 func TestFetcherRefusesOversizedContentLengthBeforeReadingTheBody(t *testing.T) {
 	const cap_ = 1024
 	release := make(chan struct{})
@@ -300,15 +238,9 @@ func TestFetcherRefusesOversizedContentLengthBeforeReadingTheBody(t *testing.T) 
 	}
 }
 
-// TestFetcherRefusesOversizedBodyWithLyingOrAbsentContentLength: chunked
-// transfer (no Content-Length) that actually exceeds the cap must still be
-// refused with ErrTooLarge, and the fetcher must not have buffered the whole
-// thing — it must stop reading at roughly the cap. The handler streams far
-// more than the cap and counts how many bytes it actually got out onto the
-// wire; if the fetcher drained the entire stream, that counter would reach the
-// full intended size, so a generous upper bound well below the intended size
-// is enough to prove early termination without being sensitive to exact OS
-// socket-buffering behaviour.
+// TestFetcherRefusesOversizedBodyWithLyingOrAbsentContentLength: a chunked
+// over-cap body must be refused with ErrTooLarge and the fetcher must stop
+// reading near the cap; the handler counts wire bytes to prove early exit.
 func TestFetcherRefusesOversizedBodyWithLyingOrAbsentContentLength(t *testing.T) {
 	const cap_ = 1024
 	const chunkSize = 1024
@@ -344,8 +276,7 @@ func TestFetcherRefusesOversizedBodyWithLyingOrAbsentContentLength(t *testing.T)
 		t.Fatalf("Fetch err = %v, want ErrTooLarge", err)
 	}
 
-	// Give the handler goroutine a moment to observe the closed connection and
-	// stop, so the counter below is not read mid-write.
+	// Let the handler observe the closed connection so the counter is not read mid-write.
 	time.Sleep(200 * time.Millisecond)
 
 	got := written.Load()
@@ -356,8 +287,7 @@ func TestFetcherRefusesOversizedBodyWithLyingOrAbsentContentLength(t *testing.T)
 }
 
 // TestFetcherRefusesSniffedTypeNotAllowedEvenWithAnAllowedContentTypeHeader:
-// serves text/html bytes under a Content-Type: image/png header. The sniffed
-// type must decide, proving the header is not trusted.
+// html bytes under a Content-Type: image/png header; the sniffed type decides.
 func TestFetcherRefusesSniffedTypeNotAllowedEvenWithAnAllowedContentTypeHeader(t *testing.T) {
 	htmlBody := []byte("<html><head></head><body>not actually a png</body></html>")
 
@@ -377,7 +307,6 @@ func TestFetcherRefusesSniffedTypeNotAllowedEvenWithAnAllowedContentTypeHeader(t
 	}
 }
 
-// TestFetcherRefusesNon2xxResponse.
 func TestFetcherRefusesNon2xxResponse(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -392,7 +321,6 @@ func TestFetcherRefusesNon2xxResponse(t *testing.T) {
 	}
 }
 
-// TestFetcherEmptyAllowListRefusesEverything.
 func TestFetcherEmptyAllowListRefusesEverything(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler was invoked with an empty allow-list; nothing should ever reach it")

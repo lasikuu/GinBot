@@ -4,14 +4,12 @@ import (
 	"connectrpc.com/connect"
 )
 
-// fakeRequest is a connect.AnyRequest with a controllable procedure and
-// payload. connect.AnyRequest is a sealed interface, so the real
-// *connect.Request must be embedded to inherit its unexported methods.
+// fakeRequest is a connect.AnyRequest with a controllable procedure and payload;
+// the sealed interface forces embedding *connect.Request for its unexported methods.
 type fakeRequest struct {
 	*connect.Request[struct{}]
 	procedure string
-	// msg, when set, is what Any() returns instead of the embedded Request's
-	// own *struct{} payload.
+	// msg, when set, is what Any() returns instead of the embedded payload.
 	msg any
 }
 

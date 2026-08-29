@@ -1,5 +1,5 @@
-// External test package, unlike the rest of the directory: importing
-// pkg/grpc/service from package interceptor would be an import cycle.
+// External test package: importing pkg/grpc/service from package interceptor
+// would be an import cycle.
 package interceptor_test
 
 import (
@@ -14,8 +14,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
-// wirePackage restricts the reflection walk to our own protos, so the
-// google.protobuf and buf.validate descriptors in the same registry are skipped.
+// wirePackage restricts the reflection walk to our own protos.
 const wirePackage protoreflect.FullName = "ginbot.v1"
 
 // procedureOf reproduces the generated ginbotv1connect.*Procedure shape.
@@ -24,7 +23,6 @@ func procedureOf(service protoreflect.ServiceDescriptor, method protoreflect.Met
 }
 
 // mountedServiceNames indexes the services cmd/ginbot-server mounts.
-// DiscordService is the one service in the schema not in this set.
 func mountedServiceNames() map[string]bool {
 	mounted := service.RegisteredServiceNames()
 
@@ -36,7 +34,7 @@ func mountedServiceNames() map[string]bool {
 }
 
 // rangeMountedMethods calls fn once per method of every mounted ginbot.v1
-// service. It fatals on an empty registry, which would pass vacuously.
+// service, fataling on an empty registry.
 func rangeMountedMethods(t *testing.T, fn func(procedure string, method protoreflect.MethodDescriptor)) {
 	t.Helper()
 
@@ -70,8 +68,7 @@ func rangeMountedMethods(t *testing.T, fn func(procedure string, method protoref
 	}
 }
 
-// allKnownProcedures is every procedure in the schema, mounted or not, so a
-// declared-but-unmounted entry is not mistaken for a typo.
+// allKnownProcedures is every procedure in the schema, mounted or not.
 func allKnownProcedures(t *testing.T) map[string]bool {
 	t.Helper()
 
@@ -102,8 +99,7 @@ func allKnownProcedures(t *testing.T) map[string]bool {
 	return known
 }
 
-// productionPublicMethods are the procedures deliberately absent from
-// interceptor.DefaultRequirements().
+// productionPublicMethods are deliberately absent from DefaultRequirements().
 func productionPublicMethods() map[string]bool {
 	return map[string]bool{
 		ginbotv1connect.UserServiceRegisterProcedure:                 true,
@@ -113,8 +109,7 @@ func productionPublicMethods() map[string]bool {
 	}
 }
 
-// missingFromRequirements reports every mounted, non-public procedure absent
-// from reqs.
+// missingFromRequirements reports every mounted, non-public procedure absent from reqs.
 func missingFromRequirements(t *testing.T, reqs interceptor.Requirements, public map[string]bool) []string {
 	t.Helper()
 
@@ -138,7 +133,7 @@ func TestRequirementsCoverEveryMountedProcedure(t *testing.T) {
 	}
 }
 
-// The negative case: proves the coverage test above is not vacuous.
+// Proves the coverage test above is not vacuous.
 func TestRequirementsCoverageCatchesAMissingProcedure(t *testing.T) {
 	incomplete := interceptor.DefaultRequirements()
 
@@ -162,8 +157,7 @@ func TestPublicMethodsAreAbsentFromRequirements(t *testing.T) {
 
 	for method := range productionPublicMethods() {
 		t.Run(method, func(t *testing.T) {
-			// Absence, not CLEARANCE_UNSPECIFIED, is what makes a method public:
-			// a declared entry resolves the caller first.
+			// Absence, not CLEARANCE_UNSPECIFIED, makes a method public.
 			if clearance, declared := reqs[method]; declared {
 				t.Errorf("%s is declared as %v, want it absent so no caller is resolved", method, clearance)
 			}
@@ -192,7 +186,7 @@ func TestInstanceMutationRequiresAdministrator(t *testing.T) {
 	}
 }
 
-// A forgotten method becomes public by default; this catches that.
+// A forgotten method becomes public by default; this catches it.
 func TestEveryNonPublicMountedMethodRequiresAtLeastRegistered(t *testing.T) {
 	reqs := interceptor.DefaultRequirements()
 	public := productionPublicMethods()
@@ -245,8 +239,7 @@ func TestOpenClientActionStreamIsRegisteredInTheMap(t *testing.T) {
 	}
 }
 
-// The one deliberate exception to "coverage is restricted to mounted services":
-// DiscordService has a floor declared before its implementation exists.
+// DiscordService has a floor declared before its implementation is mounted.
 func TestDiscordServiceIsGuardedButNotMounted(t *testing.T) {
 	clearance, declared := interceptor.DefaultRequirements()[ginbotv1connect.DiscordServiceSetDiscordActivityTypeProcedure]
 	if !declared {

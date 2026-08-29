@@ -22,24 +22,16 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// The package logs unconditionally; give it a logger rather than a nil pointer.
+	// log.Z stays nil until a binary calls log.InitializeLogger.
 	log.Z = zap.NewNop()
 	log.S = log.Z.Sugar()
 	m.Run()
 }
 
-// actionReminderID is the id every action built by action() carries, so a
-// dispatch test can assert the payload the handler received is the one that was
-// sent rather than merely non-nil.
 const actionReminderID = "0192f000-0000-7000-8000-000000000001"
 
-// action builds a server-pushed action carrying a populated reminder_delivery
-// arm.
-//
-// The arm is set rather than left empty because dispatch's job is to hand the
-// WHOLE message to the handler untouched: with no payload at all, a dispatch
-// that passed a freshly built message instead of the received one would still
-// satisfy every assertion here.
+// action carries a populated reminder_delivery arm, so a dispatch passing a
+// freshly built message instead of the received one is caught.
 func action(t *testing.T, clientAction pb.ClientAction) *pb.OpenClientActionStreamResp {
 	t.Helper()
 
@@ -54,8 +46,7 @@ func action(t *testing.T, clientAction pb.ClientAction) *pb.OpenClientActionStre
 	}.Build()
 }
 
-// actionWithoutPayload builds an action whose oneof arm is UNSET, which is a
-// representable message and therefore an input dispatch has to carry.
+// actionWithoutPayload leaves the oneof arm unset.
 func actionWithoutPayload(t *testing.T, clientAction pb.ClientAction) *pb.OpenClientActionStreamResp {
 	t.Helper()
 
@@ -65,14 +56,9 @@ func actionWithoutPayload(t *testing.T, clientAction pb.ClientAction) *pb.OpenCl
 	}.Build()
 }
 
-// observeLogs installs a recording logger for one test and restores the previous
-// one.
-//
-// log.Z is a package global read without synchronisation by every goroutine this
-// package starts, so the restore is not tidiness: an assignment that outlives its
-// test is the write half of a data race against any reconnect loop or server
-// handler still unwinding. Which is also why every test here that starts such a
-// goroutine joins it before returning.
+// observeLogs installs a recording logger for one test. log.Z is read without
+// synchronisation by the package's goroutines, so a test that starts one must
+// join it before returning or the reassignment races.
 func observeLogs(t *testing.T) *observer.ObservedLogs {
 	t.Helper()
 
@@ -89,11 +75,7 @@ func observeLogs(t *testing.T) *observer.ObservedLogs {
 	return logs
 }
 
-// durationFields returns every time.Duration an entry carries.
-//
-// Read by value rather than by field name so the log line stays free to be
-// reworded or its fields renamed; retry_in is the only Duration on this line, and
-// what must not change is that the delay is recoverable from the record.
+// durationFields reads by value, not field name, so the log line can be reworded.
 func durationFields(entry observer.LoggedEntry) []time.Duration {
 	var durations []time.Duration
 	for _, value := range entry.ContextMap() {
@@ -105,24 +87,16 @@ func durationFields(entry observer.LoggedEntry) []time.Duration {
 	return durations
 }
 
-// testIdentity is the StreamIdentity every reconnect-loop test in this file
-// drives the loop with. Below runOnce's ensure/open seam, nothing but a stubbed
-// ensure func or a real ensureRegistered call ever reads these fields, so a
-// single fixed value is enough everywhere the ensure func itself is faked out
-// directly.
 var testIdentity = StreamIdentity{
 	Platform:    pb.Platform_PLATFORM_DISCORD,
 	PlatformUID: "caller-uid",
 	Username:    "caller",
 }
 
-// alwaysEnsure is an `ensure` that always succeeds, standing in for a
-// successful ensureRegistered call in every test that is not itself about
-// registration.
+// alwaysEnsure is an `ensure` that always succeeds.
 func alwaysEnsure(context.Context) error { return nil }
 
-// waitForCount blocks until count() reports at least want, so a test can act on
-// the loop being parked in its wait rather than guessing.
+// waitForCount blocks until count() reports at least want.
 func waitForCount(t *testing.T, count func() int, want int) {
 	t.Helper()
 
@@ -137,20 +111,15 @@ func waitForCount(t *testing.T, count func() int, want int) {
 	t.Fatalf("count reached %d within the deadline, want at least %d", count(), want)
 }
 
-// fakeActionStream is the in-memory double for actionStream — the seam runOnce
-// reaches the transport through now that Connect's own
-// *connect.BidiStreamForClient cannot be constructed outside
-// connectrpc.com/connect (its only constructor is reached by dialing a real
-// HTTP endpoint; see reverse_h2c_test.go for the one test in this package that
-// does that instead of faking this interface).
+// fakeActionStream is the in-memory double for actionStream;
+// *connect.BidiStreamForClient cannot be constructed without a real server.
 type fakeActionStream struct {
 	// sendErr breaks the registration message on a stream that did open.
 	sendErr error
 
 	mu   sync.Mutex
 	sent []*pb.OpenClientActionStreamReq
-	// actions are delivered in order, then recvErr ends the stream. recvErr is
-	// what runOnce has to classify.
+	// actions are delivered in order, then recvErr ends the stream.
 	actions []*pb.OpenClientActionStreamResp
 	recvErr error
 
@@ -180,10 +149,8 @@ func (f *fakeActionStream) Receive() (*pb.OpenClientActionStreamResp, error) {
 		return next, nil
 	}
 
-	// io.EOF rather than the zero value of recvErr. runOnce's receive loop only
-	// ends on an error, so (nil, nil) makes it dispatch nil messages forever —
-	// and a test that populated actions and forgot the terminal error would hang
-	// the suite for its whole timeout instead of failing. A stream always ends.
+	// io.EOF, not (nil, nil): the receive loop only ends on an error, so a
+	// missing terminal error would hang the suite instead of failing.
 	if f.recvErr == nil {
 		return nil, io.EOF
 	}
@@ -212,37 +179,21 @@ func (f *fakeActionStream) sentMessages() []*pb.OpenClientActionStreamReq {
 }
 
 // streamAttempt scripts one connection attempt: whether the registration
-// message gets through, and how the stream then ends.
-//
-// There is deliberately no field for "the open call itself failed". Connect's
-// OpenClientActionStream(ctx) returns a *connect.BidiStreamForClient directly
-// with no error at all — the stream is opened lazily, and a transport failure
-// only ever surfaces later, from Send or Receive. That is the one seam the move
-// to connectrpc.com/connect actually changed here: streamUnreachable is now
-// reached only through ensureRegistered failing (before open is even attempted)
-// or through Send failing on a stream that did open. See
-// TestRunOnceReportsAnUnreachableServerWhenEnsureRegisteredFails and
-// TestRunOnceReportsAnUnreachableServerWhenSendFails.
+// message gets through, and how the stream then ends. There is no "open failed"
+// field: OpenClientActionStream has no error return, so streamUnreachable is
+// reached only via ensureRegistered or Send failing.
 type streamAttempt struct {
 	// sendErr breaks the registration message on a stream that did open.
 	sendErr error
-	// recvErr is the stream's terminal status, which is what recvOutcome
-	// classifies. Left unset it is io.EOF, an orderly close by the server.
+	// recvErr is the stream's terminal status; unset it is io.EOF.
 	recvErr error
-	// actions are delivered by Receive, in order, before recvErr ends the
-	// stream.
+	// actions are delivered by Receive, in order, before recvErr ends the stream.
 	actions []*pb.OpenClientActionStreamResp
 }
 
-// scriptedStreams is the seam runOnce reaches the server through. It plays one
-// streamAttempt per connection attempt, repeating the last entry once the
-// script runs out.
-//
-// Repeating rather than exhausting is what lets a test describe "every attempt
-// fails" as a single entry, and it means the number of attempts is bounded by
-// the caller's context rather than by the length of the script — so a loop
-// that runs away fails on the caller's deadline instead of on an index panic
-// here.
+// scriptedStreams plays one streamAttempt per connection attempt, repeating the
+// last entry once the script runs out so "every attempt fails" is a single entry
+// and a runaway loop fails on the caller's deadline, not an index panic.
 type scriptedStreams struct {
 	script []streamAttempt
 
@@ -251,10 +202,8 @@ type scriptedStreams struct {
 	streams  []*fakeActionStream
 }
 
-// opener returns an actionStreamOpener backed by this script. A fresh
-// *fakeActionStream is returned per call: actions are consumed as they are
-// delivered, so a shared stream would replay a truncated script on the second
-// reconnect.
+// opener returns an actionStreamOpener backed by this script, with a fresh
+// *fakeActionStream per call so consumed actions do not carry across reconnects.
 func (s *scriptedStreams) opener() actionStreamOpener {
 	return func(context.Context) actionStream {
 		s.mu.Lock()
@@ -283,8 +232,8 @@ func (s *scriptedStreams) lastStream() *fakeActionStream {
 	return s.streams[len(s.streams)-1]
 }
 
-// countingEnsure is a scriptable `ensure` func: it always reports how many
-// times it was called, and either always succeeds or always fails with err.
+// countingEnsure is an `ensure` func that counts calls and either always
+// succeeds or always fails with err.
 type countingEnsure struct {
 	err error
 
@@ -307,8 +256,6 @@ func (c *countingEnsure) callCount() int {
 	return c.calls
 }
 
-// ── dispatch ──────────────────────────────────────────────────────────────────
-
 func TestDispatchInvokesRegisteredHandler(t *testing.T) {
 	var got *pb.OpenClientActionStreamResp
 	calls := 0
@@ -329,10 +276,7 @@ func TestDispatchInvokesRegisteredHandler(t *testing.T) {
 	if got == nil {
 		t.Fatal("handler received a nil action")
 	}
-	// The arm AND its contents. dispatch routes on client_action alone and never
-	// looks inside the payload, so what is asserted here is that it hands the
-	// message through intact — the handler is the only thing entitled to decide
-	// what the arm means.
+	// dispatch must hand the received message through intact, arm and contents.
 	if !got.HasReminderDelivery() {
 		t.Fatalf("handler received payload arm %v, want reminder_delivery", got.WhichPayload())
 	}
@@ -341,16 +285,7 @@ func TestDispatchInvokesRegisteredHandler(t *testing.T) {
 	}
 }
 
-// TestDispatchDeliversAnActionWithNoPayloadArm.
-//
-// A oneof can be unset, so this is a well-formed message rather than a corrupt
-// one, and dispatch has to deliver it like any other: it is the HANDLER's job to
-// decide that an unset arm is unusable, and it cannot do that for an action
-// dispatch dropped or panicked on.
-//
-// dispatch's own recover() does not make this test redundant. A recovered panic
-// is still a lost delivery and a stack trace in the log, and the point here is
-// that there is nothing to recover from.
+// An unset oneof arm is well-formed, so dispatch must deliver it like any other.
 func TestDispatchDeliversAnActionWithNoPayloadArm(t *testing.T) {
 	var got *pb.OpenClientActionStreamResp
 	calls := 0
@@ -367,8 +302,6 @@ func TestDispatchDeliversAnActionWithNoPayloadArm(t *testing.T) {
 		t.Fatal("the fixture set a payload arm; this test is about an action with none")
 	}
 
-	// No recover() installed: a panic escaping dispatch fails the test here, and
-	// takes the whole client process down in production.
 	dispatch(context.Background(), in, handlers)
 
 	if calls != 1 {
@@ -385,7 +318,6 @@ func TestDispatchDeliversAnActionWithNoPayloadArm(t *testing.T) {
 	}
 }
 
-// An action with no handler must not invoke an unrelated one, and must not panic.
 func TestDispatchWithNoRegisteredHandler(t *testing.T) {
 	called := false
 	handlers := ActionHandlers{
@@ -402,7 +334,6 @@ func TestDispatchWithNoRegisteredHandler(t *testing.T) {
 }
 
 func TestDispatchWithEmptyRegistry(t *testing.T) {
-	// Must not panic on a nil map.
 	dispatch(context.Background(), action(t, pb.ClientAction_CLIENT_ACTION_SEND_TEST), nil)
 }
 
@@ -430,21 +361,7 @@ func TestDispatchRoutesEachActionToItsOwnHandler(t *testing.T) {
 }
 
 // RunClientActionStream must return on cancellation rather than sleeping out the
-// delay it is parked in, so a client shutting down does not hold the process open
-// for up to reconnectMaxBackoff.
-//
-// The version of this test that this replaces installed a nil
-// ReverseServiceClient and claimed that made runOnce "fail immediately". It does
-// not fail, it PANICS — a nil interface has no OpenClientActionStream to call —
-// so the panic unwound out of the loop on the first iteration, the test's own
-// recover() swallowed it, done closed, and the select this test is named after
-// was never reached. Deleting the ctx.Done() arm outright still passed it.
-//
-// Hence the scripted ensure func below, and hence no recover(): a panic here is
-// a defect and must fail rather than be absorbed. ensureRegistered failing
-// (rather than a stream failing to open) is what drives runOnce to return an
-// error without ever calling open — Connect's OpenClientActionStream(ctx) has
-// no error return of its own to fail with.
+// delay it is parked in.
 func TestRunClientActionStreamStopsOnContextCancel(t *testing.T) {
 	ensure := &countingEnsure{err: errors.New("registration refused")}
 	streams := &scriptedStreams{}
@@ -457,16 +374,12 @@ func TestRunClientActionStreamStopsOnContextCancel(t *testing.T) {
 		runClientActionStream(ctx, streams.opener(), ensure.fn(), testIdentity, nil, time.After)
 	}()
 
-	// Cancelled only once an attempt has actually been made. Cancelling first
-	// would return through the ctx.Err() check at the top of the loop, a
-	// different and much weaker path.
+	// Cancel only after an attempt: cancelling first exits through the loop's
+	// top ctx.Err() check, a weaker path.
 	waitForCount(t, ensure.callCount, 1)
 	cancel()
 
-	// Measured against the delay the loop is actually sitting in. "Returned
-	// within 5 seconds" cannot tell a cancellation apart from the delay simply
-	// elapsing, which is why the previous shape of this assertion proved nothing
-	// even once the panic was gone.
+	// Measured against the delay the loop is sitting in.
 	firstDelay := nextBackoff(reconnectMinBackoff, streamUnreachable)
 
 	select {
@@ -475,9 +388,8 @@ func TestRunClientActionStreamStopsOnContextCancel(t *testing.T) {
 		t.Errorf("RunClientActionStream did not return within %v of cancellation; it is parked in a %v delay, so it is waiting that out instead of selecting on ctx.Done()",
 			firstDelay/2, firstDelay)
 
-		// Joined even on failure. A goroutine still inside the loop logs through
-		// the package-global log.Z, which other tests in this file assign — the
-		// exact race that leaking handlers caused here before.
+		// Joined even on failure: a leaked goroutine logging through log.Z would
+		// race the next test that reassigns it.
 		select {
 		case <-done:
 		case <-time.After(4 * firstDelay):
@@ -485,32 +397,20 @@ func TestRunClientActionStreamStopsOnContextCancel(t *testing.T) {
 		}
 	}
 
-	// One attempt, not two: a loop that waited its delay out and went round
-	// again would have called ensure a second time on the way past.
 	if got := ensure.callCount(); got != 1 {
 		t.Errorf("ensureRegistered was attempted %d times after one cancellation, want 1", got)
 	}
-	// And no stream was ever opened: ensureRegistered failing must short-circuit
-	// before runOnce reaches open at all.
 	if got := streams.attemptCount(); got != 0 {
 		t.Errorf("a stream was opened %d times despite ensureRegistered failing first", got)
 	}
 }
 
-// ── The reconnect delays the loop actually waits ─────────────────────────────
-//
-// Every backoff assertion in this file used to be on nextBackoff in isolation,
-// which is why the whole ladder shifted by one full step — nextBackoff moved from
-// after the wait to before it — without a single test noticing. These drive the
-// loop itself through its injected clock.
-
-// recordingClock stands in for time.After inside runClientActionStream. It
-// records the delay the loop asked for and hands back a channel that has already
-// fired, so the schedule can be asserted at full speed.
+// recordingClock stands in for time.After inside runClientActionStream: it
+// records the delay asked for and returns an already-fired channel, so the
+// schedule can be asserted at full speed.
 type recordingClock struct {
 	// stopAfter bounds the run: the context is cancelled once this many delays
-	// have been recorded. Without it a loop that never terminates would spin at
-	// full speed rather than fail.
+	// have been recorded.
 	stopAfter int
 	stop      func()
 
@@ -541,8 +441,7 @@ func (c *recordingClock) recorded() []time.Duration {
 }
 
 // driveReconnects runs the reconnect loop over a scripted sequence of stream
-// outcomes (registration always succeeds via alwaysEnsure) and returns the
-// delays it actually waited, in order.
+// outcomes and returns the delays it waited, in order.
 func driveReconnects(t *testing.T, script []streamAttempt, delays int) []time.Duration {
 	t.Helper()
 
@@ -561,9 +460,6 @@ func driveReconnects(t *testing.T, script []streamAttempt, delays int) []time.Du
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		// Nothing here waits on a real clock, so this deadline can only be hit
-		// by a loop that ignores its context — which must fail rather than run
-		// until the suite times out.
 		t.Fatalf("runClientActionStream did not return after %d recorded delays; the loop is not bounded by its context", delays)
 	}
 
@@ -571,16 +467,9 @@ func driveReconnects(t *testing.T, script []streamAttempt, delays int) []time.Du
 }
 
 // TestTheReconnectDelaysTheLoopWaits pins the schedule, exact values and all.
-//
-// The exact ladder rather than the properties, because the properties held
-// throughout: the delays grew, they capped, and an established stream reset them.
-// What changed unnoticed was WHICH delay each attempt got, and only the literal
-// sequence catches that.
 func TestTheReconnectDelaysTheLoopWaits(t *testing.T) {
-	// unreachable: the stream "opened" (fakeActionStream always does — Connect's
-	// OpenClientActionStream has no error return of its own) but the
-	// registration Send failed, exactly as a connection that never really came
-	// up would.
+	// unreachable: the stream opened but the registration Send failed, as a
+	// connection that never came up would.
 	unreachable := streamAttempt{sendErr: errors.New("connection refused")}
 	dropped := streamAttempt{recvErr: connect.NewError(connect.CodeUnavailable, errors.New("transport is closing"))}
 	refused := streamAttempt{recvErr: connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams"))}
@@ -591,10 +480,7 @@ func TestTheReconnectDelaysTheLoopWaits(t *testing.T) {
 		want   []time.Duration
 	}{
 		{
-			// Starts at 2s, not the 1s reconnectMinBackoff: nextBackoff is
-			// applied before the wait, so the first failure is already escalated
-			// once by the time anything is waited. Accepted deliberately, and
-			// pinned here so it cannot drift again in either direction.
+			// Starts at 2s, not 1s: nextBackoff is applied before the wait.
 			name:   "an unreachable server escalates to the cap and holds there",
 			script: []streamAttempt{unreachable},
 			want: []time.Duration{
@@ -607,11 +493,8 @@ func TestTheReconnectDelaysTheLoopWaits(t *testing.T) {
 			},
 		},
 		{
-			// The ratchet. One healthy stream has to clear the accumulated
-			// penalty on the NEXT delay, not the one after it, or a client that
-			// dropped a few times over its lifetime waits the maximum before
-			// every later reconnect however healthy the intervening connection
-			// was.
+			// One healthy stream clears the penalty on the NEXT delay, not the
+			// one after it.
 			name:   "an established stream resets the very next delay",
 			script: []streamAttempt{unreachable, unreachable, unreachable, dropped, unreachable, unreachable},
 			want: []time.Duration{
@@ -624,13 +507,9 @@ func TestTheReconnectDelaysTheLoopWaits(t *testing.T) {
 			},
 		},
 		{
-			// The defect this whole pass exists to fix, asserted where it bites.
-			// A refusal arrives as the terminal status of a stream that DID open,
-			// so classifying it as a healthy drop reset the delay and a client
-			// locked out by the registry cap retried once a second for as long as
-			// the lockout lasted. maxStreamClients' doc comment cites capped
-			// backoff as the reason refusing at 64 is safe; this is what makes
-			// that true.
+			// A refusal arrives as the terminal status of a stream that opened,
+			// so a healthy-drop classification would reset the delay and hammer
+			// the registry cap once a second.
 			name:   "a server-side refusal escalates instead of resetting",
 			script: []streamAttempt{refused},
 			want: []time.Duration{
@@ -652,8 +531,7 @@ func TestTheReconnectDelaysTheLoopWaits(t *testing.T) {
 				t.Errorf("the loop waited %v, want %v", got, tc.want)
 			}
 
-			// Saturation, not overrun. Checked on every delay rather than on the
-			// last, because a ladder that overshoots and is then clamped back
+			// Checked on every delay: a ladder that overshoots then clamps back
 			// looks identical at the end.
 			for i, delay := range got {
 				if delay > reconnectMaxBackoff {
@@ -665,8 +543,7 @@ func TestTheReconnectDelaysTheLoopWaits(t *testing.T) {
 }
 
 // A refused client must never come back to the floor, whatever the ladder is
-// retuned to. Stated separately from the exact schedule above so that a failure
-// says "the refusal reset the backoff" rather than "delay 4 differs".
+// retuned to.
 func TestARefusedClientsDelaysNeverReturnToTheFloor(t *testing.T) {
 	refused := streamAttempt{recvErr: connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams"))}
 
@@ -678,16 +555,9 @@ func TestARefusedClientsDelaysNeverReturnToTheFloor(t *testing.T) {
 	}
 }
 
-// retry_in is what an operator reads to decide whether a client is backing off
-// at all, and having a single point where the backoff transitions is most of why
-// it was moved before the wait. Split across the wait — a reset before it and an
-// escalation after it, which is what this replaced — the two disagree exactly
-// when it matters: the line said 8s while the loop went on to wait 1s, so a
-// client that had just recovered read as one still deep in backoff.
-//
-// The script therefore has to contain a recovery. Escalating failures alone
-// cannot tell the two orderings apart, because both log and wait the same value
-// on the same iteration.
+// The logged retry_in must equal the delay the loop then waits. The script needs
+// a recovery: escalating failures alone log and wait the same value regardless
+// of ordering.
 func TestTheLoggedRetryDelayIsTheDelayThenWaited(t *testing.T) {
 	logs := observeLogs(t)
 
@@ -709,14 +579,8 @@ func TestTheLoggedRetryDelayIsTheDelayThenWaited(t *testing.T) {
 	}
 }
 
-// ── The reconnect backoff ────────────────────────────────────────────────────
-//
-// These assert nextBackoff itself, independent of any client seam.
-
 // saturate drives nextBackoff with one outcome until it stops growing, checking
-// on every step that the cap is never exceeded rather than only that the final
-// value happens to equal it. maxSteps is a bound on a runaway loop, not a claim
-// about how many escalations the schedule takes.
+// the cap is never exceeded at each step. maxSteps only bounds a runaway loop.
 func saturate(t *testing.T, outcome streamOutcome) time.Duration {
 	t.Helper()
 
@@ -740,8 +604,7 @@ func saturate(t *testing.T, outcome streamOutcome) time.Duration {
 	return 0
 }
 
-// A client that cannot reach the server at all must not hammer it once a second
-// forever, which is what a delay that never grows amounts to.
+// An unreachable server must not be hammered once a second forever.
 func TestBackoffEscalatesAndSaturatesWhenTheServerIsUnreachable(t *testing.T) {
 	if got := nextBackoff(reconnectMinBackoff, streamUnreachable); got <= reconnectMinBackoff {
 		t.Errorf("nextBackoff(%v, streamUnreachable) = %v, want a longer delay", reconnectMinBackoff, got)
@@ -756,10 +619,7 @@ func TestBackoffEscalatesAndSaturatesWhenTheServerIsUnreachable(t *testing.T) {
 	}
 }
 
-// Regression test for the backoff ratchet: the delay was initialised once
-// outside the loop and only ever doubled, so a client that had dropped a few
-// times waited the 30s maximum before every later reconnect no matter how
-// healthy the intervening stream was. Only an established stream clears it.
+// Only an established stream clears an accumulated backoff.
 func TestBackoffResetsAfterAnEstablishedStream(t *testing.T) {
 	saturated := saturate(t, streamUnreachable)
 
@@ -772,12 +632,8 @@ func TestBackoffResetsAfterAnEstablishedStream(t *testing.T) {
 	}
 }
 
-// The registry cap refuses a client with ResourceExhausted, and that error
-// arrives from Recv AFTER the stream was established. Read as a healthy
-// connection it RESET the delay, so a refused client retried once per second
-// indefinitely — the precise hammering that maxStreamClients' doc comment cites
-// capped backoff as the reason it is safe to refuse. This test is what makes
-// that claim true.
+// A ResourceExhausted refusal arrives after the stream was established; read as
+// a healthy drop it would reset the delay and retry once a second forever.
 func TestBackoffEscalatesOnAServerSideRejection(t *testing.T) {
 	first := nextBackoff(reconnectMinBackoff, streamRejected)
 	if first == reconnectMinBackoff {
@@ -793,29 +649,18 @@ func TestBackoffEscalatesOnAServerSideRejection(t *testing.T) {
 	}
 }
 
-// ── How runOnce classifies the end of a stream ───────────────────────────────
-
-// TestRunOnceClassifiesAnEndedStream: the whole backoff decision hangs on this
-// one value, so a code sorted into the wrong bucket is a live incident rather
-// than a cosmetic mislabelling.
+// The backoff decision hangs on this classification.
 func TestRunOnceClassifiesAnEndedStream(t *testing.T) {
 	tests := []struct {
 		name    string
 		recvErr error
 		want    streamOutcome
 	}{
-		// The registry cap's refusal. Sorted as established it resets the delay,
-		// which is what made a refused client retry once a second.
 		{"registry at capacity", connect.NewError(connect.CodeResourceExhausted, errors.New("too many client action streams")), streamRejected},
-		// A refusal on the merits. Retrying hard will not change the answer.
 		{"caller refused", connect.NewError(connect.CodePermissionDenied, errors.New("not a platform client")), streamRejected},
-		// An older peer, or one that never registered ReverseService at all.
 		{"stream not served", connect.NewError(connect.CodeUnimplemented, errors.New("unknown service")), streamRejected},
-		// A caller resolved but not yet fit to hold a stream — e.g. not
-		// registered. Retrying sooner does not change that either.
 		{"caller not yet registered", connect.NewError(connect.CodeFailedPrecondition, errors.New("caller is not registered")), streamRejected},
-		// A genuine drop: the connection worked, so the next attempt should not
-		// be penalised for the last one.
+		// A genuine drop must not penalise the next attempt.
 		{"transport dropped", connect.NewError(connect.CodeUnavailable, errors.New("transport is closing")), streamEstablished},
 		{"server closed the stream", io.EOF, streamEstablished},
 	}
@@ -833,11 +678,7 @@ func TestRunOnceClassifiesAnEndedStream(t *testing.T) {
 	}
 }
 
-// A registration that never gets the chance to reach the server — because
-// ensureRegistered refused it first — never established anything, so the
-// attempt must be penalised rather than treated as a healthy connection that
-// happened to drop. This is the first of the two ways streamUnreachable is
-// reached now that OpenClientActionStream itself cannot fail to "open".
+// ensureRegistered failing establishes nothing, so the attempt is unreachable.
 func TestRunOnceReportsAnUnreachableServerWhenEnsureRegisteredFails(t *testing.T) {
 	ensureErr := errors.New("registration refused")
 	ensure := &countingEnsure{err: ensureErr}
@@ -855,10 +696,7 @@ func TestRunOnceReportsAnUnreachableServerWhenEnsureRegisteredFails(t *testing.T
 	}
 }
 
-// The registration message is what makes the stream usable at all — without it
-// the server does not know which platform to route here — so a stream that
-// opened but could not carry it was never established either. This is the
-// second of the two ways streamUnreachable is reached.
+// A stream that opened but could not carry the hello Send was never established.
 func TestRunOnceReportsAnUnreachableServerWhenSendFails(t *testing.T) {
 	sendErr := errors.New("broken pipe")
 	streams := &scriptedStreams{script: []streamAttempt{{sendErr: sendErr}}}
@@ -872,24 +710,13 @@ func TestRunOnceReportsAnUnreachableServerWhenSendFails(t *testing.T) {
 	}
 }
 
-// TestRunOnceSendsExactlyOneEmptyHelloToOpenTheStream replaces the
-// pre-stage-5 TestRunOnceSendsARegistrationCarryingTheIdentityPlatform.
-// OpenClientActionStreamReq carries no fields at all now — identity moved to
-// the ginbot-platform-enum header, which callermeta.NewClientInterceptor
-// stamps from the ctx RunClientActionStream builds (see its own comment) —
-// so there is no longer a platform_enum on the message for this test to read.
-// What is still true, and worth pinning, is that runOnce still sends exactly
-// one message to open the stream: connect issues the underlying HTTP request
-// lazily, on the first Send, so a client that stopped sending anything would
-// never reach the server handler at all. See runOnce's own comment for why
-// this Send is a hello and not a registration.
+// runOnce sends exactly one hello: connect issues the HTTP request lazily on
+// the first Send, so without it the handler is never reached.
 func TestRunOnceSendsExactlyOneEmptyHelloToOpenTheStream(t *testing.T) {
 	streams := &scriptedStreams{script: []streamAttempt{{}}}
 
-	// A script entry with no recvErr and no actions ends the stream with
-	// io.EOF, which runOnce reports as streamEstablished but still returns a
-	// non-nil error for ("server closed the action stream") — an orderly
-	// close is still an event worth logging. Only the outcome matters here.
+	// No recvErr and no actions ends the stream with io.EOF, reported as
+	// streamEstablished; only the outcome matters here.
 	outcome, _ := runOnce(context.Background(), streams.opener(), alwaysEnsure, testIdentity, nil)
 	if outcome != streamEstablished {
 		t.Fatalf("runOnce = %s, want streamEstablished for an orderly close", outcome)
@@ -911,11 +738,8 @@ func TestRunOnceSendsExactlyOneEmptyHelloToOpenTheStream(t *testing.T) {
 	}
 }
 
-// ── ensureRegistered ─────────────────────────────────────────────────────────
-
-// fakeUserClient is a ginbotv1connect.UserServiceClient double whose only
-// implemented method is Register; anything else calling through the embedded
-// nil interface panics loudly rather than returning a zero value.
+// fakeUserClient implements only Register; any other call panics through the
+// embedded nil interface.
 type fakeUserClient struct {
 	ginbotv1connect.UserServiceClient
 
@@ -944,8 +768,6 @@ func (f *fakeUserClient) callCount() int {
 	return f.calls
 }
 
-// TestEnsureRegisteredTreatsAlreadyExistsAsSuccess: a client whose account was
-// created on a previous run must not treat that as a failure to reconnect over.
 func TestEnsureRegisteredTreatsAlreadyExistsAsSuccess(t *testing.T) {
 	fake := &fakeUserClient{err: connect.NewError(connect.CodeAlreadyExists, errors.New("this platform identity is already registered"))}
 	c := &Clients{User: fake}
@@ -958,21 +780,8 @@ func TestEnsureRegisteredTreatsAlreadyExistsAsSuccess(t *testing.T) {
 	}
 }
 
-// TestEnsureRegisteredRunsOnEveryAttempt pins the deliberate absence of a
-// "already registered" latch.
-//
-// The latch is the obvious optimisation and an earlier version had one. It is
-// wrong, and the failure it produces is silent and permanent: the account can
-// go away underneath a long-lived client — `docker compose down -v`, a
-// database restore, an operator deleting the row — after which the server
-// refuses the stream with FailedPrecondition, recvOutcome correctly stops the
-// reconnect loop hot-looping, and a latched client never re-registers. This
-// was reproduced against a real server: four stream refusals, one Register
-// call, backoff pinned at its 30s ceiling, reminder delivery dead until
-// someone restarted the process.
-//
-// Re-registering costs one unary call per stream ATTEMPT, and attempts only
-// happen when the stream drops.
+// ensureRegistered must not latch on success: an account deleted underneath a
+// long-lived client must be re-registerable on the next reconnect.
 func TestEnsureRegisteredRunsOnEveryAttempt(t *testing.T) {
 	fake := &fakeUserClient{}
 	c := &Clients{User: fake}
@@ -989,16 +798,12 @@ func TestEnsureRegisteredRunsOnEveryAttempt(t *testing.T) {
 	}
 }
 
-// TestARecoveredRegistrationReopensTheStream is the end-to-end statement of
-// the property above, through runOnce rather than ensureRegistered alone: a
-// server that refuses the stream because the caller's row went away must be
-// reconnectable once registration is redone, with no process restart.
+// A stream refused because the caller's row went away must reopen once
+// registration is redone, with no process restart.
 func TestARecoveredRegistrationReopensTheStream(t *testing.T) {
 	fake := &fakeUserClient{}
 	c := &Clients{User: fake}
 
-	// First attempt: registered, but the server has forgotten the account and
-	// refuses the stream exactly as ClearanceInterceptor.resolveCaller does.
 	// ensureRegistered takes the identity; runOnce's seam does not, so bind it
 	// the way RunClientActionStream does.
 	ensure := func(ctx context.Context) error { return c.ensureRegistered(ctx, testIdentity) }
@@ -1015,8 +820,7 @@ func TestARecoveredRegistrationReopensTheStream(t *testing.T) {
 		t.Fatalf("first attempt outcome = %v, want %v", outcome, streamRejected)
 	}
 
-	// Second attempt: ensureRegistered must run AGAIN — that is the whole
-	// recovery mechanism — and the stream must then open.
+	// Second attempt: ensureRegistered must run again and the stream must open.
 	handled := make(chan struct{}, 1)
 	handlers := ActionHandlers{
 		pb.ClientAction_CLIENT_ACTION_SEND_TEST: func(context.Context, *pb.OpenClientActionStreamResp) {
@@ -1038,9 +842,7 @@ func TestARecoveredRegistrationReopensTheStream(t *testing.T) {
 	}
 }
 
-// TestEnsureRegisteredRetriesAfterAFailure: a failure is not "registered", so
-// the NEXT call must try again rather than silently treating an unregistered
-// client as done — the no-op memoisation above must only latch on success.
+// A failed ensureRegistered must be retried on the next call.
 func TestEnsureRegisteredRetriesAfterAFailure(t *testing.T) {
 	fake := &fakeUserClient{err: connect.NewError(connect.CodeUnavailable, errors.New("no route to server"))}
 	c := &Clients{User: fake}
@@ -1063,22 +865,13 @@ func TestEnsureRegisteredRetriesAfterAFailure(t *testing.T) {
 	}
 }
 
-// TestClientsCloseOnALiteralConstructedValueDoesNotPanic: a *Clients built as
-// a literal with only some fields set — the supported construction Options
-// documents for injecting fakes — must be safe to Close even though it never
-// went through Dial and therefore never built whatever unexported transport
-// state a dialled *Clients would carry.
+// A *Clients literal that never went through Dial must be safe to Close.
 func TestClientsCloseOnALiteralConstructedValueDoesNotPanic(t *testing.T) {
 	c := &Clients{}
 	c.Close()
 }
 
-// ── A panicking action handler ───────────────────────────────────────────────
-
-// dispatchNoPanic calls dispatch and reports an escaping panic as an ordinary
-// test failure. Without the recover here a regression takes the whole test
-// binary down — which is exactly what it does to the client process in
-// production, and exactly why it is worth asserting.
+// dispatchNoPanic calls dispatch and reports an escaping panic as a test failure.
 func dispatchNoPanic(t *testing.T, in *pb.OpenClientActionStreamResp, handlers ActionHandlers) {
 	t.Helper()
 
@@ -1091,9 +884,7 @@ func dispatchNoPanic(t *testing.T, in *pb.OpenClientActionStreamResp, handlers A
 	dispatch(context.Background(), in, handlers)
 }
 
-// dispatch calls handlers inline on the receive loop with no recover above it
-// anywhere, so a single malformed action used to kill the whole client process
-// instead of failing one delivery.
+// A panicking handler must not escape dispatch and kill the client process.
 func TestDispatchSurvivesAPanickingHandler(t *testing.T) {
 	handlers := ActionHandlers{
 		pb.ClientAction_CLIENT_ACTION_SEND_TEST: func(context.Context, *pb.OpenClientActionStreamResp) {
@@ -1104,9 +895,7 @@ func TestDispatchSurvivesAPanickingHandler(t *testing.T) {
 	dispatchNoPanic(t, action(t, pb.ClientAction_CLIENT_ACTION_SEND_TEST), handlers)
 }
 
-// A recover that leaves something wedged is barely better than the panic. The
-// failure must stay confined to its own delivery: the next action still gets
-// handled, and repeating the bad one does not degrade further.
+// A handler panic must stay confined to its own delivery.
 func TestDispatchStillDeliversAfterAPanickingHandler(t *testing.T) {
 	notified := 0
 	handlers := ActionHandlers{
@@ -1129,10 +918,8 @@ func TestDispatchStillDeliversAfterAPanickingHandler(t *testing.T) {
 	}
 }
 
-// A silently swallowed panic is a defect that never gets diagnosed: the action
-// vanishes and nothing anywhere says why. Asserted on level and on the recovered
-// value surviving into the record, not on the wording or the field names, so the
-// message stays free to change.
+// A recovered panic must be logged with its value, or the lost action is
+// undiagnosable.
 func TestDispatchReportsARecoveredPanic(t *testing.T) {
 	const panicValue = "handler blew up"
 
@@ -1150,8 +937,7 @@ func TestDispatchReportsARecoveredPanic(t *testing.T) {
 		t.Fatal("a recovered handler panic produced no log entry at warn level or above")
 	}
 
-	// "Something panicked" with the value dropped is not much better than
-	// silence: it is the value that says which handler to go and look at.
+	// The value is what says which handler to look at.
 	if recorded := fmt.Sprint(logs.All()); !strings.Contains(recorded, panicValue) {
 		t.Errorf("the recovered panic value %q is absent from the log record: %s", panicValue, recorded)
 	}

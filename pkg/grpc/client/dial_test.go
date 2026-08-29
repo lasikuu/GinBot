@@ -5,29 +5,9 @@ import (
 	"testing"
 )
 
-// ── validateBaseURL / Dial's base URL rejection ──────────────────────────────
-//
-// validateBaseURL exists so a malformed base URL is refused at Dial time
-// rather than accepted and then failing every subsequent RPC with no
-// indication why (see its doc comment in dial.go). Nothing in the repository
-// called Dial before this file, so nothing had ever exercised this check —
-// dialBadURLCases below drives it directly through Dial rather than in
-// isolation, so a regression that broke the WIRING between Dial and
-// validateBaseURL (rather than validateBaseURL itself) would still be caught.
-
-// realWorldMistakeBaseURL reproduces the misconfiguration validateBaseURL's
-// own doc comment cites: GINBOT_GRPC_HOST=http://foo, run through the SAME
-// construction internal/config.GRPCServerOptions.ClientBaseURL uses —
-// "http://" + net.JoinHostPort(host, port) — rather than the doc comment's
-// illustrative (and slightly simplified) "http://http://foo:50051".
-//
-// net.JoinHostPort brackets a host containing a colon, the way a literal
-// IPv6 address needs to be bracketed, and "http://foo" contains one — from
-// its own "http:" prefix. So the actual string produced by this exact
-// misconfiguration is "http://[http://foo]:50051", not the unbracketed
-// doubled-scheme form the comment shows; pkg/grpc/client is deliberately
-// isolated from internal/config (see dial.go's package doc), so this
-// reproduces that construction by hand rather than importing it.
+// realWorldMistakeBaseURL reproduces GINBOT_GRPC_HOST=http://foo run through the
+// "http://" + net.JoinHostPort(host, port) construction config uses, which
+// brackets the embedded colon to "http://[http://foo]:50051".
 func realWorldMistakeBaseURL() string {
 	return "http://" + net.JoinHostPort("http://foo", "50051")
 }

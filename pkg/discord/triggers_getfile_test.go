@@ -14,25 +14,12 @@ import (
 	"github.com/lasikuu/GinBot/pkg/storage"
 )
 
-// triggerPlaybackResponse's own GetFile consumption — item 10 of the stage 5
-// test report. GetFile stopped being unary this stage: it now streams one
-// meta chunk followed by content chunks, and the client (this file) drains
-// them, bounding the total and reassembling the file in order.
-//
-// fakeTriggerClient (triggers_test.go) cannot cover this: its Register/Create/
-// Update/List/GetTriggerStats methods return the ordinary connect.Response
-// shape, but GetFile returns *connect.ServerStreamForClient[pb.GetFileChunk]
-// — a concrete struct with no exported constructor and no exported fields
-// outside connectrpc.com/connect, the same reason reverse_test.go's fakeStream
-// was retired for OpenClientActionStream. There is no way to hand-build one.
-// So this file drives a REAL ginbotv1connect.TriggerServiceClient against a
-// small httptest server whose GetFile implementation is scripted per test —
-// the generated client type is an interface (client.Clients.Trigger), which
-// is exactly what lets a real client dialed at a local test server plug into
-// the SAME seam fakeTriggerClient uses for the unary methods.
+// GetFile is server-streaming, and its *connect.ServerStreamForClient has no
+// exported constructor, so fakeTriggerClient cannot fake it. These tests drive a
+// real TriggerServiceClient against an httptest server scripted per test.
 
-// scriptedGetFileHandler answers GetFile by sending exactly the scripted
-// chunks, then returning failAfter (nil for an orderly end).
+// scriptedGetFileHandler answers GetFile by sending the scripted chunks, then
+// returning failAfter (nil for an orderly end).
 type scriptedGetFileHandler struct {
 	ginbotv1connect.UnimplementedTriggerServiceHandler
 
@@ -49,11 +36,8 @@ func (h *scriptedGetFileHandler) GetFile(_ context.Context, _ *connect.Request[p
 	return h.failAfter
 }
 
-// newScriptedGetFileClient mounts handler behind a real httptest server and
-// returns a *client.Clients whose Trigger field is a genuine
-// ginbotv1connect.TriggerServiceClient dialed at it. Plain HTTP/1.1 is
-// enough: GetFile is server-streaming, not bidirectional, so nothing here
-// needs the h2c/ALPN machinery pkg/grpc/server/reverse_h2c_test.go exists for.
+// newScriptedGetFileClient dials a real TriggerServiceClient at an httptest
+// server. Plain HTTP/1.1 suffices: GetFile is server-streaming, not bidi.
 func newScriptedGetFileClient(t *testing.T, handler ginbotv1connect.TriggerServiceHandler) *client.Clients {
 	t.Helper()
 
@@ -67,26 +51,16 @@ func newScriptedGetFileClient(t *testing.T, handler ginbotv1connect.TriggerServi
 	return &client.Clients{Trigger: ginbotv1connect.NewTriggerServiceClient(srv.Client(), srv.URL)}
 }
 
-// getFileChunk builds a content chunk.
 func getFileChunk(content []byte) *pb.GetFileChunk {
 	return pb.GetFileChunk_builder{Content: content}.Build()
 }
 
-// getFileMetaChunk builds a meta chunk carrying the given TriggerFile.
 func getFileMetaChunk(file *pb.TriggerFile) *pb.GetFileChunk {
 	return pb.GetFileChunk_builder{Meta: pb.GetFileMeta_builder{File: file}.Build()}.Build()
 }
 
-// triggerFileSized is triggerFileFor with a truthful byte_size.
-//
-// The shared fixture hardcodes 16, which is fine everywhere it is used to
-// stand for "some file". It is not fine here: triggerPlaybackResponse now
-// compares the assembled length against the meta chunk's declared byte_size,
-// because a blob that is short on disk ends the stream with a clean EOF and
-// would otherwise be posted to the channel as if it were whole. Every meta
-// chunk in this file therefore has to declare what its scripted content
-// actually adds up to, and a test that wants the MISMATCH asserts it
-// deliberately.
+// triggerFileSized is triggerFileFor with a truthful byte_size, which
+// triggerPlaybackResponse compares against the assembled length.
 func triggerFileSized(fileID string, filename string, mimeType string, byteSize int64) *pb.TriggerFile {
 	return pb.TriggerFile_builder{
 		FileId:   &fileID,
@@ -97,15 +71,13 @@ func triggerFileSized(fileID string, filename string, mimeType string, byteSize 
 }
 
 // respWithFile builds a TryTriggerResp whose HasFile() is true, the fallback
-// display metadata triggerPlaybackResponse uses when the server's meta chunk
-// disagrees with — or never overrides — it.
+// display metadata used when the meta chunk never overrides it.
 func respWithFile(fallback *pb.TriggerFile) *pb.TryTriggerResp {
 	return pb.TryTriggerResp_builder{File: fallback}.Build()
 }
 
-// TestTriggerPlaybackResponseReassemblesChunksInOrder is the happy path:
-// content chunks arrive in order and are concatenated exactly, and the
-// attachment takes its name and MIME type from the server's meta chunk.
+// TestTriggerPlaybackResponseReassemblesChunksInOrder: content chunks are
+// concatenated in order and the attachment takes its metadata from the meta chunk.
 func TestTriggerPlaybackResponseReassemblesChunksInOrder(t *testing.T) {
 	metaFile := triggerFileSized(triggerFileID, "cat.png", "image/png", int64(len("first-second-third")))
 	handler := &scriptedGetFileHandler{
@@ -137,11 +109,8 @@ func TestTriggerPlaybackResponseReassemblesChunksInOrder(t *testing.T) {
 	}
 }
 
-// TestTriggerPlaybackResponseIgnoresAnUnsetChunkArm: a GetFileChunk whose
-// oneof is unset is ordinary input from a server this client does not fully
-// trust, not a bug — the same rule the reverse stream's payload oneof
-// carries. It must be skipped silently, with no panic and no aborted
-// playback, and the surrounding, well-formed chunks must still be delivered.
+// TestTriggerPlaybackResponseIgnoresAnUnsetChunkArm: an unset oneof is ordinary
+// input from an untrusted server and must be skipped without aborting playback.
 func TestTriggerPlaybackResponseIgnoresAnUnsetChunkArm(t *testing.T) {
 	unset := pb.GetFileChunk_builder{}.Build()
 	if unset.HasMeta() || unset.HasContent() {
@@ -159,9 +128,6 @@ func TestTriggerPlaybackResponseIgnoresAnUnsetChunkArm(t *testing.T) {
 	}
 	ctx := withClients(context.Background(), newScriptedGetFileClient(t, handler))
 
-	// No recover() installed: a panic escaping triggerPlaybackResponse fails
-	// this test by itself, and takes the whole client process down in
-	// production.
 	out, err := triggerPlaybackResponse(ctx, respWithFile(metaFile))
 	if err != nil {
 		t.Fatalf("triggerPlaybackResponse: %v", err)
@@ -174,10 +140,8 @@ func TestTriggerPlaybackResponseIgnoresAnUnsetChunkArm(t *testing.T) {
 	}
 }
 
-// TestTriggerPlaybackResponseIgnoresASecondMetaChunk: the contract is exactly
-// one meta chunk, first. A server that sends a second one anyway must not
-// panic or overwrite the display metadata already taken from the first — see
-// triggerPlaybackResponse's own `if meta == nil` guard.
+// TestTriggerPlaybackResponseIgnoresASecondMetaChunk: the first meta chunk wins;
+// a second must not overwrite the display metadata.
 func TestTriggerPlaybackResponseIgnoresASecondMetaChunk(t *testing.T) {
 	first := triggerFileSized(triggerFileID, "first.png", "image/png", int64(len("payload")))
 	second := triggerFileSized(triggerFileID, "second.png", "image/jpeg", int64(len("payload")))
@@ -206,19 +170,13 @@ func TestTriggerPlaybackResponseIgnoresASecondMetaChunk(t *testing.T) {
 	}
 }
 
-// TestTriggerPlaybackResponseEnforcesItsOwnByteCap: maxTriggerFileBytes is
-// this client's OWN defence against a misbehaving or compromised server, on
-// top of storage.MaxFileBytes on the server side. Exceeding it must abort the
-// playback with an error, not silently truncate or panic.
+// TestTriggerPlaybackResponseEnforcesItsOwnByteCap: maxTriggerFileBytes is this
+// client's own defence; exceeding it must abort with an error, not truncate.
 func TestTriggerPlaybackResponseEnforcesItsOwnByteCap(t *testing.T) {
 	metaFile := triggerFileFor(triggerFileID, "huge.png", "image/png")
 
-	// Accumulated across many chunks rather than sent as one oversized frame,
-	// because that is the only shape production can actually produce: a single
-	// message over maxTriggerFileBytes would exceed clientopts.messageBytes
-	// too and be refused by the transport before this cap was ever consulted,
-	// so a one-frame test would pass without proving the accumulation is
-	// bounded at all.
+	// Accumulated across many chunks: a single oversized frame would be refused
+	// by the transport before this cap was consulted.
 	chunks := []*pb.GetFileChunk{getFileMetaChunk(metaFile)}
 	const chunkBytes = 1 << 20
 	for sent := 0; sent <= maxTriggerFileBytes; sent += chunkBytes {
@@ -240,12 +198,8 @@ func TestTriggerPlaybackResponseEnforcesItsOwnByteCap(t *testing.T) {
 	}
 }
 
-// TestTriggerPlaybackResponseTruncatedStreamIsDistinguishableFromComplete is
-// item 6: a stream that fails partway through must be reported as an error,
-// not as a shorter-than-expected but otherwise valid file. The scripted
-// server here sends a meta chunk and one content chunk and then fails —
-// exactly what a connection dropping mid-transfer looks like from the
-// client's side.
+// TestTriggerPlaybackResponseTruncatedStreamIsDistinguishableFromComplete: a
+// stream that fails partway must be an error, not a shorter-than-expected file.
 func TestTriggerPlaybackResponseTruncatedStreamIsDistinguishableFromComplete(t *testing.T) {
 	metaFile := triggerFileFor(triggerFileID, "cat.png", "image/png")
 	streamBroke := connect.NewError(connect.CodeUnavailable, errors.New("connection reset"))
@@ -271,15 +225,8 @@ func TestTriggerPlaybackResponseTruncatedStreamIsDistinguishableFromComplete(t *
 	}
 }
 
-// TestTriggerPlaybackResponseRefusesAStreamShortOfItsDeclaredSize covers the
-// truncation the test above cannot: one that ends CLEANLY.
-//
-// The server reads the blob off disk, so a file that was truncated or replaced
-// underneath it simply hits EOF early. There is no transport error, Receive()
-// returns false and Err() is nil, and the only thing separating this from a
-// complete transfer is the byte_size the meta chunk declared. Without that
-// comparison a partial image is posted to the channel as though it were whole,
-// which is silent corruption rather than a visible failure.
+// TestTriggerPlaybackResponseRefusesAStreamShortOfItsDeclaredSize: a clean EOF
+// short of the declared byte_size is corruption and must be refused.
 func TestTriggerPlaybackResponseRefusesAStreamShortOfItsDeclaredSize(t *testing.T) {
 	metaFile := triggerFileSized(triggerFileID, "cat.png", "image/png", 4096)
 
@@ -303,10 +250,8 @@ func TestTriggerPlaybackResponseRefusesAStreamShortOfItsDeclaredSize(t *testing.
 	}
 }
 
-// TestTriggerPlaybackResponseZeroBytesMeansNothingFired: a meta chunk with no
-// content at all (an empty blob) must be reported as "nothing fired" —
-// (nil, nil) — not as an error and not as a zero-byte attachment, which
-// Discord itself would reject.
+// TestTriggerPlaybackResponseZeroBytesMeansNothingFired: an empty blob is
+// (nil, nil), not an error and not a zero-byte attachment Discord would reject.
 func TestTriggerPlaybackResponseZeroBytesMeansNothingFired(t *testing.T) {
 	metaFile := triggerFileFor(triggerFileID, "empty.png", "image/png")
 	handler := &scriptedGetFileHandler{
@@ -326,16 +271,8 @@ func TestTriggerPlaybackResponseZeroBytesMeansNothingFired(t *testing.T) {
 }
 
 // TestMaxTriggerFileBytesMatchesTheServersFileSizeCap pins the value
-// maxTriggerFileBytes mirrors.
-//
-// It is deliberately a copied number rather than an import: pkg/storage
-// carries the server's URL-fetching machinery and a platform client has no
-// business linking it. The cost of copying is that nothing stops the two
-// drifting, and drift is silently one-directional harm — set below
-// storage.MaxFileBytes, this client starts refusing files the server considers
-// perfectly legal and reports them as an internal error to the user. This test
-// is the whole mitigation for that, so pkg/storage is imported HERE, where it
-// costs nothing.
+// maxTriggerFileBytes copies, since drift below storage.MaxFileBytes would make
+// this client refuse files the server serves.
 func TestMaxTriggerFileBytesMatchesTheServersFileSizeCap(t *testing.T) {
 	if int64(maxTriggerFileBytes) != storage.MaxFileBytes {
 		t.Errorf("maxTriggerFileBytes = %d, want storage.MaxFileBytes (%d); "+

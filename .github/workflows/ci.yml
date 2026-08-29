@@ -21,7 +21,6 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        # Tracks the `go` directive in go.mod instead of a second hardcoded version.
         go-version-file: go.mod
         cache: true
         cache-dependency-path: go.sum
@@ -29,12 +28,11 @@ jobs:
     - name: Build
       run: go build ./...
 
-    # `-structtag=false` is required: plain `go vet` rejects the generated
-    # opaque protobuf structs in pkg/gen.
+    # -structtag=false: plain go vet rejects the opaque protobuf structs in pkg/gen.
     - name: Vet
       run: go vet -structtag=false ./...
 
-    # `gofmt -l` exits 0 even when it lists files, so fail on any output.
+    # gofmt -l exits 0 even when it lists files, so fail on any output.
     - name: Check formatting
       run: |
         unformatted="$(gofmt -l cmd internal pkg)"
@@ -44,34 +42,13 @@ jobs:
           exit 1
         fi
 
-    # -race matters here: the reverse action stream is concurrent on both the
-    # server and the client side. -covermode=atomic rather than the default
-    # `set` because it is the only mode -race supports.
+    # -covermode=atomic: the only mode -race supports.
     - name: Unit tests
       run: go test -race -cover -covermode=atomic -coverprofile=coverage.out ./...
 
-    # Printed, not gated on a threshold: a number that fails the build invites
-    # tests written to move the number. These packages are at or near zero on
-    # purpose, so read the total with them in mind:
-    #
-    #   cmd/ginbot-discord, cmd/ginbot-matrix, cmd/ginbot-server
-    #       thin main() wiring, exercised end to end rather than by unit tests.
-    #   pkg/enum                constant declarations only, nothing to exercise.
-    #   pkg/log                 a thin wrapper over zap.
-    #   pkg/grpc/service        package-level singleton wiring.
-    #   pkg/matrix              needs a fake mautrix session, a seam not yet
-    #                           worth its cost.
-    #   pkg/db                  covered by the integration-test job instead; its
-    #                           tests are all behind the `integration` build tag
-    #                           and so contribute nothing to this profile.
-    #   pkg/gen/ginbot/proto    generated code, guarded by the generated-code
-    #                           job.
-    #
-    # pkg/gen is stripped from the profile first: it is the largest body of code
-    # in the repository and is generated, so leaving it in makes the total a
-    # measure of how much the generator emitted rather than of what is tested. The
-    # deliberate-zero list is echoed so the criterion is evidenced by the job
-    # output and not only by this comment.
+    # pkg/gen (generated) is stripped so the total measures tested code, not
+    # generator output. Some packages are at or near zero on purpose (thin
+    # main() wiring, pkg/db behind the integration tag, generated code).
     - name: Coverage total
       run: |
         grep -v '/pkg/gen/' coverage.out > coverage.hand-written.out
@@ -80,10 +57,8 @@ jobs:
         echo "Deliberately at or near zero: cmd/ginbot-{discord,matrix,server}, pkg/enum,"
         echo "pkg/log, pkg/grpc/service, pkg/matrix, pkg/db (integration job), pkg/gen (generated)."
 
-    # `go test` discards t.Log output from a PASSING test, so the pHash chunk
-    # selectivity table the test exists to produce never reaches the log above.
-    # This re-runs that one test with -v to print it. It is cheap: the package
-    # is already built and the corpus takes well under a second.
+    # go test discards t.Log from a passing test; -v re-run prints the pHash
+    # chunk-selectivity table this test exists to produce.
     - name: Report pHash chunk selectivity
       run: go test -v -count=1 -run TestPigeonholeChunkSelectivity ./pkg/repost/fingerprint/
 
@@ -102,21 +77,12 @@ jobs:
         cache: true
         cache-dependency-path: go.sum
 
-    # Pinned, and installed with `go install` rather than the marketplace
-    # action, exactly like the generated-code job's protoc plugins: the version
-    # that decides whether this repository passes is then a line in this file
-    # and not an action's own release cadence.
-    #
-    # Keep this at or ahead of the `go` directive in go.mod. golangci-lint
-    # type-checks through the x/tools it vendors, so an older release reading a
-    # newer toolchain's export data fails outright with `typecheck: could not
-    # load export data` instead of reporting findings — and that failure cannot
-    # be excluded from the config.
+    # Keep at or ahead of go.mod's go directive: golangci-lint reading a newer
+    # toolchain's export data fails outright rather than reporting findings.
     - name: Install golangci-lint
       run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 
-    # Fails on a malformed or outdated .golangci.yml, which otherwise degrades
-    # silently into "no linters ran, nothing found".
+    # Fails on a malformed config, which otherwise degrades to "no linters ran".
     - name: Verify lint configuration
       run: golangci-lint config verify
 
@@ -131,12 +97,8 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v7
       with:
-        # buf breaking below reads history out of ../.git. The default
-        # checkout is shallow (fetch-depth 1) and fetches only the ref under
-        # test, so neither the baseline commit on a push nor origin/main on a
-        # pull request is present and buf fails to resolve the ref outright.
-        # It errors rather than silently comparing against something wrong,
-        # but it errors on every run, so the check would be permanently red.
+        # buf breaking below reads history out of ../.git; a shallow checkout
+        # lacks the baseline ref and fails to resolve it.
         fetch-depth: 0
 
     - name: Set up Go
@@ -146,59 +108,27 @@ jobs:
         cache: true
         cache-dependency-path: go.sum
 
-    # buf, not protoc: it resolves the protovalidate schema from the BSR at the
-    # commit pinned in proto/buf.lock, so no copy of it is vendored in proto/.
-    # Pinned like everything else here.
+    # buf, not protoc: it resolves the protovalidate schema from the BSR commit
+    # pinned in proto/buf.lock, so no copy is vendored.
     - name: Install buf
       run: go install github.com/bufbuild/buf/cmd/buf@v1.72.0
 
-    # Pinned to the versions that produced the committed output.
-    #
-    # protoc-gen-connect-go must stay in step with the connectrpc.com/connect
-    # requirement in go.mod. The generated files assert the runtime is new enough
-    # with a connect.IsAtLeastVersion... constant, so a plugin newer than the
-    # module breaks the build rather than degrading quietly — and the reverse
-    # drift is invisible until a newer generator feature is needed.
+    # Versions that produced the committed output. protoc-gen-connect-go must
+    # match the connectrpc.com/connect requirement in go.mod.
     - name: Install protoc plugins
       run: |
         go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.1
         go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.20.0
 
-    # proto/buf.yaml has configured lint since it was added, but nothing ran it.
     - name: Lint protos
       run: cd proto && buf lint
 
-    # The baseline differs by event, and getting it wrong makes the check
-    # either permanently red or permanently vacuous.
-    #
-    #   - On a pull request, actions/checkout leaves a DETACHED HEAD at
-    #     refs/pull/N/merge and creates no local refs/heads/main, so
-    #     `#branch=main` cannot resolve however deep the fetch is. The branch
-    #     exists only as the remote-tracking refs/remotes/origin/main, which
-    #     is what has to be named.
-    #   - On a push to main the ref under test IS main, so comparing against
-    #     it would diff main's proto/ against itself and could only ever pass.
-    #     This repository pushes to main directly, so skipping the check there
-    #     would leave the ordinary path completely uncovered. The baseline is
-    #     github.event.before — the tip of main BEFORE the push — and not
-    #     HEAD~1: a push carrying more than one commit is the normal case here,
-    #     and HEAD~1 would then compare the push against its own second-to-last
-    #     commit, so a break introduced anywhere but the final commit would be
-    #     present in both sides and pass unnoticed.
-    #
-    # Two push cases have no usable baseline and are skipped rather than
-    # failed: a brand new branch, where github.event.before is all zeros, and a
-    # force push, where it names a commit that is no longer reachable. Both fall
-    # back to HEAD~1, and the initial commit — which has no HEAD~1 either — is
-    # skipped outright, there being nothing to be compatible with yet.
-    #
-    # --exclude-imports scopes the check to this repository's own files. Without
-    # it buf compares the protovalidate schema too, which is a BSR dependency
-    # pinned in proto/buf.lock, so bumping that pin (AGENTS.md requires moving
-    # it in step with go.mod) would report a dozen breaking changes in
-    # buf/validate/validate.proto that no proto edit here could ever fix. It
-    # does NOT weaken the check on our own schema: deleting one of our files,
-    # messages, fields or RPCs is still reported.
+    # Baseline differs by event: origin/main on a PR (checkout leaves a detached
+    # HEAD with no local main), github.event.before on a push (not HEAD~1, which
+    # would miss breaks in all but the last commit of a multi-commit push). New
+    # branches and force pushes have no usable baseline and fall back to HEAD~1.
+    # --exclude-imports keeps the protovalidate pin from reporting unfixable
+    # breaks in buf/validate/validate.proto; our own files are still checked.
     - name: Breaking change check
       run: |
         zero='0000000000000000000000000000000000000000'
@@ -217,11 +147,8 @@ jobs:
         echo "Comparing proto/ against ${against}"
         cd proto && buf breaking --against "$against" --exclude-imports
 
-    # The same class of silent drift as the protovalidate pin below, one layer
-    # up: the generator and the runtime it generates against are two independent
-    # pins that have to agree. Asserted against the INSTALLED plugin rather than
-    # against the `go install` line above, so the check cannot be satisfied by
-    # editing the line it is checking.
+    # Asserted against the installed plugin, not the go install line above, so
+    # it cannot be satisfied by editing the line it checks.
     - name: Verify the connect plugin matches the connect runtime
       run: |
         go_version="$(sed -n 's|^[[:space:]]*connectrpc\.com/connect v\([0-9.]*\).*|\1|p' go.mod)"
@@ -236,16 +163,10 @@ jobs:
           exit 1
         fi
 
-    # The protovalidate schema that codegen reads (pinned in proto/buf.lock) and
-    # the generated Go that registers its extensions (required in go.mod) have to
-    # be the same BSR commit. The Go module version embeds that commit's
-    # 12-character prefix, so assert it against the commit in buf.lock. Drift is
-    # silent otherwise: everything still compiles, and a constraint the schema
-    # declares is simply not one the runtime validator can resolve.
-    #
-    # Deliberately not `buf dep update && git diff buf.lock`: that asserts the
-    # pin is upstream's latest, which turns this job red on an unrelated
-    # protovalidate release.
+    # buf.lock and go.mod must pin the same protovalidate BSR commit (the Go
+    # module version embeds its 12-char prefix), else the schema and the runtime
+    # validator disagree silently. Not `buf dep update`, which would go red on
+    # any unrelated upstream release.
     - name: Verify the protovalidate pin matches go.mod
       run: |
         go_commit="$(sed -n \
@@ -262,11 +183,8 @@ jobs:
           exit 1
         fi
 
-    # pkg/gen is committed but generated by hand, so it can drift from proto/
-    # silently. The comparison is exact: buf reports no compiler version to the
-    # plugins, so the `protoc (unknown)` line in every generated header is the
-    # same on every machine. A raw protoc stamps its own version there instead,
-    # which is why this used to need an --ignore-matching-lines exemption.
+    # Exact diff: buf reports no compiler version, so the generated headers are
+    # identical across machines. A raw protoc would stamp its own version.
     - name: Regenerate and compare
       run: |
         cd proto && buf generate && cd ..
@@ -281,9 +199,7 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      # Matches docker-compose.psql.yml; these are local development credentials,
-      # not secrets. POSTGRES_DB is explicit here, the compose file relies on it
-      # defaulting to POSTGRES_USER.
+      # Local development credentials, not secrets.
       postgres:
         image: postgres:18-alpine
         env:
@@ -292,8 +208,7 @@ jobs:
           POSTGRES_DB: ginbot
         ports:
         - 5432:5432
-        # TestMain connects as soon as the binary starts, so gate the job on
-        # readiness rather than racing the container boot.
+        # TestMain connects at once, so gate on readiness rather than boot.
         options: >-
           --health-cmd "pg_isready -U ginbot -d ginbot"
           --health-interval 10s
@@ -311,9 +226,8 @@ jobs:
         cache: true
         cache-dependency-path: go.sum
 
-    # The test binary runs the embedded goose migrations itself via
-    # EnsureLatestVersion, so nothing applies them here. `-count=1` stops the Go
-    # test cache from replaying a pass against a database it never touched.
+    # The test binary runs the embedded migrations itself. -count=1 stops the
+    # test cache replaying a pass against a database it never touched.
     - name: Integration tests
       env:
         GINBOT_DB_HOST: localhost

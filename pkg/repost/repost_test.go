@@ -143,8 +143,8 @@ func TestPigeonholeGuaranteeWithinDistanceSeven(t *testing.T) {
 	}
 }
 
-// TestPigeonholeCandidatesAboveSevenAreNotGuaranteed asserts the verifier, not
-// the chunk match, is what rejects a too-distant pair.
+// TestPigeonholeCandidatesAboveSevenAreNotGuaranteed: the verifier, not the
+// chunk match, rejects a too-distant pair.
 func TestPigeonholeCandidatesAboveSevenAreNotGuaranteed(t *testing.T) {
 	rng := rand.New(rand.NewPCG(pigeonholeSeed, pigeonholeSeed+1))
 

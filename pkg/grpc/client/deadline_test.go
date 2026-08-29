@@ -10,8 +10,7 @@ import (
 )
 
 // deadlineOf runs req through interceptor's WrapUnary and reports the deadline
-// next actually observed on ctx, so every case below is driven through the
-// real interceptor chain rather than against a hand-rolled stand-in for it.
+// next observed on ctx.
 func deadlineOf(t *testing.T, interceptor connect.Interceptor, ctx context.Context) (time.Time, bool) {
 	t.Helper()
 
@@ -31,10 +30,7 @@ func deadlineOf(t *testing.T, interceptor connect.Interceptor, ctx context.Conte
 	return gotDeadline, gotOK
 }
 
-// TestNewDeadlineInterceptorAppliesTheDefaultWhenTheCallerSetNone is the
-// ordinary case: a caller that dials out with context.Background() (or any
-// context carrying no deadline at all) must still be bounded, or a wedged
-// connection blocks the call forever.
+// A call with no deadline must still be bounded.
 func TestNewDeadlineInterceptorAppliesTheDefaultWhenTheCallerSetNone(t *testing.T) {
 	const budget = 5 * time.Second
 	interceptor := newDeadlineInterceptor(budget)
@@ -47,19 +43,13 @@ func TestNewDeadlineInterceptorAppliesTheDefaultWhenTheCallerSetNone(t *testing.
 		t.Fatal("no deadline was applied to a context that started with none")
 	}
 
-	// The deadline has to be anchored to roughly "now + budget", not to some
-	// unrelated fixed point — bracketed between the call made just before it
-	// and just after, plus the budget.
+	// Anchored to "now + budget", bracketed by the calls around it.
 	if deadline.Before(before.Add(budget)) || deadline.After(after.Add(budget)) {
 		t.Errorf("deadline = %v, want within [%v, %v]", deadline, before.Add(budget), after.Add(budget))
 	}
 }
 
-// TestNewDeadlineInterceptorKeepsATighterCallerDeadline: a caller that already
-// asked for less time than the interceptor's own budget must not have that
-// tightened further by an interceptor call that runs before its own budget is
-// even reached — that would silently shrink whatever timeout the caller
-// deliberately chose.
+// A caller's tighter deadline must not be replaced.
 func TestNewDeadlineInterceptorKeepsATighterCallerDeadline(t *testing.T) {
 	interceptor := newDeadlineInterceptor(30 * time.Second)
 
@@ -76,12 +66,7 @@ func TestNewDeadlineInterceptorKeepsATighterCallerDeadline(t *testing.T) {
 	}
 }
 
-// TestNewDeadlineInterceptorKeepsALooserCallerDeadline is the case the
-// specification calls out as needing an explicit decision: a caller-supplied
-// deadline is NEVER replaced, not even when it is more generous than the
-// interceptor's own default budget. A batch job or a slow admin command that
-// deliberately asks for five minutes must keep those five minutes rather than
-// being clamped down to defaultCallTimeout.
+// A caller's looser deadline must not be clamped down to the interceptor budget.
 func TestNewDeadlineInterceptorKeepsALooserCallerDeadline(t *testing.T) {
 	interceptor := newDeadlineInterceptor(1 * time.Second)
 
@@ -98,20 +83,12 @@ func TestNewDeadlineInterceptorKeepsALooserCallerDeadline(t *testing.T) {
 	}
 }
 
-// fakeStreamingClientConn is a connect.StreamingClientConn whose methods are
-// never meant to be called in this test — WrapStreamingClient's job here is
-// only to decide what ctx reaches `next`, so nothing beyond that seam is
-// exercised. Embedding the nil interface makes an unexpected call panic loudly
-// rather than silently returning a zero value.
+// fakeStreamingClientConn embeds the nil interface so an unexpected call panics.
 type fakeStreamingClientConn struct {
 	connect.StreamingClientConn
 }
 
-// TestNewDeadlineInterceptorWrapStreamingClientIsANoOp: a reverse action
-// stream is long-lived by design (it is held open for the lifetime of the
-// platform client), so imposing defaultCallTimeout on it would kill a healthy
-// stream on a schedule that has nothing to do with its health. This is the
-// one place newDeadlineInterceptor must NOT act.
+// The long-lived reverse stream must not have a call deadline imposed on it.
 func TestNewDeadlineInterceptorWrapStreamingClientIsANoOp(t *testing.T) {
 	interceptor := newDeadlineInterceptor(1 * time.Millisecond)
 
@@ -129,9 +106,7 @@ func TestNewDeadlineInterceptorWrapStreamingClientIsANoOp(t *testing.T) {
 	}
 }
 
-// TestNewDeadlineInterceptorWrapStreamingClientDoesNotTouchAnExistingDeadline
-// covers the same no-op from the other side: a caller-supplied deadline on a
-// streaming call must also survive untouched, not just be left un-added-to.
+// A caller's deadline on a streaming call must survive untouched.
 func TestNewDeadlineInterceptorWrapStreamingClientDoesNotTouchAnExistingDeadline(t *testing.T) {
 	interceptor := newDeadlineInterceptor(1 * time.Millisecond)
 

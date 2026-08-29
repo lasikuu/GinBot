@@ -129,7 +129,7 @@ func TestKindFromFilenameTakesAFilenameNotAURL(t *testing.T) {
 }
 
 // TestKindFromFilenameAgreesWithKindForEveryCanonicalPair guards the extension
-// and MIME tables against drifting apart.
+// and MIME tables against drift.
 func TestKindFromFilenameAgreesWithKindForEveryCanonicalPair(t *testing.T) {
 	pairs := []struct {
 		extension string

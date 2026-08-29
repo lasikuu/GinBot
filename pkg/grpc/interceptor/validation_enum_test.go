@@ -14,17 +14,15 @@ import (
 // `enum.defined_only` accepts 0 because _UNSPECIFIED is declared, and only
 // `not_in` refuses it. Each input below isolates one rule.
 
-// undefinedPlatform is far outside the declared range (0..6), so adding a
-// platform cannot quietly make these tests stop testing anything.
+// undefinedPlatform is far outside the declared range, so adding a platform
+// cannot make these tests stop testing anything.
 const undefinedPlatform = pb.Platform(99)
 
-// undefinedRepostKind is the same idea for RepostKind (declared range 0..4).
 const undefinedRepostKind = pb.RepostKind(99)
 
-// enumContract is one enum field driven through all four inputs. Each builder
-// differs from validInput in exactly one field: the one under test.
+// enumContract is one enum field driven through all four inputs, each differing
+// from validInput in only the field under test.
 type enumContract struct {
-	// name identifies the schema field, not the containing request.
 	name string
 	// path is how protovalidate spells the field in a violation.
 	path string
@@ -35,7 +33,7 @@ type enumContract struct {
 	unspecifiedInput func() proto.Message
 }
 
-// futureTimestamp is rebuilt per call: a shared value goes stale as a test runs.
+// futureTimestamp is rebuilt per call so it does not go stale.
 func futureTimestamp() *timestamppb.Timestamp {
 	return timestamppb.New(time.Now().Add(time.Hour))
 }
@@ -100,8 +98,7 @@ func enumContracts() []enumContract {
 	return []enumContract{
 		{
 			name: "TriggerInstance.platform_enum",
-			// The rules live on TriggerInstance, so every RPC carrying one
-			// inherits them from here.
+			// Rules live on TriggerInstance; every RPC carrying one inherits them.
 			path: "instance.platform_enum",
 			validInput: func() proto.Message {
 				b := instanceBuilder()
@@ -191,7 +188,7 @@ func enumContracts() []enumContract {
 	}
 }
 
-// Without this, rules that refused everything would satisfy all three tests below.
+// Without this, rules that refused everything would satisfy the tests below.
 func TestEnumContractAcceptsADefinedValue(t *testing.T) {
 	for _, contract := range enumContracts() {
 		t.Run(contract.name, func(t *testing.T) {

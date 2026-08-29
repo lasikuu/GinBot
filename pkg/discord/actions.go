@@ -49,8 +49,6 @@ func reminderDelivery(in *pb.OpenClientActionStreamResp) *pb.ReminderDelivery {
 		pb.OpenClientActionStreamResp_Payload_not_set_case:
 		return nil
 	default:
-		// Unreachable against this build's schema; guards a future arm from
-		// being silently treated as a reminder.
 		return nil
 	}
 }

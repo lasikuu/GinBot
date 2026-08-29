@@ -123,10 +123,8 @@ func TestReminderDeliveryAcceptsOnlyItsOwnArm(t *testing.T) {
 	}
 }
 
-// TestThePayloadArmsAreExactlyTheOnesTheSwitchHandles is the tripwire for a
-// future arm.
-// A new arm without a branch in reminderDelivery is safe but silent, so the
-// oneof is enumerated from the descriptor to make adding one fail here.
+// TestThePayloadArmsAreExactlyTheOnesTheSwitchHandles makes a new oneof arm fail
+// here rather than go unhandled in reminderDelivery.
 func TestThePayloadArmsAreExactlyTheOnesTheSwitchHandles(t *testing.T) {
 	payload := (&pb.OpenClientActionStreamResp{}).ProtoReflect().Descriptor().Oneofs().ByName("payload")
 	if payload == nil {
@@ -201,14 +199,8 @@ func TestHandleSendNotificationDropsUnusableActionsWithoutPostingOrConfirming(t 
 	}
 }
 
-// ── handleSendTest ───────────────────────────────────────────────────────────
-
-// TestHandleSendTestSurvivesEveryPayloadArm.
-//
-// The heartbeat handler reads through two levels of optional message — the arm,
-// then emitted_at inside it — and runs inline on the receive loop. A nil deref
-// on either costs a delivery and a stack trace in the log for an action that
-// carries no information anyone acts on.
+// TestHandleSendTestSurvivesEveryPayloadArm: the heartbeat handler reads through
+// two levels of optional message, so a nil deref on either must not happen.
 func TestHandleSendTestSurvivesEveryPayloadArm(t *testing.T) {
 	tests := []struct {
 		name string
@@ -293,8 +285,8 @@ func TestDeliveryPlanOrdersChannelBeforeDirectMessage(t *testing.T) {
 	}
 }
 
-// The one postNotification path reachable without a Discord session, because an
-// empty plan returns before any send.
+// The one postNotification path reachable without a session: an empty plan
+// returns before any send.
 func TestPostNotificationReportsAFailedDeliveryWhenThereIsNoRoute(t *testing.T) {
 	if discordSession != nil {
 		t.Fatal("discordSession must stay nil for this test to mean anything")

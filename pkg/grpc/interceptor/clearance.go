@@ -25,13 +25,12 @@ type CallerResolver func(ctx context.Context, platform pb.Platform, platformUID 
 
 type callerContextKey struct{}
 
-// metaContextKey holds the caller's raw asserted identity, unresolved against
-// the database, so a public handler can read it without re-parsing headers.
+// metaContextKey holds the caller's raw asserted identity, so a public handler
+// can read it without re-parsing headers.
 type metaContextKey struct{}
 
 // ClearanceInterceptor resolves the caller from request headers and rejects the
-// call when their clearance is below the declared minimum. On success it stores
-// the resolved user in the context for CallerFromContext.
+// call when their clearance is below the declared minimum.
 type ClearanceInterceptor struct {
 	reqs    Requirements
 	resolve CallerResolver
@@ -45,7 +44,7 @@ func (i *ClearanceInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFu
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		procedure := req.Spec().Procedure
 
-		// Parsed once regardless of whether the procedure is guarded.
+		// Parsed even for a public procedure, so MetaFromContext works there.
 		meta, metaErr := callermeta.FromHeader(req.Header())
 		if metaErr == nil {
 			ctx = context.WithValue(ctx, metaContextKey{}, meta)
@@ -68,7 +67,7 @@ func (i *ClearanceInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFu
 			return nil, err
 		}
 
-		// Clearance values are non-contiguous (1, 10, 20, 50, 100): a numeric floor.
+		// Clearance values are non-contiguous: compare numerically, not by ordering.
 		if caller.Clearance < int32(minimum) {
 			return nil, connect.NewError(connect.CodePermissionDenied,
 				fmt.Errorf("%s requires %s clearance", procedure, minimum.String()))
@@ -83,8 +82,8 @@ func (i *ClearanceInterceptor) WrapStreamingClient(next connect.StreamingClientF
 	return next
 }
 
-// WrapStreamingHandler enforces the same floor once at stream open: a stream
-// carries one set of request headers for its whole lifetime.
+// WrapStreamingHandler enforces the floor once at stream open: a stream carries
+// one set of request headers for its whole lifetime.
 func (i *ClearanceInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		procedure := conn.Spec().Procedure
@@ -144,8 +143,7 @@ func (i *ClearanceInterceptor) resolveCaller(ctx context.Context, meta *callerme
 	return caller, nil
 }
 
-// CallerFromContext returns ok false on a public method, where no caller was
-// resolved.
+// CallerFromContext returns ok false on a public method.
 func CallerFromContext(ctx context.Context) (*model.User, bool) {
 	caller, ok := ctx.Value(callerContextKey{}).(*model.User)
 	return caller, ok

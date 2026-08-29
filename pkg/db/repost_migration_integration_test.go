@@ -22,7 +22,6 @@ import (
 
 const repostMigrationVersion int64 = 20260823170000
 
-// migrationTestDSN mirrors how InitDB assembles its own URI.
 func migrationTestDSN(dbName string) string {
 	dsn := url.URL{
 		Scheme: "postgres",
@@ -33,13 +32,10 @@ func migrationTestDSN(dbName string) string {
 	return dsn.String()
 }
 
-// newMigrationTestDatabase returns a freshly migrated database, dropped on
-// cleanup.
 func newMigrationTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 
-	// Lowercase and unpunctuated so it needs no quoting as an identifier.
 	name := fmt.Sprintf("ginbot_migtest_%d", time.Now().UnixNano())
 
 	// CREATE DATABASE cannot run inside a transaction, so it goes through the
@@ -77,7 +73,6 @@ func TestRepostMigrationDownWorksWithRowsPresentInBothTables(t *testing.T) {
 	ctx := context.Background()
 	handle := newMigrationTestDatabase(t)
 
-	// DownTo reverts everything above its target and leaves the target applied.
 	if err := goose.DownTo(handle, "migrations", repostMigrationVersion); err != nil {
 		t.Fatalf("step down the migrations newer than the repost one (%d): %v", repostMigrationVersion, err)
 	}
@@ -121,7 +116,6 @@ func TestRepostMigrationDownWorksWithRowsPresentInBothTables(t *testing.T) {
 		t.Fatalf("seed repost_fingerprint: %v", err)
 	}
 
-	// Both tables must genuinely hold rows, or the Down below proves nothing.
 	for _, table := range []string{"repost_entry", "repost_fingerprint"} {
 		var rows int
 		if err := handle.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&rows); err != nil {

@@ -5,30 +5,17 @@ import (
 	"time"
 )
 
-// ── Assumed symbols from pkg/reminder ────────────────────────────────────────
-//
-// Every symbol this file depends on is aliased here so a rename during
-// reconciliation is a one-line fix rather than a scatter of edits.
-//
-//	func ParseDuration(input string) (time.Duration, error)
 var (
 	parseDuration = ParseDuration
 )
 
-// TestParseDurationComposite asserts the headline composite form and its exact
-// resulting time.Duration, computed independently:
-//
-//	4M = 4*30d = 120d, +2d = 122d, +8h, +30s
-//	= 122*24h + 8h + 30s = 2936h0m30s = 10569630000000000 ns.
-//
-// M is month (30 days) and is case-sensitive against m (minute).
+// TestParseDurationComposite: 4M2d8h30s = 4*30d + 2d + 8h + 30s = 122d8h30s.
 func TestParseDurationComposite(t *testing.T) {
 	got, err := parseDuration("4M2d8h30s")
 	if err != nil {
 		t.Fatalf("ParseDuration(4M2d8h30s) error = %v, want nil", err)
 	}
 
-	// Computed by hand, not by re-deriving with the same code under test.
 	want := 122*24*time.Hour + 8*time.Hour + 30*time.Second
 	if got != want {
 		t.Errorf("ParseDuration(4M2d8h30s) = %v (%d ns), want %v (%d ns)",
@@ -39,8 +26,6 @@ func TestParseDurationComposite(t *testing.T) {
 	}
 }
 
-// TestParseDurationSingleUnits covers each unit in isolation. This pins the unit
-// table: M=month(30d), w=week, d=day, h=hour, m=minute, s=second.
 func TestParseDurationSingleUnits(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -67,8 +52,6 @@ func TestParseDurationSingleUnits(t *testing.T) {
 	}
 }
 
-// TestParseDurationCaseSensitiveMonthVsMinute is the load-bearing case: M and m
-// must not be conflated. 1M is a month (30 days), 1m is a minute.
 func TestParseDurationCaseSensitiveMonthVsMinute(t *testing.T) {
 	month, err := parseDuration("1M")
 	if err != nil {
@@ -89,9 +72,6 @@ func TestParseDurationCaseSensitiveMonthVsMinute(t *testing.T) {
 	}
 }
 
-// TestParseDurationRejects covers everything the parser must refuse rather than
-// silently coerce. A parser that guesses here corrupts every downstream fire
-// time, so each of these must return a non-nil error.
 func TestParseDurationRejects(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -115,11 +95,6 @@ func TestParseDurationRejects(t *testing.T) {
 	}
 }
 
-// TestParseDurationRepeatedUnit documents the chosen expectation for a repeated
-// unit. INTERPRETATION: a repeated unit (5m5m) is rejected — the composite form
-// is a strict descending unit sequence, and a repeat is almost always a typo.
-// If reconciliation reveals the implementation sums repeats instead, flip the
-// assertion below (want 10m, err == nil).
 func TestParseDurationRepeatedUnit(t *testing.T) {
 	got, err := parseDuration("5m5m")
 	if err == nil {
@@ -127,9 +102,8 @@ func TestParseDurationRepeatedUnit(t *testing.T) {
 	}
 }
 
-// TestParseDurationOverflow asserts a value large enough to overflow int64
-// nanoseconds errors rather than wrapping to a negative or truncated duration.
-// time.Duration is int64 ns; max is ~292 years. 4000000000 hours is far past it.
+// TestParseDurationOverflow: time.Duration is int64 ns, so it maxes at ~292
+// years and must error rather than wrap.
 func TestParseDurationOverflow(t *testing.T) {
 	got, err := parseDuration("4000000000h")
 	if err == nil {

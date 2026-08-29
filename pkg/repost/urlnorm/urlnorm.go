@@ -36,8 +36,7 @@ type Result struct {
 
 // Canonicaliser applies the normalisation rules.
 type Canonicaliser struct {
-	// excludedHosts is matched case-insensitively, and also matches
-	// subdomains of each entry.
+	// excludedHosts matches case-insensitively and matches subdomains too.
 	excludedHosts map[string]struct{}
 }
 

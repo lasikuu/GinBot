@@ -11,8 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// reminderFor builds a Reminder as GetReminder returns one: the row's fields
-// plus the destination the server attaches by joining back to its instance.
+// reminderFor builds a Reminder as GetReminder returns one.
 func reminderFor(destinationUID string) *pb.Reminder {
 	id := "0192f000-0000-7000-8000-000000000001"
 	timezone := "Europe/Helsinki"
@@ -40,10 +39,8 @@ func reminderFor(destinationUID string) *pb.Reminder {
 	}.Build()
 }
 
-// TestFormatReminderInfoRendersEveryRequiredField is the /reminderinfo contract:
-// when, message, repeat, created, updated and destination must all be present.
-// The view used to omit created, updated and destination even though all three
-// were already on the wire.
+// TestFormatReminderInfoRendersEveryRequiredField: the /reminderinfo view must
+// carry every line.
 func TestFormatReminderInfoRendersEveryRequiredField(t *testing.T) {
 	got := formatReminderInfo(reminderFor("chan-42"))
 
@@ -54,14 +51,8 @@ func TestFormatReminderInfoRendersEveryRequiredField(t *testing.T) {
 	}
 }
 
-// TestFormatReminderInfoRendersTimestampsAsDiscordTags replaces the assertion
-// that every instant was rendered in the reminder's own stored timezone.
-//
-// This is a deliberate behaviour change: a Discord timestamp tag is rendered by
-// the viewer's client, so a reminder now reads on the clock of whoever is looking
-// at it rather than on the clock it was created against. The reminder's fire time
-// is absolute plus relative; created and updated are relative alone, because an
-// audit line wants "10 minutes ago", not a stamp to subtract from now.
+// TestFormatReminderInfoRendersTimestampsAsDiscordTags: fire time is absolute
+// plus relative; created and updated are relative alone.
 func TestFormatReminderInfoRendersTimestampsAsDiscordTags(t *testing.T) {
 	r := reminderFor("chan-42")
 	got := formatReminderInfo(r)
@@ -84,13 +75,8 @@ func TestFormatReminderInfoRendersTimestampsAsDiscordTags(t *testing.T) {
 	}
 }
 
-// TestFormatReminderInfoNoLongerRendersAWallClock is the other half of the
-// change above. The three instants used to be formatted here in the reminder's
-// stored zone; nothing may print one any more, or a viewer would see two
-// disagreeing times on the same line.
-//
-// Europe/Helsinki is UTC+3 in August, so the reminder's own zone renders
-// 15:00 UTC as 18:00 EEST — a string that must NOT appear.
+// TestFormatReminderInfoNoLongerRendersAWallClock: no instant may print a
+// formatted wall clock, or a viewer would see two disagreeing times on one line.
 func TestFormatReminderInfoNoLongerRendersAWallClock(t *testing.T) {
 	r := reminderFor("chan-42")
 	got := formatReminderInfo(r)
@@ -101,8 +87,7 @@ func TestFormatReminderInfoNoLongerRendersAWallClock(t *testing.T) {
 	}
 	const layout = "2006-01-02 15:04 MST"
 
-	// Guard the premise: if this stopped being an offset zone the assertion
-	// below would be trivially satisfiable.
+	// Guard the premise: a non-offset zone would make the assertion trivial.
 	if stamp := r.GetDatetime().AsTime().In(loc).Format(layout); !strings.Contains(stamp, "EEST") {
 		t.Fatalf("test premise drifted: August in Helsinki rendered as %q, expected EEST", stamp)
 	}
@@ -120,10 +105,8 @@ func TestFormatReminderInfoNoLongerRendersAWallClock(t *testing.T) {
 	}
 }
 
-// TestRenderReminderTimeIsAbsoluteAndRelative: the fire time answers both "when
-// exactly" and "how soon", which is the idiomatic Discord pairing for a
-// scheduled moment. The list view and the detail view share the helper, so they
-// cannot drift apart.
+// TestRenderReminderTimeIsAbsoluteAndRelative: the fire time is absolute plus
+// relative, and the list and detail views share the helper.
 func TestRenderReminderTimeIsAbsoluteAndRelative(t *testing.T) {
 	r := reminderFor("chan-42")
 	fireAt := r.GetDatetime().AsTime()
@@ -139,16 +122,13 @@ func TestRenderReminderTimeIsAbsoluteAndRelative(t *testing.T) {
 		}
 	}
 
-	// The list line embeds the same rendering, so a reminder reads identically
-	// in both views.
 	if line := renderReminderLine(r); !strings.Contains(line, got) {
 		t.Errorf("renderReminderLine() = %q, does not carry %q", line, got)
 	}
 }
 
-// TestRenderReminderStampAbsence: a created/updated instant the server did not
-// send must read as absent rather than as the Unix epoch, which <t:0:R> would
-// show as "56 years ago".
+// TestRenderReminderStampAbsence: an absent instant reads as an em dash, not the
+// Unix epoch that <t:0:R> would show as "56 years ago".
 func TestRenderReminderStampAbsence(t *testing.T) {
 	instant := time.Date(2026, 8, 1, 6, 0, 0, 0, time.UTC)
 
@@ -160,9 +140,8 @@ func TestRenderReminderStampAbsence(t *testing.T) {
 	}
 }
 
-// TestReminderCommandsAreGroupedUnderReminder pins the Group/Sub assignment. The
-// Discord parent and every subcommand name are derived from these two fields, and
-// the flat Name must be untouched so every legacy invocation keeps working.
+// TestReminderCommandsAreGroupedUnderReminder pins Group/Sub and the untouched
+// flat Name that keeps legacy invocations working.
 func TestReminderCommandsAreGroupedUnderReminder(t *testing.T) {
 	tests := []struct {
 		wantName string
@@ -191,8 +170,7 @@ func TestReminderCommandsAreGroupedUnderReminder(t *testing.T) {
 	}
 }
 
-// TestFormatReminderInfoRendersDestinationAsAChannelMention: the destination is
-// shown as <#id> so it is a clickable channel rather than an opaque snowflake.
+// TestFormatReminderInfoRendersDestinationAsAChannelMention: shown as <#id>.
 func TestFormatReminderInfoRendersDestinationAsAChannelMention(t *testing.T) {
 	got := formatReminderInfo(reminderFor("chan-42"))
 
@@ -201,10 +179,8 @@ func TestFormatReminderInfoRendersDestinationAsAChannelMention(t *testing.T) {
 	}
 }
 
-// TestDestinationMentionHandlesEveryMissingShape: the destination arrives as
-// untyped jsonb and may be absent entirely (its row was removed, or the reminder
-// is a direct message). Every such case must render an em dash, never a broken
-// `<#>` mention and never a panic.
+// TestDestinationMentionHandlesEveryMissingShape: every missing shape renders an
+// em dash, never a broken `<#>` mention and never a panic.
 func TestDestinationMentionHandlesEveryMissingShape(t *testing.T) {
 	platform := pb.Platform_PLATFORM_DISCORD
 	withMeta := func(uid string) *pb.ReminderDestination {
@@ -240,9 +216,8 @@ func TestDestinationMentionHandlesEveryMissingShape(t *testing.T) {
 	}
 }
 
-// TestFormatReminderInfoWithoutOptionalFields: a one-shot reminder with no
-// message, no destination and no timestamps still renders every line, because a
-// missing line reads as a rendering bug rather than as absent data.
+// TestFormatReminderInfoWithoutOptionalFields: a reminder missing every optional
+// field still renders every line.
 func TestFormatReminderInfoWithoutOptionalFields(t *testing.T) {
 	id := "0192f000-0000-7000-8000-000000000002"
 	statusValue := pb.ReminderStatus_REMINDER_STATUS_DELIVERED
@@ -269,9 +244,8 @@ func TestFormatReminderInfoWithoutOptionalFields(t *testing.T) {
 	}
 }
 
-// TestRepeatOrNoneStatesTheAbsence: a reminder that does not repeat says so
-// rather than dropping the line, so a user can tell "no repeat" from "the view
-// forgot to tell me".
+// TestRepeatOrNoneStatesTheAbsence: no repeat says "none" rather than dropping
+// the line.
 func TestRepeatOrNoneStatesTheAbsence(t *testing.T) {
 	if got := repeatOrNone(""); got != "none" {
 		t.Errorf("repeatOrNone(\"\") = %q, want %q", got, "none")
@@ -281,7 +255,6 @@ func TestRepeatOrNoneStatesTheAbsence(t *testing.T) {
 	}
 }
 
-// findArg returns the named argument of a command, or false.
 func findArg(args []command.Arg, name string) (command.Arg, bool) {
 	for _, arg := range args {
 		if arg.Name == name {
@@ -291,13 +264,8 @@ func findArg(args []command.Arg, name string) (command.Arg, bool) {
 	return command.Arg{}, false
 }
 
-// TestRemindCommandsExposeAnOptionalRepeat is the client-surface half of the
-// repeat feature.
-//
-// Without a repeat argument on BOTH commands, repeat_cron was reachable only by
-// hand-crafted gRPC: a repeat could not be created, and /remindermod could not
-// update one (it silently cleared it instead). Optional, because making it
-// required would break every existing invocation.
+// TestRemindCommandsExposeAnOptionalRepeat: both commands carry an optional
+// repeat argument; required would break every existing invocation.
 func TestRemindCommandsExposeAnOptionalRepeat(t *testing.T) {
 	tests := []struct {
 		name string
@@ -323,9 +291,8 @@ func TestRemindCommandsExposeAnOptionalRepeat(t *testing.T) {
 	}
 }
 
-// TestRepeatArgDescriptionDocumentsTheAcceptedForms: the description is the only
-// place a user learns what to type, so it has to name the forms the server
-// actually accepts.
+// TestRepeatArgDescriptionDocumentsTheAcceptedForms: the description must name
+// the forms the server accepts.
 func TestRepeatArgDescriptionDocumentsTheAcceptedForms(t *testing.T) {
 	for _, form := range []string{"cron", "@daily", "@every"} {
 		if !strings.Contains(repeatArgDescription, form) {
@@ -334,9 +301,8 @@ func TestRepeatArgDescriptionDocumentsTheAcceptedForms(t *testing.T) {
 	}
 }
 
-// TestRemindermodDocumentsTheClearSentinel: clearing a repeat has to be said out
-// loud (an omitted argument means "leave it alone"), so the command must tell the
-// user which word does it.
+// TestRemindermodDocumentsTheClearSentinel: an omitted repeat leaves it alone, so
+// the description must name the word that clears it.
 func TestRemindermodDocumentsTheClearSentinel(t *testing.T) {
 	arg, ok := findArg(reminderModCommand().Args, "repeat")
 	if !ok {

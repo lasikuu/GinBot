@@ -1,14 +1,6 @@
--- Adds the uniqueness that get-or-create depends on.
---
--- GetOrCreateInstanceByMeta and GetOrCreateDestinationByMeta were a
--- non-transactional read-then-insert against a schema with no unique
--- constraint, so two concurrent callers for the same guild/channel both missed
--- the SELECT and both inserted. Later lookups use QueryRow and would silently
--- pick an arbitrary duplicate.
---
--- The jsonb columns are compared for equality by those queries, and the plain
--- indexes from the initial migration do not support that. These unique indexes
--- both enforce the invariant and serve the lookup.
+-- Adds the uniqueness get-or-create depends on: its non-transactional
+-- read-then-insert let concurrent callers double-insert the same guild/channel.
+-- These unique indexes enforce the invariant and serve the jsonb-equality lookup.
 
 -- +goose Up
 -- +goose StatementBegin

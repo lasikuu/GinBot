@@ -41,19 +41,11 @@ func NewLocal(base string) (*Local, error) {
 	return &Local{base: filepath.Clean(base)}, nil
 }
 
-// resolve maps a caller-supplied key or path onto an absolute filesystem
-// location under l.base, and the cleaned relative form that Put returns and
-// Get/Delete accept back.
-//
-// It cleans and checks rather than string-matching "..": an already-clean key
-// like "a/../../etc/passwd" would slip past a substring check on the raw
-// input, but filepath.Clean collapses it first so the traversal is visible.
-//
-// The containment check is lexical only — it does not resolve symlinks, so a
-// symlink planted inside the base would still escape it. Nothing reachable can
-// plant one today: keys are server-generated content hashes and the paths given
-// back to Get come from file.path, which only this package writes. Anything
-// that starts accepting an operator- or user-supplied key must add an
+// resolve maps a key onto an absolute location under l.base plus the cleaned
+// relative form. It filepath.Cleans first so a traversal like
+// "a/../../etc/passwd" is visible rather than string-matched. The containment
+// check is lexical only: it does not resolve symlinks. Safe today because keys
+// are server-generated hashes; accepting a user-supplied key needs an
 // filepath.EvalSymlinks check here first.
 func (l *Local) resolve(p string) (full string, rel string, err error) {
 	if p == "" || filepath.IsAbs(p) {
@@ -91,8 +83,7 @@ func (l *Local) Put(ctx context.Context, key string, r io.Reader) (string, error
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	// Cleared once the rename below succeeds, so this only ever removes a
-	// half-written file left behind by a failure.
+	// Cleared once the rename succeeds; otherwise removes the half-written file.
 	removeTmp := true
 	defer func() {
 		if removeTmp {
@@ -149,12 +140,10 @@ func (l *Local) Delete(_ context.Context, path string) error {
 	return nil
 }
 
-// defaultStorage is the process-wide instance configured at boot, mirroring
-// how pkg/db exposes its pool through db().
 var defaultStorage Storage
 
-// Init sets the package-level Storage from a local directory. It mirrors how
-// pkg/db exposes its pool: one process-wide instance configured at boot.
+// Init sets the package-level Storage from a local directory: one process-wide
+// instance configured at boot.
 func Init(base string) error {
 	local, err := NewLocal(base)
 	if err != nil {

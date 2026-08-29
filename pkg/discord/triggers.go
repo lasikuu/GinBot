@@ -69,7 +69,7 @@ var chanceArgDescription = fmt.Sprintf(
 
 var kindArgDescription = "Which counter to rank by: " + statsKindNames()
 
-// A slice, not a map: the accepted-values message needs a stable order.
+// A slice for a stable order in the accepted-values message.
 var triggerModeWords = []struct {
 	word string
 	mode pb.TriggerMode

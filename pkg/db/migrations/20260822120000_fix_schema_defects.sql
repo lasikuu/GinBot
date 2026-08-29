@@ -4,19 +4,14 @@
 -- +goose Up
 -- +goose StatementBegin
 
--- file.path was declared `timestamp` but holds a storage path.
--- The column is unused so far, so a plain type change is safe.
+-- file.path was declared `timestamp` but holds a storage path (column unused).
 ALTER TABLE "file"
     ALTER COLUMN path TYPE text USING path::text;
 COMMENT ON COLUMN "file".path IS 'storage path or key, relative to the configured storage root';
 
--- reminder.parent_id referenced reminder.id (a uuid) but was declared `int`, so
--- the self-reference could never work and no FK could be created.
---
--- DESTRUCTIVE: USING NULL discards any existing parent_id values. That is
--- acceptable because no int value could ever have been a valid reminder.id, and
--- because the previous CreateReminder listed 8 columns against 7 placeholders
--- and therefore failed on every call — so no reminder rows exist in practice.
+-- reminder.parent_id was `int` but must be uuid to reference reminder.id.
+-- DESTRUCTIVE (USING NULL): no int could be a valid reminder.id, and no rows
+-- exist (the prior CreateReminder failed on every call).
 ALTER TABLE "reminder"
     ALTER COLUMN parent_id TYPE uuid USING NULL;
 ALTER TABLE "reminder"
@@ -25,8 +20,7 @@ COMMENT ON COLUMN "reminder".parent_id IS 'reminder this one was copied from, fo
 
 CREATE INDEX idx_reminder_parent ON "reminder" (parent_id) WHERE parent_id IS NOT NULL;
 
--- The platform enum comments were inverted relative to proto/ginbot/proto/platform.proto,
--- which defines 1=DISCORD and 2=MATRIX_PROTOCOL.
+-- Enum comments were inverted relative to platform.proto (1=discord, 2=matrix).
 COMMENT ON COLUMN instance.platform_enum IS '0=unspecified, 1=discord, 2=matrix protocol, 3=telegram, 4=line, 5=email, 6=snailmail';
 COMMENT ON COLUMN platform_user.platform_enum IS '0=unspecified, 1=discord, 2=matrix protocol, 3=telegram, 4=line, 5=email, 6=snailmail';
 
@@ -81,10 +75,8 @@ ALTER TABLE "reminder"
 ALTER TABLE "reminder"
     ALTER COLUMN parent_id TYPE int USING NULL;
 
--- file.path is NOT NULL, so USING NULL alone fails once the table has rows
--- ("column path contains null values"). Drop the constraint first, restore the
--- original type, then reinstate it via a placeholder — the original path values
--- cannot be represented as a timestamp and are lost either way.
+-- file.path is NOT NULL, so drop the constraint before the type change and
+-- restore it via a placeholder; original path values can't be a timestamp anyway.
 ALTER TABLE "file"
     ALTER COLUMN path DROP NOT NULL;
 ALTER TABLE "file"

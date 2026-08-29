@@ -24,74 +24,44 @@ service AnalyticsService {
   rpc ListActionRecords(ListActionRecordsReq) returns (ListActionRecordsResp);
 }
 
-// Message representing a ActionRecord
 message ActionRecord {
-  // ID of the Action
   int64 id = 1;
-  // Type of the Action
   ActionType action_type = 2;
-  // Date and time of the Action
   google.protobuf.Timestamp action_timestamp = 3;
-  // Time taken to perform the Action in milliseconds
+  // Milliseconds taken to perform the action.
   int64 action_time = 4;
-  // User UUIDv7 of the actor
   string actor_id = 5;
-  // UUIDv7 of the subject the action was performed on, e.g. the trigger that fired
+  // Subject acted on, e.g. the trigger that fired.
   string subject_id = 6;
 }
 
 message CreateActionRecordReq {
-  // Type of the Action
   ActionType action_type = 1;
-  // Time taken to perform the Action in milliseconds
   int64 action_time = 2;
 
-  // Field 3 previously named the actor. The handler always ignored it and
-  // attributes the record to the caller from gRPC metadata instead: trusting it
-  // let any registered caller pin any action type on any user_account UUID, and
-  // — since it carried no uuid constraint — turn arbitrary text into a
-  // codes.Internal from a failed Postgres cast.
-  //
-  // The number and the name stay reserved so they can never be silently reused
-  // with a different meaning.
+  // Was actor_id: the record is attributed to the caller from metadata; trusting
+  // the body let any caller pin any action on any user.
   reserved 3;
-  // Editions require reserved names as identifiers, not string literals.
   reserved actor_id;
 
-  // UUIDv7 of the subject the action was performed on, e.g. the trigger that fired
   string subject_id = 4;
 }
 
 message CreateActionRecordResp {
-  // ID of the ActionRecord
   int64 id = 1;
 }
 
 message ListActionRecordsReq {
-  // Limit the number of recorded actions returned
   int64 limit = 1;
-  // Offset the recorded actions returned
   int64 offset = 2;
-  // Type of the action to search for
   ActionType action_type = 3;
 
-  // Field 4 previously narrowed the listing to one actor, which no handler ever
-  // read. Listing by an arbitrary user id is an enumeration surface; if a
-  // caller-scoped listing is wanted later it belongs here as a boolean, the way
-  // ListTriggersReq.mine does it, since the caller is already known from
-  // metadata.
-  //
-  // The number and the name stay reserved so they can never be silently reused
-  // with a different meaning.
+  // Was actor_id: listing by an arbitrary user id is an enumeration surface.
   reserved 4;
-  // Editions require reserved names as identifiers, not string literals.
   reserved actor_id;
 
-  // Search for recorded actions starting from this date
   google.protobuf.Timestamp period_start = 5;
-  // Search for recorded actions ending at this date
   google.protobuf.Timestamp period_end = 6;
-  // Subject UUIDv7 to filter by
   string subject_id = 7;
 }
 

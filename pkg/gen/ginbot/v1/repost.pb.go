@@ -22,17 +22,15 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// What kind of thing was posted.
 type RepostKind int32
 
 const (
 	RepostKind_REPOST_KIND_UNSPECIFIED RepostKind = 0
-	// A URL in the message text, identified by its canonical source key.
+	// A URL, identified by its canonical source key.
 	RepostKind_REPOST_KIND_LINK RepostKind = 1
-	// A still image, fingerprinted perceptually as well as exactly.
+	// A still image, fingerprinted perceptually and exactly.
 	RepostKind_REPOST_KIND_IMAGE RepostKind = 2
-	// Video or animated GIF, fingerprinted on its first frame where a decoder
-	// is available, and exactly regardless.
+	// Video or animated GIF, fingerprinted on its first frame where possible, and exactly.
 	RepostKind_REPOST_KIND_VIDEO RepostKind = 3
 	// Anything else, fingerprinted exactly only.
 	RepostKind_REPOST_KIND_FILE RepostKind = 4
@@ -78,14 +76,14 @@ func (x RepostKind) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// How certain the match is. A perceptual match is graded by Hamming distance;
-// a canonical-link or exact-bytes match is always IDENTICAL.
+// A perceptual match is graded by Hamming distance; a canonical-link or
+// exact-bytes match is always IDENTICAL.
 type RepostConfidence int32
 
 const (
 	// No match.
 	RepostConfidence_REPOST_CONFIDENCE_UNSPECIFIED RepostConfidence = 0
-	// Distance 0. Same fingerprint: a re-upload or a lossless re-encode.
+	// Distance 0: re-upload or lossless re-encode.
 	RepostConfidence_REPOST_CONFIDENCE_IDENTICAL RepostConfidence = 1
 	// Recompression, quality change, rescale. The common repost.
 	RepostConfidence_REPOST_CONFIDENCE_HIGH RepostConfidence = 2
@@ -131,8 +129,8 @@ func (x RepostConfidence) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// A platform-agnostic reference back to a message, so a client can deep-link
-// to the original and name who posted it without a second lookup.
+// Platform-agnostic reference so a client can deep-link the original and name
+// its poster without a second lookup.
 type MessageRef struct {
 	state                     protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_InstanceUid    *string                `protobuf:"bytes,1,opt,name=instance_uid,json=instanceUid" json:"instance_uid,omitempty"`
@@ -281,14 +279,10 @@ func (x *MessageRef) ClearAuthorUid() {
 type MessageRef_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// The platform's identifier for the space: a Discord guild.
-	InstanceUid *string
-	// The platform's identifier for the channel or room.
+	InstanceUid    *string
 	DestinationUid *string
-	// The platform's identifier for the message itself.
-	MessageUid *string
-	// The platform's identifier for the author. A platform snowflake, never the
-	// GinBot user_account UUID: the client renders a mention from it.
+	MessageUid     *string
+	// A platform snowflake, never the user_account UUID; the client renders a mention.
 	AuthorUid *string
 }
 
@@ -315,7 +309,6 @@ func (b0 MessageRef_builder) Build() *MessageRef {
 	return m0
 }
 
-// One thing extracted from a message and offered for checking.
 type RepostCandidate struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Kind        RepostKind             `protobuf:"varint,1,opt,name=kind,enum=ginbot.v1.RepostKind" json:"kind,omitempty"`
@@ -407,16 +400,10 @@ func (x *RepostCandidate) ClearUrl() {
 type RepostCandidate_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// required alone was not enough: it is a presence check, so an explicit
-	// REPOST_KIND_UNSPECIFIED satisfied it and arrived at a handler that has to
-	// switch on the kind to decide whether to fetch bytes or canonicalise a URL.
-	// See OpenClientActionStreamReq.platform_enum in reverse.proto for why all
-	// three rules are needed.
+	// All three rules needed; see TriggerInstance.platform_enum in trigger.proto.
 	Kind *RepostKind
-	// For REPOST_KIND_LINK, the URL exactly as it was posted; the server
-	// canonicalises it. For every other kind, the platform CDN URL the server
-	// fetches the bytes from — subject to the same host allow-list as trigger
-	// media, so an arbitrary URL is refused rather than fetched.
+	// For LINK, the URL as posted (server canonicalises). Otherwise the CDN URL to
+	// fetch, subject to the same host allow-list as trigger media.
 	Url *string
 }
 
@@ -589,20 +576,15 @@ func (x *CheckRepostReq) ClearPostedAt() {
 type CheckRepostReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Everything the client extracted from the message. Capped so one message
-	// cannot cost an unbounded number of fetches.
+	// Capped so one message cannot cost an unbounded number of fetches.
 	Candidates []*RepostCandidate
-	// The platform's identifier for the message being checked.
 	MessageUid *string
-	// The platform's identifier for its author, stored so a later match can name
-	// the original poster. Identity for authorization still comes from metadata;
-	// this is presentation data.
+	// Presentation data (names the original poster); authorization identity still
+	// comes from metadata.
 	AuthorUid *string
-	// True when this is an edit of an existing message. An edit MATCHES but never
-	// INSERTS (W8): seeding the index on an edit would make a message match
-	// itself.
+	// An edit matches but never inserts, so a message cannot match itself.
 	Edit *bool
-	// When the message was posted. Defaults to the server's clock when unset.
+	// Defaults to the server's clock when unset.
 	PostedAt *timestamppb.Timestamp
 }
 
@@ -627,7 +609,6 @@ func (b0 CheckRepostReq_builder) Build() *CheckRepostReq {
 	return m0
 }
 
-// One candidate that the community has seen before.
 type RepostMatch struct {
 	state                       protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_CandidateIndex   int32                  `protobuf:"varint,1,opt,name=candidate_index,json=candidateIndex" json:"candidate_index,omitempty"`
@@ -814,19 +795,15 @@ func (x *RepostMatch) ClearOriginalRef() {
 type RepostMatch_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Which candidate matched, as an index into CheckRepostReq.candidates.
+	// Index into CheckRepostReq.candidates.
 	CandidateIndex *int32
-	// The kind of the ORIGINAL entry, which may differ from the candidate's own
-	// kind when the same bytes were posted as a different type.
+	// Kind of the original entry, which may differ from the candidate's own kind.
 	Kind       *RepostKind
 	Confidence *RepostConfidence
-	// Hamming distance of a perceptual match. Zero for a canonical-link or
-	// exact-bytes match, which are not graded by distance.
-	Distance *int32
-	// When the original was posted.
+	// Zero for a canonical-link or exact-bytes match (not graded by distance).
+	Distance         *int32
 	OriginalPostedAt *timestamppb.Timestamp
-	// Where the original is, for the deep link and the poster's name. Any field
-	// may be empty for an entry stored by a platform that does not carry it.
+	// Any field may be empty for a platform that does not carry it.
 	OriginalRef *MessageRef
 }
 
@@ -903,8 +880,7 @@ func (x *CheckRepostResp) SetMatches(v []*RepostMatch) {
 type CheckRepostResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// One entry per candidate that matched, in candidate order. Empty when
-	// nothing was seen before, which is the common case and not an error.
+	// In candidate order; empty when nothing matched (not an error).
 	Matches []*RepostMatch
 }
 

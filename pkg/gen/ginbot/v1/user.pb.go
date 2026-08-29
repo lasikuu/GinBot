@@ -76,7 +76,6 @@ func (x Clearance) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Message representing a User
 type User struct {
 	state                          protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Id                  *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
@@ -372,26 +371,16 @@ func (x *User) ClearUpdatedAt() {
 type User_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// UUID of the User
-	Id *string
-	// Username of the User
-	Username *string
-	// Clearance level of the User
-	Clearance *Clearance
-	// Avatar URL of the User
-	Avatar *string
-	// Locale of the User
-	Locale *string
-	// Timezone of the User
-	Timezone *string
-	// User ID of the creator
-	Birthday *timestamppb.Timestamp
-	// Birthday last congratulated at
+	Id                  *string
+	Username            *string
+	Clearance           *Clearance
+	Avatar              *string
+	Locale              *string
+	Timezone            *string
+	Birthday            *timestamppb.Timestamp
 	LastCongratulatedAt *timestamppb.Timestamp
-	// Created at
-	CreatedAt *timestamppb.Timestamp
-	// Updated at
-	UpdatedAt *timestamppb.Timestamp
+	CreatedAt           *timestamppb.Timestamp
+	UpdatedAt           *timestamppb.Timestamp
 }
 
 func (b0 User_builder) Build() *User {
@@ -493,7 +482,6 @@ func (x *GetUserReq) ClearId() {
 type GetUserReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// User UUIDv7
 	Id *string
 }
 
@@ -719,14 +707,11 @@ func (x *RegisterReq) ClearLocale() {
 type RegisterReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Metadata of the platform (such as other identifiers)
 	PlatformMetadata *structpb.Struct
-	// Verification code for the registration. Not required for new registrations.
+	// Not required for new registrations.
 	VerificationCode *string
-	// Username of the user
-	Username *string
-	// Locale of the user
-	Locale *string
+	Username         *string
+	Locale           *string
 }
 
 func (b0 RegisterReq_builder) Build() *RegisterReq {
@@ -813,7 +798,6 @@ func (x *RegisterResp) ClearUserId() {
 type RegisterResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// User UUID of the registered user
 	UserId *string
 }
 
@@ -828,10 +812,8 @@ func (b0 RegisterResp_builder) Build() *RegisterResp {
 	return m0
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 type GetCongratulableBirthdaysReq struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -934,10 +916,8 @@ func (b0 GetCongratulableBirthdaysResp_builder) Build() *GetCongratulableBirthda
 	return m0
 }
 
-// Carries no user id on purpose: the caller is identified from gRPC metadata
-// (platform_enum, user_id), which is the pattern every identity-bearing RPC in
-// this project follows. Do not add a user_id field — taking the subject from
-// the request body would let a client act on someone else's account.
+// No user id: the caller is identified from metadata. Adding one would let a
+// client act on someone else's account.
 type SetLocaleReq struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Locale      *string                `protobuf:"bytes,1,opt,name=locale" json:"locale,omitempty"`
@@ -1002,7 +982,7 @@ func (x *SetLocaleReq) ClearLocale() {
 type SetLocaleReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// BCP-47-ish short code. Supported: en, fi, ja.
+	// Supported: en, fi, ja.
 	Locale *string
 }
 
@@ -1017,7 +997,6 @@ func (b0 SetLocaleReq_builder) Build() *SetLocaleReq {
 	return m0
 }
 
-// Empty on purpose; see GetCongratulableBirthdaysReq.
 type SetLocaleResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1061,10 +1040,7 @@ func (b0 SetLocaleResp_builder) Build() *SetLocaleResp {
 	return m0
 }
 
-// Carries no user id on purpose: the caller is identified from gRPC metadata
-// (platform_enum, user_id), which is the pattern every identity-bearing RPC in
-// this project follows. Do not add a user_id field — taking the subject from
-// the request body would let a client act on someone else's account.
+// No user id; see SetLocaleReq.
 type SetTimezoneReq struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Timezone    *string                `protobuf:"bytes,1,opt,name=timezone" json:"timezone,omitempty"`
@@ -1144,7 +1120,6 @@ func (b0 SetTimezoneReq_builder) Build() *SetTimezoneReq {
 	return m0
 }
 
-// Empty on purpose; see GetCongratulableBirthdaysReq.
 type SetTimezoneResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields

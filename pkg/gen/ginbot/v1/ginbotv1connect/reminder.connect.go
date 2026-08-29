@@ -60,13 +60,9 @@ type ReminderServiceClient interface {
 	CreateReminder(context.Context, *connect.Request[v1.CreateReminderReq]) (*connect.Response[v1.CreateReminderResp], error)
 	UpdateReminder(context.Context, *connect.Request[v1.UpdateReminderReq]) (*connect.Response[v1.UpdateReminderResp], error)
 	DeleteReminder(context.Context, *connect.Request[v1.DeleteReminderReq]) (*connect.Response[v1.DeleteReminderResp], error)
-	// ConfirmDelivery reports the outcome of a pushed reminder notification.
-	//
-	// Delivery is otherwise fire-and-forget: SendAction drops on a full client
-	// buffer and returns nothing. The server marks a reminder SENT when it pushes,
-	// and only advances it to DELIVERED (or reschedules a repeat) when the client
-	// confirms here. A reminder never confirmed is reclaimed and retried, so it is
-	// not silently lost.
+	// Reports the outcome of a pushed notification. The server marks a reminder
+	// SENT on push and only advances it to DELIVERED (or reschedules) on confirm;
+	// an unconfirmed reminder is reclaimed and retried.
 	ConfirmDelivery(context.Context, *connect.Request[v1.ConfirmDeliveryReq]) (*connect.Response[v1.ConfirmDeliveryResp], error)
 }
 
@@ -167,13 +163,9 @@ type ReminderServiceHandler interface {
 	CreateReminder(context.Context, *connect.Request[v1.CreateReminderReq]) (*connect.Response[v1.CreateReminderResp], error)
 	UpdateReminder(context.Context, *connect.Request[v1.UpdateReminderReq]) (*connect.Response[v1.UpdateReminderResp], error)
 	DeleteReminder(context.Context, *connect.Request[v1.DeleteReminderReq]) (*connect.Response[v1.DeleteReminderResp], error)
-	// ConfirmDelivery reports the outcome of a pushed reminder notification.
-	//
-	// Delivery is otherwise fire-and-forget: SendAction drops on a full client
-	// buffer and returns nothing. The server marks a reminder SENT when it pushes,
-	// and only advances it to DELIVERED (or reschedules a repeat) when the client
-	// confirms here. A reminder never confirmed is reclaimed and retried, so it is
-	// not silently lost.
+	// Reports the outcome of a pushed notification. The server marks a reminder
+	// SENT on push and only advances it to DELIVERED (or reschedules) on confirm;
+	// an unconfirmed reminder is reclaimed and retried.
 	ConfirmDelivery(context.Context, *connect.Request[v1.ConfirmDeliveryReq]) (*connect.Response[v1.ConfirmDeliveryResp], error)
 }
 

@@ -75,8 +75,8 @@ func statFor(id string, phrase string, count int64) *pb.TriggerStat {
 	}.Build()
 }
 
-// The context is bare, so every case here must be refused by argument
-// validation alone; reaching the RPC nil-panics on clientsFrom(ctx).
+// The context is bare, so every case must be refused by argument validation
+// alone; reaching the RPC nil-panics on clientsFrom(ctx).
 func invokeTrigger(t *testing.T, cmd command.Command, args map[string]any) error {
 	t.Helper()
 
@@ -828,11 +828,8 @@ func TestCurrentTriggerInstanceCarriesThePlatformAndTheGuild(t *testing.T) {
 	}
 }
 
-// TestCurrentTriggerInstanceRefusesAContextWithNoOrigin: a trigger belongs to a
-// guild, so there is nothing to scope one to in a direct message. It must be
-// FailedPrecondition, because that is one of the two codes errorMessage lets
-// through verbatim — anything else tells the user "Something went wrong." for a
-// situation they could fix by running the command somewhere else.
+// TestCurrentTriggerInstanceRefusesAContextWithNoOrigin: a DM has no guild to
+// scope to. FailedPrecondition, since errorMessage passes it through verbatim.
 func TestCurrentTriggerInstanceRefusesAContextWithNoOrigin(t *testing.T) {
 	_, err := currentTriggerInstance(context.Background())
 	if err == nil {
@@ -1254,9 +1251,8 @@ func TestClampTriggerLimit(t *testing.T) {
 	}
 }
 
-// A list of triggerListMaxLimit rows has to fit in one Discord message, because
-// the cap's stated reason is that "a reply cut off mid-line is worse than a reply
-// that says less". A 36-character UUID plus the separators is the floor per line.
+// TestTriggerListMaxLimitFitsOneMessage: triggerListMaxLimit rows must fit in one
+// Discord message (maxChatContent).
 func TestTriggerListMaxLimitFitsOneMessage(t *testing.T) {
 	line := renderTriggerLine(triggerFor(0, pb.TriggerMode_TRIGGER_MODE_ANY, "ok", nil))
 

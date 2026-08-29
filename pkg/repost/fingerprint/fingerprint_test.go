@@ -77,8 +77,7 @@ func uniformNoiseImage(width, height int, seed uint64) *image.Gray {
 	return img
 }
 
-// structuredImage is a gradient plus noise plus shapes: high entropy but not
-// pure noise, so its pHash has low-frequency structure to be robust about.
+// structuredImage has high entropy but low-frequency structure for pHash.
 func structuredImage(width, height int, seed uint64) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	rng := rand.New(rand.NewPCG(seed, seed+7))
@@ -242,8 +241,6 @@ func TestPerceptualHashRejectsNearBlankImage(t *testing.T) {
 	}
 }
 
-// TestPerceptualHashAcceptsAStructuredHighEntropyImage is the positive control
-// for the guard tests above.
 func TestPerceptualHashAcceptsAStructuredHighEntropyImage(t *testing.T) {
 	guards := DefaultGuards()
 	hasher := NewHasher(guards, "")

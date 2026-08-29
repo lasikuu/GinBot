@@ -43,11 +43,7 @@ const (
 // UtilityServiceClient is a client for the ginbot.v1.UtilityService service.
 type UtilityServiceClient interface {
 	HealthCheck(context.Context, *connect.Request[v1.HealthCheckReq]) (*connect.Response[v1.HealthCheckResp], error)
-	// Carries no request fields and returns no timestamp on purpose. Round-trip
-	// latency is measured entirely client-side (stamp before the call, diff after
-	// the response), which needs no clock synchronisation between the two
-	// processes. Diffing a client-supplied timestamp on the server would silently
-	// report clock skew as latency.
+	// No timestamp: latency is measured client-side, needing no clock sync.
 	Ping(context.Context, *connect.Request[v1.PingReq]) (*connect.Response[v1.PingResp], error)
 }
 
@@ -96,11 +92,7 @@ func (c *utilityServiceClient) Ping(ctx context.Context, req *connect.Request[v1
 // UtilityServiceHandler is an implementation of the ginbot.v1.UtilityService service.
 type UtilityServiceHandler interface {
 	HealthCheck(context.Context, *connect.Request[v1.HealthCheckReq]) (*connect.Response[v1.HealthCheckResp], error)
-	// Carries no request fields and returns no timestamp on purpose. Round-trip
-	// latency is measured entirely client-side (stamp before the call, diff after
-	// the response), which needs no clock synchronisation between the two
-	// processes. Diffing a client-supplied timestamp on the server would silently
-	// report clock skew as latency.
+	// No timestamp: latency is measured client-side, needing no clock sync.
 	Ping(context.Context, *connect.Request[v1.PingReq]) (*connect.Response[v1.PingResp], error)
 }
 

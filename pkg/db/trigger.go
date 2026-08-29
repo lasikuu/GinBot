@@ -23,7 +23,6 @@ import (
 // identified by constraint rather than by matching the error message.
 const exactPhraseConstraint = "uq_trigger_exact_phrase"
 
-// ErrExactPhraseTaken is returned when an exact-mode phrase already exists.
 var ErrExactPhraseTaken = errors.New("exact phrase already exists")
 
 func isExactPhraseViolation(err error) bool {
@@ -42,7 +41,6 @@ type CreateTriggerParams struct {
 	InstanceIDs []int64
 }
 
-// CreateTrigger writes the trigger and its instance scoping in one transaction.
 func CreateTrigger(ctx context.Context, params CreateTriggerParams) (string, error) {
 	if len(params.InstanceIDs) == 0 {
 		return "", fmt.Errorf("create trigger: at least one instance is required")
@@ -96,8 +94,6 @@ func CreateTrigger(ctx context.Context, params CreateTriggerParams) (string, err
 	return triggerID, nil
 }
 
-// GetTrigger returns one trigger by id, or ErrNotFound. Soft-deleted rows are
-// not returned.
 func GetTrigger(ctx context.Context, id string) (*model.Trigger, error) {
 	var row model.Trigger
 	err := db().QueryRow(ctx,
@@ -180,7 +176,6 @@ func ListTriggerInstanceIDs(ctx context.Context, triggerID string) ([]int64, err
 }
 
 type ListTriggersFilter struct {
-	// UserID scopes to one creator when non-empty.
 	UserID string
 	// InstanceID scopes to one instance when non-zero.
 	InstanceID   int64
@@ -198,7 +193,6 @@ const (
 	maxTriggerListLimit     = 200
 )
 
-// ListTriggers returns triggers matching a filter, newest first.
 func ListTriggers(ctx context.Context, filter ListTriggersFilter) ([]*model.Trigger, error) {
 	var args []any
 	conditions := []string{"deleted = FALSE"}
@@ -326,7 +320,6 @@ func UpdateTriggerByUser(ctx context.Context, update TriggerUpdate) error {
 	return nil
 }
 
-// SoftDeleteTriggerByUser returns ErrNotFound for a trigger that is not theirs.
 func SoftDeleteTriggerByUser(ctx context.Context, id string, userID string) error {
 	tag, err := db().Exec(ctx,
 		`UPDATE trigger

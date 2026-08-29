@@ -68,26 +68,10 @@ func (x ClientAction) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// The client half of the reverse stream. It carries no fields, and that is the
-// point.
-//
-// Field 1 used to be `platform_enum`, which made this the one RPC in the
-// repository that took caller identity from the request BODY — the exact
-// pattern ADR-0030 exists to forbid, surviving here only because the stream
-// predates the audited path. The platform now arrives in the
-// ginbot-platform-enum header like every other call, so the handler registers
-// the client from headers the clearance interceptor has already parsed rather
-// than from a message it has not.
-//
-// The message itself stays because the RPC stays bidirectional. A client must
-// still send one of these to open the stream: connect issues the underlying
-// HTTP request lazily, on the first Send or CloseRequest, so a client that
-// never sent would never reach the handler at all. It is a hello, not a
-// registration, and the server ignores its contents.
-//
-// The number and the name stay reserved so they can never be silently reused —
-// a future field 1 of a different type on a message clients still send would be
-// a wire-level type confusion.
+// Carries no fields: the platform now arrives in the ginbot-platform-enum
+// header. The message stays only because a client must Send once to open the
+// stream (connect issues the HTTP request lazily); it is a hello the server
+// ignores. Field 1 (platform_enum) stays reserved to prevent wire-type confusion.
 type OpenClientActionStreamReq struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -131,11 +115,9 @@ func (b0 OpenClientActionStreamReq_builder) Build() *OpenClientActionStreamReq {
 	return m0
 }
 
-// One reminder to post, pushed to the platform client that owns its destination.
-//
-// Every value here is a platform-level string the client can act on directly.
-// The client never sees the reminder row: it posts the message, then reports the
-// outcome with ConfirmDelivery.
+// One reminder to post, pushed to the platform client owning its destination.
+// Every field is a platform-level string; the client posts, then reports via
+// ConfirmDelivery.
 type ReminderDelivery struct {
 	state                     protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_ReminderId     *string                `protobuf:"bytes,1,opt,name=reminder_id,json=reminderId" json:"reminder_id,omitempty"`
@@ -284,28 +266,17 @@ func (x *ReminderDelivery) ClearOwnerUid() {
 type ReminderDelivery_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Reminder UUIDv7, passed straight back as ConfirmDeliveryReq.id.
-	//
-	// The one value here that is never legitimately empty. Without it the client
-	// cannot confirm, so the server's reclaim returns the reminder to PENDING and
-	// pushes it again every grace period until it fails out — the user is notified
-	// repeatedly for a delivery that can never be acknowledged. A delivery missing
-	// it is dropped by the client rather than posted.
+	// Passed straight back as ConfirmDeliveryReq.id. Never legitimately empty: a
+	// delivery missing it is dropped rather than posted, since it could never be
+	// confirmed and would be re-pushed every grace period.
 	ReminderId *string
-	// The reminder text to post. Legitimately EMPTY: a reminder with no message is
-	// still a reminder, and the client substitutes its own minimal body.
+	// Legitimately empty; the client substitutes a minimal body.
 	Message *string
-	// The platform's identifier for the channel or room to post in, taken from the
-	// destination's destination_meta. Legitimately EMPTY when the reminder has no
-	// resolvable channel, in which case the client falls back to a direct message.
+	// Channel/room id from destination_meta. Empty falls back to a direct message.
 	DestinationUid *string
-	// The platform's identifier for the reminder's owner — a platform snowflake,
-	// never the GinBot user_account UUID, hence _uid like MessageRef.author_uid.
-	// It is both the direct-message target and the caller identity attached to the
-	// outgoing ConfirmDelivery. Legitimately EMPTY when the owner has no
-	// resolvable platform identity, which costs the DM fallback and makes the
-	// confirmation be rejected — survivable, and bounded by the reclaim's attempt
-	// limit.
+	// The owner's platform snowflake (not the user_account UUID), used as the DM
+	// target and the ConfirmDelivery caller identity. Empty costs the DM fallback
+	// and makes the confirm be rejected; bounded by the reclaim attempt limit.
 	OwnerUid *string
 }
 
@@ -332,10 +303,8 @@ func (b0 ReminderDelivery_builder) Build() *ReminderDelivery {
 	return m0
 }
 
-// Development-only heartbeat. Cron emits it once a minute when
-// AppEnvironment == DEVELOPMENT and never in production, so nothing may depend
-// on receiving it: it exists solely to show that the server-to-client push path
-// is alive.
+// Development-only heartbeat, emitted once a minute only when
+// AppEnvironment == DEVELOPMENT. Nothing may depend on receiving it.
 type TestAction struct {
 	state                protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_EmittedAt *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=emitted_at,json=emittedAt" json:"emitted_at,omitempty"`
@@ -393,9 +362,6 @@ func (x *TestAction) ClearEmittedAt() {
 type TestAction_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// When the server emitted the heartbeat. The only thing worth carrying: the
-	// client already knows the action, so the arrival time compared against this
-	// is all the heartbeat can actually tell an operator.
 	EmittedAt *timestamppb.Timestamp
 }
 
@@ -589,14 +555,11 @@ func (x *OpenClientActionStreamResp) WhichPayload() case_OpenClientActionStreamR
 type OpenClientActionStreamResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Platform of the Connection
 	PlatformEnum *Platform
-	// Action to be taken by the client
 	ClientAction *ClientAction
-	// The payload for client_action. Set arms and actions correspond, but the
-	// pairing is not enforceable in the schema, so a client must still check which
-	// arm it actually got: an unset arm and an arm it does not recognise are both
-	// ordinary inputs, not bugs, and neither may be assumed away.
+	// Arms and actions correspond but the pairing is not schema-enforced, so a
+	// client must check which arm it got; an unset or unrecognised arm is ordinary
+	// input, not a bug.
 
 	// Fields of oneof xxx_hidden_Payload:
 	ReminderDelivery *ReminderDelivery

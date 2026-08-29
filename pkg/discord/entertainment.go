@@ -13,22 +13,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// entertainmentCallTimeout bounds every outgoing RPC in this file. None of
-// them inherits a deadline of its own — commandContext roots the handler
-// context at context.Background — and GetRandomNumber is public (see
-// pkg/grpc/interceptor.DefaultRequirements), so an unauthenticated round trip
-// that hangs would hold the handler open indefinitely without this.
+// entertainmentCallTimeout bounds every outgoing RPC here; the handler context
+// carries no deadline of its own.
 const entertainmentCallTimeout = 15 * time.Second
 
-// boundedEntertainmentCall derives the context an entertainment RPC is made
-// on, and the cancel its caller must defer.
 func boundedEntertainmentCall(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, entertainmentCallTimeout)
 }
 
-// digitRoll declares one member of the doubles family. Keeping the digit count
-// beside the name means adding a roll is one table entry rather than a new
-// handler plus a new command definition that can disagree with it.
 type digitRoll struct {
 	name        string
 	description string
@@ -43,8 +35,7 @@ var digitRolls = []digitRoll{
 	{name: "sexts", description: "Roll for sexts", digits: 6},
 }
 
-// Number bounds. The server range is [lower, upper), so an upper of 10 yields
-// 0-9.
+// The server range is [lower, upper), so an upper of 10 yields 0-9.
 const (
 	numberDefaultLower int64 = 0
 	numberDefaultUpper int64 = 10
@@ -91,9 +82,6 @@ func numberCommand() command.Command {
 				Default:     numberDefaultLower,
 			},
 			{
-				// The server range is [lower, upper), so the default of 10 yields
-				// 0-9. The old description said "defaults to 9", which contradicted
-				// the code and implied the bound was inclusive.
 				Name:        "upper",
 				Description: "Upper bound, exclusive. Defaults to 10",
 				Type:        command.ArgInt,
@@ -104,9 +92,8 @@ func numberCommand() command.Command {
 	}
 }
 
-// Returns a button component with a die emoji.
-// The customID string is used to connect the button's interaction to a handler.
-// Used with doubles.
+// createReRollButton returns a die-emoji button whose customID routes its
+// interaction back to a handler.
 func createReRollButton(customID string) *discordgo.ActionsRow {
 	var comp = discordgo.ActionsRow{
 		Components: []discordgo.MessageComponent{
@@ -144,9 +131,7 @@ func doublesPlusN(ctx context.Context, digits int32) (string, error) {
 
 	msg := resp.Msg.GetNumber()
 
-	// Hits are bolded. The roll is ASCII digits, so counting the first byte is
-	// equivalent to counting the first character; an empty response would panic
-	// on msg[0].
+	// Bold when every digit matches. The msg != "" guard avoids a panic on msg[0].
 	if msg != "" && strings.Count(msg, msg[:1]) == len(msg) {
 		msg = "**" + msg + "**"
 	}

@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// TestCanonicaliseGenericNormalisation uses fallback hosts so only the generic
-// stage-1 rules are in play.
+// TestCanonicaliseGenericNormalisation uses fallback hosts so only stage-1 runs.
 func TestCanonicaliseGenericNormalisation(t *testing.T) {
 	tests := []struct {
 		name       string

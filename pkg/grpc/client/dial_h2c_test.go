@@ -15,29 +15,13 @@ import (
 	"github.com/lasikuu/GinBot/pkg/gen/ginbot/v1/ginbotv1connect"
 )
 
-// This file drives client.Dial ITSELF, over a real connection — nothing in
-// the repository called Dial at all until now. reverse_h2c_test.go's own
-// newH2CClient hand-copies Dial's AllowHTTP + DialTLSContext construction, so
-// it proves that copy behaves correctly and nothing about Dial's own wiring.
-// An overlay that deletes Dial's whole plaintext branch (see
-// TestDialsPlaintextBranchIsNotVacuous below) leaves the rest of this
-// package's suite green, because nothing else ever calls Dial either.
-//
-// Go negotiates HTTP/2 automatically only over TLS, via ALPN. Plaintext needs
-// UnencryptedHTTP2 in http.Server.Protocols server-side and an http2.Transport
-// with AllowHTTP plus an explicit plaintext DialTLSContext client-side — see
-// dial.go's comment on why Dial uses http2.Transport directly rather than
-// http.Transport with ForceAttemptHTTP2, which is what makes a broken h2c
-// wiring here fail loudly on the first call rather than silently falling back
-// to HTTP/1.1. Unary Connect calls can still often complete over an HTTP/1.1
-// fallback; a bidi stream cannot carry a server-initiated push over one at
-// all, which is why this file asserts both: a transport that silently
-// downgraded (the more common mistake elsewhere in the ecosystem, guarded
-// against by the loud failure noted above) would still pass a unary-only test
-// while failing the bidi one.
+// This file drives client.Dial itself over a real connection. Plaintext HTTP/2
+// needs UnencryptedHTTP2 server-side and an http2.Transport with AllowHTTP plus
+// an explicit plaintext DialTLSContext client-side; get it wrong and traffic
+// silently downgrades to HTTP/1.1, where unary calls still pass but a bidi
+// stream cannot carry a server push. Both are asserted below.
 
-// dialTestUtilityHandler answers UtilityService.Ping, enough to prove a
-// unary call completes through Dial's transport.
+// dialTestUtilityHandler answers Ping through Dial's transport.
 type dialTestUtilityHandler struct {
 	ginbotv1connect.UnimplementedUtilityServiceHandler
 }
@@ -46,12 +30,9 @@ func (dialTestUtilityHandler) Ping(context.Context, *connect.Request[pb.PingReq]
 	return connect.NewResponse(pb.PingResp_builder{}.Build()), nil
 }
 
-// dialTestReverseHandler admits exactly one stream, pushes one action to it
-// right after the registration message arrives, and then holds the stream
-// open until the client goes away. It is deliberately simpler than
-// pkg/grpc/server.ReverseServer or reverse_h2c_test.go's testCapReverseHandler
-// (which this file does not need): the ONLY thing under test here is whether
-// Dial's transport can carry a server-initiated push at all.
+// dialTestReverseHandler pushes one action after the hello arrives, then holds
+// the stream open. All that is under test is whether Dial's transport can carry
+// a server push.
 type dialTestReverseHandler struct {
 	ginbotv1connect.UnimplementedReverseServiceHandler
 }
@@ -70,12 +51,9 @@ func (dialTestReverseHandler) OpenClientActionStream(ctx context.Context, stream
 	return nil
 }
 
-// protoRecorder records the negotiated protocol of the last request the
-// server observed, so a test can assert the connection ACTUALLY carried
-// HTTP/2 rather than merely that a call happened to succeed — Connect's
-// unary protocol tolerates an HTTP/1.1 downgrade for a single request/
-// response exchange, so "the call succeeded" alone does not prove h2c
-// negotiated at all.
+// protoRecorder records the negotiated protocol of the last request, so a test
+// can assert HTTP/2 was actually used: a succeeding unary call alone does not
+// prove h2c negotiated.
 type protoRecorder struct {
 	mu    sync.Mutex
 	proto string
@@ -99,9 +77,8 @@ func (r *protoRecorder) last() (proto string, major int) {
 	return r.proto, r.major
 }
 
-// newDialH2CServer mirrors cmd/ginbot-server's own construction for the
-// GINBOT_GRPC_TLS=false path: the mux mounted unwrapped on a plain (non-TLS)
-// listener whose http.Server has UnencryptedHTTP2 in its Protocols.
+// newDialH2CServer mirrors cmd/ginbot-server's GINBOT_GRPC_TLS=false path: a
+// plain listener whose http.Server has UnencryptedHTTP2 in its Protocols.
 func newDialH2CServer(t *testing.T) (*httptest.Server, *protoRecorder) {
 	t.Helper()
 
@@ -109,10 +86,8 @@ func newDialH2CServer(t *testing.T) (*httptest.Server, *protoRecorder) {
 	mux.Handle(ginbotv1connect.NewUtilityServiceHandler(dialTestUtilityHandler{}))
 	mux.Handle(ginbotv1connect.NewReverseServiceHandler(dialTestReverseHandler{}))
 
-	// The same Protocols set cmd/ginbot-server/main.go builds, set on
-	// srv.Config before Start because httptest only reads it when it hands the
-	// listener to http.Server.Serve. UnencryptedHTTP2 is what protoRecorder
-	// below is watching for: drop it and every request arrives as HTTP/1.1.
+	// UnencryptedHTTP2 is what protoRecorder watches for: drop it and every
+	// request arrives as HTTP/1.1. Set before Start so httptest reads it.
 	var protocols http.Protocols
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)
@@ -121,20 +96,14 @@ func newDialH2CServer(t *testing.T) (*httptest.Server, *protoRecorder) {
 	rec := &protoRecorder{}
 	srv := httptest.NewUnstartedServer(rec.wrap(mux))
 	srv.Config.Protocols = &protocols
-	// Deliberately NOT srv.StartTLS(): plaintext h2c is the point, and it is
-	// cmd/ginbot-server's default (GINBOT_GRPC_TLS=false).
 	srv.Start()
 	t.Cleanup(srv.Close)
 
 	return srv, rec
 }
 
-// TestDialCarriesUnaryAndBidiTrafficOverPlaintextH2C is the test the trap
-// exists for, driven through Dial itself rather than a hand-copied transport:
-// a unary call completes AND the server's negotiated protocol was actually
-// HTTP/2, AND a bidi stream opened through the same *Clients carries a
-// server-pushed message. Bidi is what actually breaks under a silent
-// HTTP/1.1 downgrade while unary keeps passing — see the file comment.
+// A unary call completes over HTTP/2 and a bidi stream through the same *Clients
+// carries a server push. Bidi is what breaks under a silent HTTP/1.1 downgrade.
 func TestDialCarriesUnaryAndBidiTrafficOverPlaintextH2C(t *testing.T) {
 	srv, rec := newDialH2CServer(t)
 
@@ -177,11 +146,8 @@ func TestDialCarriesUnaryAndBidiTrafficOverPlaintextH2C(t *testing.T) {
 	}
 }
 
-// TestDialCarriesUnaryTrafficOverTLS is the TLS counterpart: Dial with a
-// non-nil Options.TLS against a server negotiating HTTP/2 the ordinary way,
-// over ALPN. Cheap to add because httptest does the certificate handling;
-// unary-only is enough here since the h2c trap this file otherwise exists for
-// does not apply on this path — Go negotiates HTTP/2 automatically over TLS.
+// The TLS counterpart: Dial with a non-nil Options.TLS. Unary-only, since Go
+// negotiates HTTP/2 automatically over TLS.
 func TestDialCarriesUnaryTrafficOverTLS(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(ginbotv1connect.NewUtilityServiceHandler(dialTestUtilityHandler{}))

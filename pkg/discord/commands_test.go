@@ -10,9 +10,8 @@ import (
 	"github.com/lasikuu/GinBot/pkg/command"
 )
 
-// newTestRegistry builds the real command set. The handlers are never invoked
-// here — every assertion below is about declaration, not behaviour — so no gRPC
-// client or Discord session is needed.
+// newTestRegistry builds the real command set; handlers are never invoked, so no
+// client or session is needed.
 func newTestRegistry(t *testing.T) *command.Registry {
 	t.Helper()
 
@@ -26,16 +25,12 @@ func newTestRegistry(t *testing.T) *command.Registry {
 	return registry
 }
 
-// TestCommandDefinitionsRegister is the check initCommands performs at startup,
-// where the only report is log.Z.Fatal. A collision, a missing handler or an
-// unbindable argument order would take the bot down on boot; here it is a test
-// failure instead.
+// TestCommandDefinitionsRegister is the registration check initCommands makes at
+// startup, as a test failure rather than a boot-time log.Z.Fatal.
 func TestCommandDefinitionsRegister(t *testing.T) {
 	registry := newTestRegistry(t)
 
-	// Exact, not a subset: a command silently disappearing is exactly the kind
-	// of regression this catches, so extending the bot means extending this list
-	// deliberately.
+	// Exact, not a subset: a command silently disappearing is the regression.
 	want := []string{
 		"doubles", "healthcheck", "help", "info", "locale", "number", "ping",
 		"quads", "quints", "register", "remind", "reminderdel", "reminderinfo",
@@ -54,22 +49,14 @@ func TestCommandDefinitionsRegister(t *testing.T) {
 	}
 }
 
-// TestApplicationCommandsRespectDiscordLimits is the regression test for a live
-// boot failure: remindermod's repeat description was 120 characters against
-// Discord's 100 limit, so ApplicationCommandCreate returned HTTP 400 and the
-// bot died at startup — reporting only `options.3.description`, with no command
-// name.
-//
-// Descriptions are written in the registry, where no Discord constraint is
-// visible, so nothing else stops one growing. This asserts the real generated
-// definitions, so it fails here rather than against the live API.
+// TestApplicationCommandsRespectDiscordLimits: a description exceeding Discord's
+// limits fails ApplicationCommandCreate with a 400 at boot; this catches it here.
 func TestApplicationCommandsRespectDiscordLimits(t *testing.T) {
 	if err := validateApplicationCommands(applicationCommands(newTestRegistry(t))); err != nil {
 		t.Errorf("generated commands violate Discord's limits: %v", err)
 	}
 }
 
-// subCommandNamed builds one SubCommand-typed option, with no arguments.
 func subCommandNamed(name, description string) *discordgo.ApplicationCommandOption {
 	return &discordgo.ApplicationCommandOption{
 		Name:        name,
@@ -78,8 +65,7 @@ func subCommandNamed(name, description string) *discordgo.ApplicationCommandOpti
 	}
 }
 
-// groupWith builds a group parent carrying the given subcommands, i.e. the shape
-// applicationCommands generates for a grouped command.
+// groupWith builds a group parent carrying the given subcommands.
 func groupWith(subs ...*discordgo.ApplicationCommandOption) *discordgo.ApplicationCommand {
 	return &discordgo.ApplicationCommand{
 		Name:        "reminder",
@@ -88,8 +74,7 @@ func groupWith(subs ...*discordgo.ApplicationCommandOption) *discordgo.Applicati
 	}
 }
 
-// repeatedSubCommands builds n distinctly named, otherwise valid subcommands, so
-// that only the count can be what a validator objects to.
+// repeatedSubCommands builds n valid subcommands, so only the count can fail.
 func repeatedSubCommands(n int) []*discordgo.ApplicationCommandOption {
 	subs := make([]*discordgo.ApplicationCommandOption, 0, n)
 	for i := range n {
@@ -99,8 +84,7 @@ func repeatedSubCommands(n int) []*discordgo.ApplicationCommandOption {
 	return subs
 }
 
-// TestValidateApplicationCommandsCatchesViolations proves the check above can
-// actually fail — a validator that always returns nil would pass it silently.
+// TestValidateApplicationCommandsCatchesViolations proves the validator can fail.
 func TestValidateApplicationCommandsCatchesViolations(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -159,9 +143,7 @@ func TestValidateApplicationCommandsCatchesViolations(t *testing.T) {
 			},
 		},
 		{
-			// A subcommand IS an option, so the same limits apply to it — and a
-			// group's description lives one level down from where the pre-group
-			// validator looked.
+			// A subcommand is an option, so the same limits apply one level down.
 			name:        "subcommand description too long",
 			application: groupWith(subCommandNamed("add", strings.Repeat("x", maxOptionDescription+1))),
 		},
@@ -182,9 +164,7 @@ func TestValidateApplicationCommandsCatchesViolations(t *testing.T) {
 			application: groupWith(subCommandNamed("Add", "fine")),
 		},
 		{
-			// A subcommand's OWN options are what a slash invocation actually
-			// carries, so an over-long one there breaks boot exactly as a
-			// top-level option would — and nothing looked at them before.
+			// A subcommand's own options are what a slash invocation carries.
 			name: "an argument of a subcommand has a too-long description",
 			application: groupWith(&discordgo.ApplicationCommandOption{
 				Name:        "add",
@@ -225,9 +205,7 @@ func TestValidateApplicationCommandsCatchesViolations(t *testing.T) {
 	}
 }
 
-// TestDigitRollDigits pins the digit counts. The server zero-pads to this
-// width, so a wrong number here silently changes what a roll looks like rather
-// than failing.
+// TestDigitRollDigits pins the digit counts; the server zero-pads to this width.
 func TestDigitRollDigits(t *testing.T) {
 	want := map[string]int32{
 		"doubles": 2,
@@ -253,7 +231,6 @@ func TestDigitRollDigits(t *testing.T) {
 	}
 }
 
-// generatedByName indexes the generated definitions for lookup by Discord name.
 func generatedByName(t *testing.T, registry *command.Registry) map[string]*discordgo.ApplicationCommand {
 	t.Helper()
 
@@ -269,7 +246,6 @@ func generatedByName(t *testing.T, registry *command.Registry) map[string]*disco
 	return byName
 }
 
-// subCommandOf returns a group parent's named subcommand.
 func subCommandOf(parent *discordgo.ApplicationCommand, sub string) (*discordgo.ApplicationCommandOption, bool) {
 	for _, option := range parent.Options {
 		if option.Name == sub {
@@ -280,14 +256,8 @@ func subCommandOf(parent *discordgo.ApplicationCommand, sub string) (*discordgo.
 	return nil, false
 }
 
-// TestApplicationCommandsDerivedFromRegistry covers the acceptance criterion
-// that the Discord definitions are generated, not hand-written: a command that
-// exists in the registry must appear, with its arguments, in the slice sent to
-// Discord.
-//
-// A grouped command appears as a subcommand of its group rather than at top
-// level, so the assertion follows the shape rather than assuming one
-// ApplicationCommand per registered command.
+// TestApplicationCommandsDerivedFromRegistry: every registered command appears,
+// with its arguments, in the slice sent to Discord; grouped ones as subcommands.
 func TestApplicationCommandsDerivedFromRegistry(t *testing.T) {
 	registry := newTestRegistry(t)
 	byName := generatedByName(t, registry)
@@ -339,10 +309,8 @@ func TestApplicationCommandsDerivedFromRegistry(t *testing.T) {
 	}
 }
 
-// TestReminderCommandsGenerateOneGroupedCommand is the /reminder shape: five
-// registered commands, ONE top-level Discord command, five subcommands. Five
-// top-level reminder commands is what this replaces, so a member escaping back
-// to top level is the regression to catch.
+// TestReminderCommandsGenerateOneGroupedCommand: five registered commands become
+// one top-level command with five subcommands.
 func TestReminderCommandsGenerateOneGroupedCommand(t *testing.T) {
 	registry := newTestRegistry(t)
 	byName := generatedByName(t, registry)
@@ -362,8 +330,7 @@ func TestReminderCommandsGenerateOneGroupedCommand(t *testing.T) {
 	gotSubs := make([]string, 0, len(parent.Options))
 	for _, option := range parent.Options {
 		gotSubs = append(gotSubs, option.Name)
-		// A group parent is purely a container: Discord rejects a command that
-		// mixes subcommands with ordinary options.
+		// Discord rejects a command mixing subcommands with ordinary options.
 		if option.Type != discordgo.ApplicationCommandOptionSubCommand {
 			t.Errorf("%q option %q has type %v, want SubCommand", reminderGroup, option.Name, option.Type)
 		}
@@ -375,7 +342,7 @@ func TestReminderCommandsGenerateOneGroupedCommand(t *testing.T) {
 		t.Errorf("%q subcommands = %q, want %q", reminderGroup, gotSubs, wantSubs)
 	}
 
-	// None of the members may also exist at top level.
+	// No member may also exist at top level.
 	for _, name := range []string{
 		"remind", "reminders", "reminderdel", "remindermod", "reminderinfo",
 	} {
@@ -386,9 +353,7 @@ func TestReminderCommandsGenerateOneGroupedCommand(t *testing.T) {
 }
 
 // TestSubCommandCarriesItsOwnArguments: a slash invocation delivers a
-// subcommand's arguments as the SUBCOMMAND's options, so that is where they have
-// to be declared. Putting them on the parent would both be rejected by Discord
-// and leave the handler with nothing bound.
+// subcommand's arguments as the subcommand's own options.
 func TestSubCommandCarriesItsOwnArguments(t *testing.T) {
 	byName := generatedByName(t, newTestRegistry(t))
 
@@ -424,8 +389,6 @@ func TestSubCommandCarriesItsOwnArguments(t *testing.T) {
 				t.Fatalf("%q %q options = %q, want %q", reminderGroup, tt.sub, got, tt.want)
 			}
 
-			// Type and requiredness are derived from the declared Arg, so a
-			// slash option and a chat positional cannot disagree.
 			for i, arg := range tt.cmd.Args {
 				option := sub.Options[i]
 				if option.Type != applicationCommandOptionType(arg.Type) {
@@ -443,10 +406,8 @@ func TestSubCommandCarriesItsOwnArguments(t *testing.T) {
 	}
 }
 
-// TestGroupParentCarriesNoTopLevelOptions: Discord rejects a chat-input command
-// that mixes subcommands with ordinary options, so a group parent must be a
-// container and nothing else. It has no Args of its own to derive one from
-// either — there is no Command behind a group.
+// TestGroupParentCarriesNoTopLevelOptions: Discord rejects a command mixing
+// subcommands with ordinary options, so a group parent is only a container.
 func TestGroupParentCarriesNoTopLevelOptions(t *testing.T) {
 	registry := newTestRegistry(t)
 	byName := generatedByName(t, registry)
@@ -469,8 +430,7 @@ func TestGroupParentCarriesNoTopLevelOptions(t *testing.T) {
 	}
 }
 
-// TestUngroupedCommandsStayTopLevel: grouping the reminders was not supposed to
-// move anything else. Games and tools are a separate decision.
+// TestUngroupedCommandsStayTopLevel: grouping the reminders moved nothing else.
 func TestUngroupedCommandsStayTopLevel(t *testing.T) {
 	registry := newTestRegistry(t)
 	byName := generatedByName(t, registry)
@@ -504,10 +464,8 @@ func TestUngroupedCommandsStayTopLevel(t *testing.T) {
 	}
 }
 
-// TestEveryGroupHasADescription is the check initCommands makes at startup,
-// where the only report is log.Z.Fatal. A group parent is generated, so there is
-// no Command to carry its description and nothing else would notice it missing
-// until Discord rejected the empty one at boot.
+// TestEveryGroupHasADescription is the group-description check initCommands makes
+// at startup; a group parent has no Command to carry its description.
 func TestEveryGroupHasADescription(t *testing.T) {
 	registry := newTestRegistry(t)
 
@@ -522,8 +480,7 @@ func TestEveryGroupHasADescription(t *testing.T) {
 		}
 	}
 
-	// The mirror of TestLocalizationsMatchRegisteredCommands: a renamed group
-	// would otherwise leave a description keyed by a name nothing uses.
+	// A renamed group would leave a description keyed by a name nothing uses.
 	for group := range commandGroupDescriptions {
 		if !slices.Contains(groups, group) {
 			t.Errorf("commandGroupDescriptions has key %q, which is not a registered group", group)
@@ -531,12 +488,8 @@ func TestEveryGroupHasADescription(t *testing.T) {
 	}
 }
 
-// TestGroupedCommandsHaveNoLocalizations pins the deliberate gap.
-// commandLocalizations translates a command's FLAT name, and a subcommand's
-// Discord name is its Sub, so subCommandOption cannot apply one without shipping
-// a translation of the wrong token. Nothing is dropped today; the day someone
-// adds a translation for a grouped command, this fails and the choice gets made
-// on purpose.
+// TestGroupedCommandsHaveNoLocalizations: commandLocalizations translates a
+// flat name, but a subcommand's Discord name is its Sub, so it cannot apply.
 func TestGroupedCommandsHaveNoLocalizations(t *testing.T) {
 	for _, cmd := range newTestRegistry(t).All() {
 		if cmd.Group == "" {
@@ -548,9 +501,8 @@ func TestGroupedCommandsHaveNoLocalizations(t *testing.T) {
 	}
 }
 
-// TestChatResolvesEveryReminderSubcommand ties the generated slash surface back
-// to the chat one: /reminder add and ??reminder add must reach the same handler,
-// and the legacy flat names must keep working alongside both.
+// TestChatResolvesEveryReminderSubcommand: /reminder add and ??reminder add must
+// reach the same handler.
 func TestChatResolvesEveryReminderSubcommand(t *testing.T) {
 	registry := newTestRegistry(t)
 
@@ -574,8 +526,6 @@ func TestChatResolvesEveryReminderSubcommand(t *testing.T) {
 			if cmd.Name != tt.want {
 				t.Errorf("??%s %s resolved to %q, want %q", reminderGroup, tt.sub, cmd.Name, tt.want)
 			}
-			// The subcommand token is consumed, so binding sees the same
-			// arguments the legacy flat invocation would.
 			if !slices.Equal(rest, []string{"in 2h", "tea"}) {
 				t.Errorf("remaining arguments = %q, want the two after the subcommand", rest)
 			}
@@ -583,10 +533,8 @@ func TestChatResolvesEveryReminderSubcommand(t *testing.T) {
 	}
 }
 
-// TestApplicationCommandsPreserveLocalizations guards the migration off the
-// hand-written EntertainmentCommands and UtilityCommands slices. The
-// translations were not supposed to change, and nothing else would notice if
-// they silently vanished.
+// TestApplicationCommandsPreserveLocalizations: the translations survive
+// generation.
 func TestApplicationCommandsPreserveLocalizations(t *testing.T) {
 	applications := applicationCommands(newTestRegistry(t))
 
@@ -621,9 +569,7 @@ func TestApplicationCommandsPreserveLocalizations(t *testing.T) {
 	}
 }
 
-// TestLocalizedNamesResolveAsAliases covers the chat side of the same thing:
-// ??tuplat must reach doubles, because a Finnish user who uses /tuplat will
-// expect it to.
+// TestLocalizedNamesResolveAsAliases: ??tuplat must reach doubles.
 func TestLocalizedNamesResolveAsAliases(t *testing.T) {
 	registry := newTestRegistry(t)
 
@@ -650,9 +596,8 @@ func TestLocalizedNamesResolveAsAliases(t *testing.T) {
 	}
 }
 
-// TestLegacyReminderNamesResolve pins the names the previous bot used. They are
-// what people have in muscle memory, and dropping one would fail silently: an
-// unknown chat command is ignored without a reply.
+// TestLegacyReminderNamesResolve pins the previous bot's names; an unknown chat
+// command is dropped silently.
 func TestLegacyReminderNamesResolve(t *testing.T) {
 	registry := newTestRegistry(t)
 
@@ -678,9 +623,8 @@ func TestLegacyReminderNamesResolve(t *testing.T) {
 	}
 }
 
-// TestLocalizationsMatchRegisteredCommands catches a rename. Both the alias and
-// the Discord translation are looked up by canonical name, so renaming a
-// command without renaming its localization key drops both silently.
+// TestLocalizationsMatchRegisteredCommands: a localization key not matching a
+// registered command means a rename dropped both silently.
 func TestLocalizationsMatchRegisteredCommands(t *testing.T) {
 	registry := newTestRegistry(t)
 

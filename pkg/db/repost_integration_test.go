@@ -464,7 +464,6 @@ func TestListRepostRetentionsIgnoresNullRetention(t *testing.T) {
 	if _, err := db().Exec(ctx, `UPDATE instance SET repost_retention_days = $1 WHERE id = $2`, days, withRetentionID); err != nil {
 		t.Fatalf("set repost_retention_days: %v", err)
 	}
-	// withoutRetentionID is left at its default (NULL) deliberately.
 
 	rows, err := ListRepostRetentions(ctx)
 	if err != nil {

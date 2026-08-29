@@ -9,8 +9,7 @@ import (
 	"github.com/lasikuu/GinBot/pkg/command"
 )
 
-// sessionAs builds the minimal session the dispatch filter reads: the bot's own
-// identity. discordgo.State embeds Ready, which carries the User.
+// sessionAs builds the minimal session carrying the bot's own identity.
 func sessionAs(id string) *discordgo.Session {
 	return &discordgo.Session{
 		State: &discordgo.State{
@@ -25,10 +24,8 @@ func messageFrom(author *discordgo.User) *discordgo.MessageCreate {
 	}
 }
 
-// TestIsHuman covers the acceptance criterion that the bot ignores itself and
-// other bots. Getting this wrong is what produces a self-reply loop, so the
-// degenerate shapes are covered too: discordgo leaves State unpopulated until
-// the session is open, and a webhook message has no Author.
+// TestIsHuman: the bot ignores itself and other bots. Degenerate shapes are
+// covered too, since State is unpopulated until the session opens.
 func TestIsHuman(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -89,10 +86,8 @@ func TestIsHuman(t *testing.T) {
 	}
 }
 
-// TestReRollCommandName covers both the current namespaced IDs and the
-// hand-written ones still attached to messages posted before the namespace
-// existed. Discord components never expire, so the legacy path stays live
-// indefinitely.
+// TestReRollCommandName covers namespaced and legacy IDs; Discord components
+// never expire, so the legacy path stays live.
 func TestReRollCommandName(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -121,8 +116,7 @@ func TestReRollCommandName(t *testing.T) {
 		})
 	}
 
-	// The legacy path is the one nobody exercises by hand, so a legacy ID added
-	// without a case above must fail here rather than go unnoticed.
+	// A legacy ID added without a case above must fail here.
 	covered := make(map[string]struct{}, len(legacyReRollIDs))
 	for _, tt := range tests {
 		if _, legacy := legacyReRollIDs[tt.customID]; legacy {
@@ -136,11 +130,8 @@ func TestReRollCommandName(t *testing.T) {
 	}
 }
 
-// TestReRollButtonStaysClickable pins that the button a first roll carries is
-// one the component dispatcher resolves back to the same command. Nothing else
-// connects the ID stamped onto the button to the ID the dispatcher reads, and
-// this is what lets the original message be clicked over and over now that a
-// click replies to it instead of replacing it.
+// TestReRollButtonStaysClickable: the button a first roll carries resolves back
+// to the same command; nothing else connects the two IDs.
 func TestReRollButtonStaysClickable(t *testing.T) {
 	for _, roll := range digitRolls {
 		t.Run(roll.name, func(t *testing.T) {
@@ -158,10 +149,8 @@ func TestReRollButtonStaysClickable(t *testing.T) {
 	}
 }
 
-// TestLegacyClickProducesNoNewButton covers the legacy path end to end: an old
-// hand-written custom ID still resolves, and the roll the click produces
-// carries no button. Buttons on already-posted messages never expire, so the
-// legacy path must not start a chain either.
+// TestLegacyClickProducesNoNewButton: a legacy custom ID resolves and the roll
+// it produces carries no button, so the legacy path starts no chain.
 func TestLegacyClickProducesNoNewButton(t *testing.T) {
 	for customID, want := range legacyReRollIDs {
 		t.Run(customID, func(t *testing.T) {
@@ -178,8 +167,7 @@ func TestLegacyClickProducesNoNewButton(t *testing.T) {
 	}
 }
 
-// TestReRollIDRoundTrip pins that a generated ID is one the dispatcher can
-// resolve. The two live in different files and nothing else connects them.
+// TestReRollIDRoundTrip: a generated ID is one the dispatcher can resolve.
 func TestReRollIDRoundTrip(t *testing.T) {
 	for _, roll := range digitRolls {
 		t.Run(roll.name, func(t *testing.T) {
@@ -191,10 +179,8 @@ func TestReRollIDRoundTrip(t *testing.T) {
 	}
 }
 
-// TestInvocationFromOptions covers the slash-command binding path. Every
-// discordgo option accessor panics when the option is not of its type, and
-// discordgo does not recover panics raised in a handler, so an unhandled type
-// must return an error rather than reach an accessor.
+// TestInvocationFromOptions: every discordgo option accessor panics on a type
+// mismatch, so an unhandled type must return an error, not reach an accessor.
 func TestInvocationFromOptions(t *testing.T) {
 	cmd := numberCommand()
 
@@ -221,9 +207,8 @@ func TestInvocationFromOptions(t *testing.T) {
 			wantUpper: 7,
 		},
 		{
-			// Discord omits an unsupplied option entirely, so this shape is what
-			// `/number upper:5` actually delivers. It cannot be expressed
-			// positionally, which is why the named binding path exists.
+			// Discord omits an unsupplied option, so this is what `/number upper:5`
+			// delivers — inexpressible positionally.
 			name: "only the second bound supplied",
 			options: []*discordgo.ApplicationCommandInteractionDataOption{
 				{Name: "upper", Type: discordgo.ApplicationCommandOptionInteger, Value: float64(5)},
@@ -262,9 +247,8 @@ func TestInvocationFromOptions(t *testing.T) {
 	}
 }
 
-// subCommandInteraction builds the interaction data Discord actually delivers
-// for /group sub: data.Name is the GROUP, and the single option is the
-// subcommand, whose own options carry the arguments.
+// subCommandInteraction builds the data Discord delivers for /group sub:
+// data.Name is the group and the single option is the subcommand.
 func subCommandInteraction(group, sub string, args ...*discordgo.ApplicationCommandInteractionDataOption) discordgo.ApplicationCommandInteractionData {
 	return discordgo.ApplicationCommandInteractionData{
 		Name: group,
@@ -278,9 +262,8 @@ func subCommandInteraction(group, sub string, args ...*discordgo.ApplicationComm
 	}
 }
 
-// TestResolveApplicationCommandDescendsIntoSubcommands: reading data.Options
-// directly for a group would bind the SUBCOMMAND as the first argument and lose
-// every real one, so the descent is what makes /reminder add work at all.
+// TestResolveApplicationCommandDescendsIntoSubcommands: reading a group's
+// data.Options directly would bind the subcommand as the first argument.
 func TestResolveApplicationCommandDescendsIntoSubcommands(t *testing.T) {
 	commandRegistry = newTestRegistry(t)
 
@@ -313,16 +296,12 @@ func TestResolveApplicationCommandDescendsIntoSubcommands(t *testing.T) {
 			wantCommand: "reminders",
 		},
 		{
-			// Discord lowercases what it sends, but resolution folds anyway and
-			// asserting it here keeps the slash path aligned with the chat one.
 			name:        "subcommand name in a different case",
 			data:        subCommandInteraction(reminderGroup, strings.ToUpper(reminderSubAdd), when, message),
 			wantCommand: "remind",
 			wantOptions: []string{"when", "message"},
 		},
 		{
-			// A top-level command is unchanged: its own options are the
-			// arguments, with no level to descend.
 			name: "ungrouped command keeps its own options",
 			data: discordgo.ApplicationCommandInteractionData{
 				Name: "number",
@@ -353,8 +332,6 @@ func TestResolveApplicationCommandDescendsIntoSubcommands(t *testing.T) {
 				t.Errorf("options = %q, want %q", got, tt.wantOptions)
 			}
 
-			// The returned options must bind against the resolved command, which
-			// is the whole point of returning them together.
 			if _, err := invocationFromOptions(cmd, options); err != nil {
 				t.Errorf("invocationFromOptions: %v", err)
 			}
@@ -362,10 +339,8 @@ func TestResolveApplicationCommandDescendsIntoSubcommands(t *testing.T) {
 	}
 }
 
-// TestResolveApplicationCommandRefusesDegenerateShapes: every one of these must
-// report a miss so the caller answers the interaction. Returning silently is what
-// shows the user "the application did not respond", with nothing in the log to
-// explain it.
+// TestResolveApplicationCommandRefusesDegenerateShapes: each must report a miss
+// so the caller answers the interaction rather than leaving it unanswered.
 func TestResolveApplicationCommandRefusesDegenerateShapes(t *testing.T) {
 	commandRegistry = newTestRegistry(t)
 
@@ -378,8 +353,7 @@ func TestResolveApplicationCommandRefusesDegenerateShapes(t *testing.T) {
 			data: discordgo.ApplicationCommandInteractionData{Name: "nosuchcommand"},
 		},
 		{
-			// A group is not invocable on its own; Discord should never send
-			// this, but a stale registration could.
+			// A stale registration could send a group with no subcommand.
 			name: "group with no options",
 			data: discordgo.ApplicationCommandInteractionData{Name: reminderGroup},
 		},
@@ -397,8 +371,7 @@ func TestResolveApplicationCommandRefusesDegenerateShapes(t *testing.T) {
 			data: subCommandInteraction(reminderGroup, "nosuchsub"),
 		},
 		{
-			// The member's flat name is not its sub, so it must not resolve as
-			// one from the slash path either.
+			// A member's flat name is not its sub, so it must not resolve here.
 			name: "group followed by a member's flat name",
 			data: subCommandInteraction(reminderGroup, "remind"),
 		},
@@ -429,7 +402,6 @@ func TestIsCommandGroup(t *testing.T) {
 	}{
 		{name: reminderGroup, want: true},
 		{name: strings.ToUpper(reminderGroup), want: true},
-		// A member's flat name is a command, not a group.
 		{name: "remind", want: false},
 		{name: "ping", want: false},
 		{name: "", want: false},
@@ -445,8 +417,7 @@ func TestIsCommandGroup(t *testing.T) {
 	}
 }
 
-// TestSlashAndChatBindEquivalently is the pure half of "the same command works
-// both ways": a slash invocation with no options and a chat invocation with no
+// TestSlashAndChatBindEquivalently: a slash and a chat invocation with no
 // arguments must produce the same bound values.
 func TestSlashAndChatBindEquivalently(t *testing.T) {
 	cmd := numberCommand()
@@ -468,14 +439,8 @@ func TestSlashAndChatBindEquivalently(t *testing.T) {
 	}
 }
 
-// TestMessageContentRequired pins when the privileged intent is asked for.
-//
-// Requesting MESSAGE_CONTENT when the application does not have it enabled makes
-// the gateway close with 4014, which surfaces as a fatal "cannot open the
-// session" — so it must not be requested for a bot that needs neither chat
-// commands nor triggers. NOT requesting it when either is wanted is the silent
-// failure: every MessageCreate arrives with an empty Content and nothing ever
-// matches, with no error anywhere.
+// TestMessageContentRequired pins when the privileged MESSAGE_CONTENT intent is
+// asked for: only when chat commands or triggers need it.
 func TestMessageContentRequired(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -500,14 +465,8 @@ func TestMessageContentRequired(t *testing.T) {
 	}
 }
 
-// TestTriggerCandidate is the acceptance criterion that a message which parses
-// as a command does NOT also attempt a trigger.
-//
-// A prefix is an explicit address to a bot, so it disqualifies the message
-// whether or not the command behind it resolves: "??nosuchthing" is a typo aimed
-// at a bot, not conversation, and matching a trigger on it would answer a typo
-// with an auto-responder. Blank content is disqualified because every message now
-// costs an RPC and there is nothing to match.
+// TestTriggerCandidate: a prefixed message is a command and never also a trigger,
+// whether or not the command resolves; blank content is disqualified.
 func TestTriggerCandidate(t *testing.T) {
 	prefixes := []string{"?", "??"}
 
@@ -526,9 +485,7 @@ func TestTriggerCandidate(t *testing.T) {
 		{name: "spaces only", content: "   ", prefixes: prefixes, want: false},
 		{name: "newlines and tabs only", content: "\n\t \n", prefixes: prefixes, want: false},
 		{
-			// With no prefixes configured chat commands are disabled entirely,
-			// so nothing is an address to this bot and a message that looks like
-			// one is still just conversation.
+			// With no prefixes configured, a prefix-looking message is conversation.
 			name:     "a prefix that is not configured is not a prefix",
 			content:  "??ping",
 			prefixes: nil,
@@ -536,8 +493,6 @@ func TestTriggerCandidate(t *testing.T) {
 		},
 		{name: "conversation with no prefixes configured", content: "good morning", prefixes: nil, want: true},
 		{
-			// The prefix has to be at the start. A message merely containing one
-			// is conversation.
 			name:     "a prefix in the middle",
 			content:  "what does ??ping do",
 			prefixes: prefixes,
@@ -554,9 +509,8 @@ func TestTriggerCandidate(t *testing.T) {
 	}
 }
 
-// messageMentioning builds a message that mentions users the way Discord
-// delivers a DELIBERATE mention: the users appear in Mentions and their <@id>
-// tokens appear in the content.
+// messageMentioning builds a deliberate mention: users in Mentions and their
+// <@id> tokens in the content.
 func messageMentioning(users ...*discordgo.User) *discordgo.MessageCreate {
 	m := messageFrom(&discordgo.User{ID: "someone"})
 	m.Mentions = users
@@ -572,9 +526,8 @@ func messageMentioning(users ...*discordgo.User) *discordgo.MessageCreate {
 	return m
 }
 
-// messageReplyPinging builds a message that mentions users the way Discord
-// delivers a REPLY: the replied-to author is added to Mentions, but no mention
-// token appears in the text the author actually typed.
+// messageReplyPinging builds a reply ping: the author is in Mentions but no
+// mention token appears in the text.
 func messageReplyPinging(users ...*discordgo.User) *discordgo.MessageCreate {
 	m := messageFrom(&discordgo.User{ID: "someone"})
 	m.Mentions = users
@@ -583,28 +536,16 @@ func messageReplyPinging(users ...*discordgo.User) *discordgo.MessageCreate {
 	return m
 }
 
-// withContent overrides a message's text, for the cases where the token in the
-// content and the resolved Mentions list have to disagree.
+// withContent overrides a message's text so the token and the Mentions list can
+// disagree.
 func withContent(m *discordgo.MessageCreate, content string) *discordgo.MessageCreate {
 	m.Content = content
 
 	return m
 }
 
-// TestMentionsBot covers the forced fire's trigger condition. It must be decided
-// against the bot's own user id rather than by string-matching a name: a nickname
-// is per-guild and renameable, and "gin" appears in ordinary conversation.
-//
-// It must also be decided against the message TEXT, not the Mentions list alone.
-// Discord adds the replied-to author to Mentions whenever mention_author is set,
-// which is the client default, so a list-only check would turn every reply to a
-// bot message into a forced fire — bypassing the chance roll on ordinary
-// conversation with the bot.
-//
-// The degenerate shapes are real. discordgo leaves State unpopulated until the
-// session is open, Mentions is nil on the overwhelming majority of messages, and
-// handlers are dispatched without a recover() — so a nil deref here takes the
-// whole process down on somebody's greeting.
+// TestMentionsBot: a deliberate mention is decided by the bot's user id and by
+// the message text, not the Mentions list alone (which a reply ping populates).
 func TestMentionsBot(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -637,7 +578,6 @@ func TestMentionsBot(t *testing.T) {
 			want:    false,
 		},
 		{
-			// The whole reason the content is consulted.
 			name:    "a reply ping is not a deliberate mention",
 			session: sessionAs("self"),
 			message: messageReplyPinging(&discordgo.User{ID: "self"}),
@@ -650,8 +590,7 @@ func TestMentionsBot(t *testing.T) {
 			want:    true,
 		},
 		{
-			// Mentions is what Discord resolved; the token alone must not be
-			// enough, or a member could forge one for an id the bot never had.
+			// The token alone must not be enough, or a member could forge one.
 			name:    "a bare token with nothing resolved does not count",
 			session: sessionAs("self"),
 			message: withContent(messageReplyPinging(), "<@self>"),

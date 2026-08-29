@@ -208,13 +208,10 @@ func (x *Instance) ClearUpdatedAt() {
 type Instance_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Internal Instance ID
-	Id *int64
-	// Instance enum
+	Id           *int64
 	PlatformEnum *Platform
-	// Instance meta information such as Server ID etc.
 	InstanceMeta *structpb.Struct
-	// Default channel for the instance (if applicable) for announcements etc.
+	// Default channel for announcements etc., if applicable.
 	DefaultChannel *string
 	CreatedAt      *timestamppb.Timestamp
 	UpdatedAt      *timestamppb.Timestamp
@@ -303,14 +300,8 @@ func (x *GetInstanceReq) ClearId() {
 type GetInstanceReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Internal Instance ID.
-	//
-	// instance.id is a BIGSERIAL, so the smallest id that can exist is 1; zero and
-	// anything negative name no row and only ever buy a query that answers
-	// NotFound. Zero is the case worth the rule: the handler's HasId() check
-	// catches an absent id but not an explicit 0, and 0 is exactly what a client
-	// that forgot to set the field produces when it reads its own request back
-	// through GetId().
+	// gt 0: id is a BIGSERIAL, and HasId() does not catch an explicit 0 (what a
+	// client that forgot the field sends).
 	Id *int64
 }
 
@@ -479,11 +470,7 @@ func (x *ListInstancesReq) ClearLimit() {
 type ListInstancesReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Deliberately unbounded, the same call ListTriggersReq.limit makes in
-	// trigger.proto: paging is a thing to clamp, not to refuse, so rejecting a big
-	// number here would be a regression for whoever typed it. ListInstances is
-	// Unimplemented today — when it lands it owes the clamp pkg/db's trigger
-	// listing already has, not an lte rule added back here.
+	// Unbounded; paging is clamped, not refused (see ListTriggersReq.limit).
 	Offset *int64
 	Limit  *int64
 }
@@ -676,28 +663,13 @@ func (x *CreateInstanceReq) ClearDefaultChannel() {
 type CreateInstanceReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Instance enum.
-	//
-	// All THREE rules are needed; see TriggerInstance.platform_enum in
-	// trigger.proto for why, and OpenClientActionStreamReq.platform_enum in
-	// reverse.proto for the worked explanation. The handler's
-	// HasPlatformEnum() check is satisfied by an explicit zero, and instance rows
-	// are keyed by (platform_enum, instance_meta) under
-	// uq_instance_platform_meta — so without not_in this writes a real row on a
-	// platform that does not exist, which no client can ever resolve again.
+	// All three rules needed (see TriggerInstance.platform_enum): rows are keyed
+	// by (platform_enum, instance_meta), so an unspecified platform writes an
+	// unresolvable row.
 	PlatformEnum *Platform
-	// Instance meta information such as Server ID etc.
-	//
-	// Required because it is the other half of the row's identity: an instance
-	// with no meta is matched by uq_instance_platform_meta against every other
-	// meta-less instance on the same platform.
+	// The other half of the row's identity under uq_instance_platform_meta.
 	InstanceMeta *structpb.Struct
-	// Default channel for the instance (if applicable) for announcements etc.
-	//
-	// 255 is the MXID length limit, which bounds the longest identifier any
-	// supported platform can put here — a Matrix room alias. Discord channel ids
-	// are snowflakes and nowhere near it. The value is stored verbatim and echoed
-	// back to clients, so it is bounded rather than trusted.
+	// 255 is the MXID limit (a Matrix room alias); stored verbatim and echoed back.
 	DefaultChannel *string
 }
 
@@ -778,7 +750,6 @@ func (x *CreateInstanceResp) ClearId() {
 type CreateInstanceResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Internal Instance ID
 	Id *int64
 }
 
@@ -932,14 +903,9 @@ func (x *UpdateInstanceReq) ClearDefaultChannel() {
 type UpdateInstanceReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Internal Instance ID. See GetInstanceReq.id.
-	Id *int64
-	// Instance enum. See CreateInstanceReq.platform_enum.
-	PlatformEnum *Platform
-	// Instance meta information such as Server ID etc. See CreateInstanceReq.
-	InstanceMeta *structpb.Struct
-	// Default channel for the instance (if applicable) for announcements etc.
-	// See CreateInstanceReq.default_channel.
+	Id             *int64
+	PlatformEnum   *Platform
+	InstanceMeta   *structpb.Struct
 	DefaultChannel *string
 }
 
@@ -963,10 +929,8 @@ func (b0 UpdateInstanceReq_builder) Build() *UpdateInstanceReq {
 	return m0
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 type UpdateInstanceResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1071,7 +1035,6 @@ func (x *DeleteInstanceReq) ClearId() {
 type DeleteInstanceReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Internal Instance ID. See GetInstanceReq.id.
 	Id *int64
 }
 
@@ -1086,7 +1049,6 @@ func (b0 DeleteInstanceReq_builder) Build() *DeleteInstanceReq {
 	return m0
 }
 
-// Empty on purpose; see UpdateInstanceResp.
 type DeleteInstanceResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields

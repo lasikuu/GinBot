@@ -75,7 +75,6 @@ func (x TriggerMode) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// A stored media file attached to a trigger.
 type TriggerFile struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_FileId      *string                `protobuf:"bytes,1,opt,name=file_id,json=fileId" json:"file_id,omitempty"`
@@ -221,13 +220,10 @@ func (x *TriggerFile) ClearByteSize() {
 type TriggerFile_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// File UUIDv7
-	FileId *string
-	// Original filename, for display and for the attachment name on playback
+	FileId   *string
 	Filename *string
-	// Sniffed content type, never the one the URL claimed
+	// Sniffed content type, never the one the URL claimed.
 	MimeType *string
-	// Size in bytes
 	ByteSize *int64
 }
 
@@ -254,7 +250,6 @@ func (b0 TriggerFile_builder) Build() *TriggerFile {
 	return m0
 }
 
-// Message representing a Trigger
 type Trigger struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Id          *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
@@ -566,27 +561,17 @@ func (x *Trigger) ClearFile() {
 type Trigger_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Trigger UUIDv7
-	Id *string
-	// Phrase to trigger the response
-	Phrase *string
-	// Reply to send in response to the trigger
-	Reply *string
-	// File to send in response to the trigger
-	Filename *string
-	// User UUIDv7 of the creator
-	UserId *string
-	// Platform to trigger the response
+	Id        *string
+	Phrase    *string
+	Reply     *string
+	Filename  *string
+	UserId    *string
 	Instances []*TriggerInstance
-	// Chance of the trigger to be triggered
-	Chance *int32
-	// Created at
+	Chance    *int32
 	CreatedAt *timestamppb.Timestamp
-	// Updated at
 	UpdatedAt *timestamppb.Timestamp
-	// How the phrase is matched
-	Mode *TriggerMode
-	// Stored file reply, unset when the trigger replies with text
+	Mode      *TriggerMode
+	// Stored file reply, unset when the trigger replies with text.
 	File *TriggerFile
 }
 
@@ -715,28 +700,14 @@ func (x *TriggerInstance) ClearInstanceMeta() {
 type TriggerInstance_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Platform enum.
-	//
-	// All THREE rules are needed and the reason is not the intuitive one — see
-	// OpenClientActionStreamReq.platform_enum in reverse.proto for the worked
-	// explanation. In short: `required` is a presence check that an explicit
-	// PLATFORM_UNSPECIFIED satisfies, `enum.defined_only` accepts 0 because 0 is a
-	// declared member, and only `enum.not_in = 0` refuses the unspecified
-	// platform. resolveInstance's own HasPlatformEnum() check is satisfied by an
-	// explicit zero too, so without the third rule the request reaches
-	// GetInstanceByMeta, queries for a platform that does not exist, and comes back
-	// NotFound — indistinguishable from a guild the bot is not in.
-	//
-	// The rules live here rather than on each request, so every RPC carrying a
-	// TriggerInstance — TryTrigger, ExecTrigger, GetTriggerStats and the instances
-	// lists on Create/Update/ListTriggers — inherits them.
+	// All three rules are needed: `required` is a presence check an explicit
+	// PLATFORM_UNSPECIFIED satisfies, `enum.defined_only` accepts 0 as a declared
+	// member, and only `enum.not_in = 0` refuses the unspecified platform (which
+	// would otherwise reach the DB and come back NotFound). Placed here so every
+	// RPC carrying a TriggerInstance inherits them.
 	PlatformEnum *Platform
-	// Instance meta information such as Server ID.
-	//
-	// Required because it is the only thing that identifies WHICH space is meant;
-	// resolveInstance refuses an instance without it, and having the schema say so
-	// moves that refusal to the edge and gives the client a field path instead of
-	// one flat "instance is required" covering two different mistakes.
+	// Identifies which space is meant; required so the refusal moves to the edge
+	// with a field path.
 	InstanceMeta *structpb.Struct
 }
 
@@ -864,9 +835,8 @@ func (x *TryTriggerReq) ClearForced() {
 type TryTriggerReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Platform to trigger the response
 	Instance *TriggerInstance
-	// The full message text to match against
+	// The full message text to match against.
 	Phrase *string
 	// Forced fires bypass the chance roll and record TRIGGER_CALLED instead of
 	// TRIGGER_OCCURRED. Set when the bot was mentioned. Rate limited per author.
@@ -1041,13 +1011,11 @@ func (x *TryTriggerResp) WhichOneofReply() case_TryTriggerResp_OneofReply {
 type TryTriggerResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Trigger UUIDv7. Unset when nothing fired.
+	// Unset when nothing fired.
 	Id *string
 	// Fields of oneof xxx_hidden_OneofReply:
-	// Reply to send in response to the trigger
 	Reply *string
-	// File to send in response to the trigger
-	File *TriggerFile
+	File  *TriggerFile
 	// -- end of xxx_hidden_OneofReply
 }
 
@@ -1083,12 +1051,10 @@ type isTryTriggerResp_OneofReply interface {
 }
 
 type tryTriggerResp_Reply struct {
-	// Reply to send in response to the trigger
 	Reply string `protobuf:"bytes,2,opt,name=reply,oneof"`
 }
 
 type tryTriggerResp_File struct {
-	// File to send in response to the trigger
 	File *TriggerFile `protobuf:"bytes,3,opt,name=file,oneof"`
 }
 
@@ -1183,15 +1149,9 @@ func (x *ExecTriggerReq) ClearInstance() {
 type ExecTriggerReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Trigger UUIDv7 to fire.
-	//
-	// trigger.id is a Postgres uuid column, so a malformed id has no row it could
-	// ever match. Before this rule it still cost a query and came back as NotFound
-	// — or as an Internal when Postgres refused the cast — so a caller could not
-	// tell a typo from a deleted trigger. string.uuid does not check the version
-	// field; UUIDv7 is what this system mints, not what it has to parse.
-	Id *string
-	// Platform the trigger is being fired on
+	// string.uuid so a malformed id is refused at the edge rather than costing a
+	// query that returns NotFound (indistinguishable from a deleted trigger).
+	Id       *string
 	Instance *TriggerInstance
 }
 
@@ -1271,7 +1231,6 @@ func (x *GetTriggerReq) ClearId() {
 type GetTriggerReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Trigger UUIDv7. See ExecTriggerReq.id.
 	Id *string
 }
 
@@ -1608,35 +1567,18 @@ func (x *ListTriggersReq) ClearMine() {
 type ListTriggersReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Limit the number of triggers returned.
-	//
-	// Deliberately UNBOUNDED here. pkg/db already clamps it (defaultTriggerListLimit
-	// when 0 or negative, maxTriggerListLimit above the ceiling), and an lte rule
-	// would turn that forgiving clamp into an InvalidArgument for someone who typed
-	// a big number — a regression for real users dressed up as hardening. The same
-	// applies to offset, which pkg/db clamps to 0 when negative.
-	Limit *int64
-	// Offset the triggers returned. Clamped, not rejected; see limit above.
-	Offset *int64
-	// Search field for trigger phrases
-	Phrase *string
-	// Search field for trigger replies
-	Reply *string
-	// Platforms to trigger the response on. Bounded; see CreateTriggerReq.instances.
-	Instances []*TriggerInstance
-	// Search for triggers starting from this date
+	// Unbounded here; pkg/db clamps limit and offset rather than rejecting, so an
+	// lte rule would turn a forgiving clamp into an InvalidArgument.
+	Limit       *int64
+	Offset      *int64
+	Phrase      *string
+	Reply       *string
+	Instances   []*TriggerInstance
 	PeriodStart *timestamppb.Timestamp
-	// Search for triggers ending at this date
-	PeriodEnd *timestamppb.Timestamp
-	// Search for triggers with this matching mode. See CreateTriggerReq.mode for
-	// why this is defined_only and deliberately not not_in = 0.
-	Mode *TriggerMode
-	// Narrow the listing to the caller's own triggers.
-	//
-	// A boolean rather than a user id: the server already knows who the caller is
-	// from metadata, and the previous user_id field could only ever legitimately
-	// hold that same value -- the handler rejected anything else -- so it cost the
-	// client a GetUser round trip to learn its own id and echo it back.
+	PeriodEnd   *timestamppb.Timestamp
+	Mode        *TriggerMode
+	// A boolean, not a user id: the server knows the caller from metadata, so a
+	// user_id could only ever echo it back after a GetUser round trip.
 	Mine *bool
 }
 
@@ -1947,56 +1889,24 @@ func (x *CreateTriggerReq) ClearFileUrl() {
 type CreateTriggerReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Phrase to trigger the response.
-	//
-	// 200 is trigger.MaxPatternLength: in TRIGGER_MODE_REGEX the phrase is compiled
-	// and run against every message on the instance, so its length is a cost paid
-	// per message, not per request. trigger.Compile stays authoritative — it
-	// measures bytes where string.max_len counts characters, so a multi-byte phrase
-	// can pass here and still be refused there. This bound exists to stop an absurd
-	// one before it is compiled at all, not to replace that check.
-	Phrase *string
-	// Reply to send in response to the trigger
-	Reply *string
-	// File to send in response to the trigger
+	// 200 mirrors trigger.MaxPatternLength but counts characters, not bytes;
+	// trigger.Compile stays authoritative. This only stops an absurd phrase
+	// before it is compiled per message in regex mode.
+	Phrase   *string
+	Reply    *string
 	Filename *string
-	// Platforms to trigger the response on.
-	//
-	// Bounded because resolveScopeInstances makes one database round trip per
-	// element (callerScopedInstance), so an unbounded list is a query multiplier
-	// any CLEARANCE_REGISTERED caller can fire at will — one RPC becoming as many
-	// queries as the request has elements. 20 matches CheckRepostReq.candidates and
-	// is far above real use: both platform clients send exactly one, the instance
-	// the command was issued in, and every element must be the call's own origin
-	// anyway.
-	//
-	// No min_items: an empty list means "scope it to where I am", which is the
-	// common case.
+	// Bounded because resolveScopeInstances makes one DB round trip per element,
+	// so an unbounded list is a query multiplier. Empty means "scope to where I am".
 	Instances []*TriggerInstance
-	// Chance of the trigger to be triggered.
-	//
-	// 0 is IN range and must stay so: it is the "use the default" sentinel carried
-	// over from the old bot, meaning trigger.DefaultChance at fire time (ADR 0021).
-	// The bounds mirror the SQL CHECK on trigger.chance, so a value outside them
-	// could only ever have come back as an Internal from a constraint violation.
+	// 0 is the "use the default" sentinel (trigger.DefaultChance at fire time), so
+	// it must stay in range. Bounds mirror the SQL CHECK on trigger.chance.
 	Chance *int32
-	// How the phrase is matched.
-	//
-	// defined_only but deliberately NOT not_in = 0: TRIGGER_MODE_UNSPECIFIED
-	// legitimately means "default to TRIGGER_MODE_ANY", which is what this handler
-	// implements, so refusing it would break every trigger created without an
-	// explicit mode. defined_only is still needed because protobuf enums are open:
-	// an undeclared number round-trips through the generated code and arrives as
-	// TriggerMode(99), which no handler check catches — they test for UNSPECIFIED,
-	// and 99 is not that.
+	// defined_only but not not_in = 0: UNSPECIFIED legitimately means "default to
+	// ANY". defined_only still needed because enums are open — an undeclared
+	// number arrives as TriggerMode(N) that no UNSPECIFIED check catches.
 	Mode *TriggerMode
-	// Platform CDN URL the server fetches the media from. The server never trusts
-	// the URL's extension or host without checking both.
-	//
-	// 2048 matches RepostCandidate.url, the other caller-supplied URL this server
-	// fetches. Signed CDN URLs are long, so the bound is generous on purpose; it
-	// exists so the host allow-list and the fetch are never reached by something
-	// absurd. No min_len: an empty file_url means "no file".
+	// Platform CDN URL; the server never trusts its extension or host without
+	// checking both. Empty means "no file".
 	FileUrl *string
 }
 
@@ -2096,7 +2006,6 @@ func (x *CreateTriggerResp) ClearId() {
 type CreateTriggerResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Trigger UUIDv7
 	Id *string
 }
 
@@ -2353,23 +2262,14 @@ func (x *UpdateTriggerReq) ClearFileUrl() {
 type UpdateTriggerReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Trigger UUIDv7. See ExecTriggerReq.id.
-	Id *string
-	// Phrase to trigger the response. See CreateTriggerReq.phrase.
-	Phrase *string
-	// Reply to send in response to the trigger
-	Reply *string
-	// File to send in response to the trigger
-	Filename *string
-	// Platforms to trigger the response on. See CreateTriggerReq.instances.
+	Id        *string
+	Phrase    *string
+	Reply     *string
+	Filename  *string
 	Instances []*TriggerInstance
-	// Chance of the trigger to be triggered. See CreateTriggerReq.chance — 0 is
-	// the sentinel here too, so a rule that rejected it would make it impossible
-	// to hand a tuned trigger back to the default.
-	Chance *int32
-	// How the phrase is matched. See CreateTriggerReq.mode.
-	Mode *TriggerMode
-	// Platform CDN URL to replace the current file with. See CreateTriggerReq.file_url.
+	// 0 is the sentinel here too, so it must stay in range.
+	Chance  *int32
+	Mode    *TriggerMode
 	FileUrl *string
 }
 
@@ -2409,10 +2309,8 @@ func (b0 UpdateTriggerReq_builder) Build() *UpdateTriggerReq {
 	return m0
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 type UpdateTriggerResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2520,7 +2418,6 @@ func (x *DeleteTriggerReq) ClearId() {
 type DeleteTriggerReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Trigger UUIDv7. See ExecTriggerReq.id.
 	Id *string
 }
 
@@ -2535,7 +2432,6 @@ func (b0 DeleteTriggerReq_builder) Build() *DeleteTriggerReq {
 	return m0
 }
 
-// Empty on purpose; see UpdateTriggerResp.
 type DeleteTriggerResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2736,19 +2632,12 @@ func (x *GetTriggerStatsReq) ClearPeriodEnd() {
 type GetTriggerStatsReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Instance to scope the leaderboard to
 	Instance *TriggerInstance
-	// ACTION_TYPE_TRIGGER_OCCURRED or ACTION_TYPE_TRIGGER_CALLED. The handler
-	// refuses every other member, which the schema cannot express without pinning
-	// this list in two places that would then drift apart.
-	ActionType *ActionType
-	// Maximum rows returned. Clamped by pkg/db rather than rejected; see
-	// ListTriggersReq.limit.
-	Limit *int64
-	// Count actions from this instant onwards
+	// Handler refuses every member but ACTION_TYPE_TRIGGER_OCCURRED and _CALLED.
+	ActionType  *ActionType
+	Limit       *int64
 	PeriodStart *timestamppb.Timestamp
-	// Count actions up to this instant
-	PeriodEnd *timestamppb.Timestamp
+	PeriodEnd   *timestamppb.Timestamp
 }
 
 func (b0 GetTriggerStatsReq_builder) Build() *GetTriggerStatsReq {
@@ -2769,7 +2658,6 @@ func (b0 GetTriggerStatsReq_builder) Build() *GetTriggerStatsReq {
 	return m0
 }
 
-// One row of the trigger leaderboard.
 type TriggerStat struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_TriggerId   *string                `protobuf:"bytes,1,opt,name=trigger_id,json=triggerId" json:"trigger_id,omitempty"`
@@ -2939,16 +2827,11 @@ func (x *TriggerStat) ClearMode() {
 type TriggerStat_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Trigger UUIDv7
 	TriggerId *string
-	// The trigger's phrase
-	Phrase *string
-	// How many times the action was recorded in the period
-	Count *int64
-	// The trigger's stored chance
-	Chance *int32
-	// How the phrase is matched
-	Mode *TriggerMode
+	Phrase    *string
+	Count     *int64
+	Chance    *int32
+	Mode      *TriggerMode
 }
 
 func (b0 TriggerStat_builder) Build() *TriggerStat {
@@ -3101,8 +2984,6 @@ func (x *GetFileReq) ClearFileId() {
 type GetFileReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// File UUIDv7. file.id is a uuid column, so the reasoning in ExecTriggerReq.id
-	// applies unchanged.
 	FileId *string
 }
 
@@ -3117,12 +2998,6 @@ func (b0 GetFileReq_builder) Build() *GetFileReq {
 	return m0
 }
 
-// The first and only metadata chunk of a GetFile stream.
-//
-// A wrapper around TriggerFile rather than TriggerFile itself, because this is
-// stream-scoped: anything the stream needs to describe itself — a checksum, a
-// chunk count — belongs here and not on TriggerFile, which is also embedded in
-// TryTriggerResp where none of it would mean anything.
 type GetFileMeta struct {
 	state           protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_File *TriggerFile           `protobuf:"bytes,1,opt,name=file" json:"file,omitempty"`
@@ -3180,7 +3055,6 @@ func (x *GetFileMeta) ClearFile() {
 type GetFileMeta_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// File metadata, identical to what TryTriggerResp.file carried.
 	File *TriggerFile
 }
 
@@ -3192,13 +3066,9 @@ func (b0 GetFileMeta_builder) Build() *GetFileMeta {
 	return m0
 }
 
-// One frame of a GetFile stream.
-//
-// The server sends exactly one meta chunk first, then zero or more content
-// chunks in order; concatenating the content chunks reconstructs the file. A
-// client must treat an unset arm, an out-of-order meta, or an arm it does not
-// recognise as ordinary input rather than a bug — the same rule
-// OpenClientActionStreamResp's payload oneof carries, for the same reason.
+// One frame of a GetFile stream: one meta chunk first, then content chunks in
+// order that concatenate to the file. A client treats an unset or unrecognised
+// arm as ordinary input, not a bug.
 type GetFileChunk struct {
 	state            protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Chunk isGetFileChunk_Chunk   `protobuf_oneof:"chunk"`

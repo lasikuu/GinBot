@@ -70,7 +70,6 @@ func ParseDuration(input string) (time.Duration, error) {
 			return 0, fmt.Errorf("missing number at %q", input[i:])
 		}
 
-		// Checked as we go: the input length bounds nothing.
 		var value int64
 		for _, r := range input[start:i] {
 			digit := int64(r - '0')

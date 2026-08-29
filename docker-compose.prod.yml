@@ -1,76 +1,32 @@
-# Required variable (core stack): GINBOT_DB_PASSWORD. It is the one name for
-#   that secret: the psql service maps it onto the POSTGRES_PASSWORD its image
-#   demands, so example.env never has to document two spellings of it.
-# Needed only when the discord profile is on: DISCORD_OWNER_ID,
-#   DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID.
-# Needed only when the matrix profile is on: MATRIX_HOMESERVER_URL,
-#   MATRIX_ACCESS_TOKEN, MATRIX_USER_ID.
-# The psql + ginbot-server core always starts. The Discord and Matrix clients
-# are optional, gated behind Compose profiles. Enable them by setting
-# COMPOSE_PROFILES in .env (comma-separated), e.g.:
-#   COMPOSE_PROFILES=discord          # server + discord
-#   COMPOSE_PROFILES=discord,matrix   # server + both clients
-#   (unset)                           # server only
-# or per-command with `--profile discord --profile matrix`.
-#
-# Usage:
-#   docker compose -f docker-compose.prod.yml pull
-#   docker compose -f docker-compose.prod.yml up -d
-#
-# Each binary is its own published image — ghcr.io/lasikuu/ginbot-server,
-# -discord and -matrix — built for linux/amd64 and linux/arm64 by
-# .github/workflows/publish.yml from a dedicated Dockerfile stage. There is
-# deliberately no `build:` block here, so `up --build` does nothing; to run a
-# locally compiled image instead, add one in a compose override file. See
-# ADR 0036 for the tags, and why :main and :edge are not release tags.
-#
-# A client's secrets are only needed when its profile is active; unset vars
-# fall back to empty and the client itself fails fast on missing config.
+# Core (psql + ginbot-server) always starts; requires GINBOT_DB_PASSWORD, which
+# the psql service maps onto the POSTGRES_PASSWORD its image demands. The Discord
+# and Matrix clients are optional, gated behind Compose profiles set via
+# COMPOSE_PROFILES in .env. No `build:` block here; images come from ghcr.io
+# (ADR 0036). A client's secrets are only needed when its profile is active.
 
 x-ginbot-env: &ginbot-env
   GINBOT_ENV: production
   GINBOT_LOG_LEVEL: info
-  # This is the address the CLIENTS dial. ginbot-server overrides it for
-  # itself, because the same variable is also what the server BINDS — and
-  # binding a service name resolves to the container's own eth0 address alone,
-  # leaving loopback unbound. See the override on that service.
+  # Address the CLIENTS dial. ginbot-server overrides it, since the same var is
+  # also what the server binds (see the override on that service).
   GINBOT_GRPC_HOST: ginbot-server
   GINBOT_GRPC_PORT: "50051"
-  # Enabling mutual TLS is `cd cert && ./generator.sh`, then
-  # `GINBOT_GRPC_TLS=true` in .env — no compose edit at either step, which is
-  # what the default expression below is for. The cert mount on all three
-  # services is unconditional and safe with TLS off: cert/ always exists after
-  # a clone (generator.sh and the *-ext.conf files are committed; only the
-  # *.pem and *.srl material it produces is gitignored), and nothing reads it
-  # while this is "false".
-  #
-  # cert/server-ext.conf must carry a SAN matching GINBOT_GRPC_HOST above, or
-  # every client handshake fails hostname verification —
-  # auth.ClientTLSConfig sets neither ServerName nor InsecureSkipVerify, on
-  # purpose. DNS:ginbot-server is in there for exactly this reason; change one
-  # and change the other.
+  # The cert mount on all three services is unconditional and safe with TLS off.
+  # cert/server-ext.conf must carry a SAN matching GINBOT_GRPC_HOST or every
+  # client handshake fails hostname verification (auth.ClientTLSConfig sets
+  # neither ServerName nor InsecureSkipVerify).
   GINBOT_GRPC_TLS: ${GINBOT_GRPC_TLS:-false}
-  # The bot's own public address, if it has one. Its host — and every
-  # subdomain of it — is excluded from the repost index, so linking the bot
-  # never counts as a repost. Set nothing broader than the bot's own host.
+  # The bot's own public host (and its subdomains) is excluded from repost
+  # indexing. Set nothing broader than the bot's own host.
   GINBOT_WEB_URL: ${GINBOT_WEB_URL:-}
-  # Repost detection is off by default and needed on BOTH sides: the server
-  # fingerprints, and the Discord client requests the privileged
-  # MESSAGE_CONTENT intent when this is on (ADR 0024). Hence the anchor.
-  #
-  # Video and animated GIF fingerprinting additionally needs ffmpeg on PATH,
-  # and the published images do not carry one — ADR 0006 keeps it a system
-  # dependency of whoever deploys rather than something GinBot redistributes.
-  # Its absence degrades those formats to exact-hash-only; still images are
-  # unaffected and nothing crashes. To get it, either point
-  # GINBOT_REPOST_FFMPEG_PATH at a binary mounted into the container, or build
-  # a derived image that installs one.
+  # Read on BOTH sides: server fingerprints, Discord client requests the
+  # privileged MESSAGE_CONTENT intent when on (ADR 0024) — hence the anchor.
+  # Video/GIF fingerprinting also needs ffmpeg on PATH, which the images do not
+  # carry (ADR 0006); its absence degrades those to exact-hash-only.
   GINBOT_REPOST: ${GINBOT_REPOST:-false}
   GINBOT_REPOST_EXCLUDED_HOSTS: ${GINBOT_REPOST_EXCLUDED_HOSTS:-}
   GINBOT_REPOST_FFMPEG_PATH: ${GINBOT_REPOST_FFMPEG_PATH:-}
-  # The numeric repost knobs (GINBOT_REPOST_TIER_*, _MIN_WIDTH, _MIN_HEIGHT,
-  # _MIN_ENTROPY) keep the defaults in internal/config; add them here only if a
-  # deployment needs to move them.
+  # Numeric repost knobs keep their internal/config defaults; add here only to move them.
   GINBOT_DB_HOST: psql
   GINBOT_DB_PORT: "5432"
   GINBOT_DB_NAME: ginbot
@@ -85,10 +41,8 @@ services:
     environment:
       POSTGRES_USER: ginbot
       POSTGRES_DB: ginbot
-      # The KEY has to be POSTGRES_PASSWORD — the postgres image reads that
-      # name and nothing else. The VALUE comes from GINBOT_DB_PASSWORD so that
-      # .env carries the secret once, under the same name example.env
-      # documents and internal/config reads.
+      # Key must be POSTGRES_PASSWORD (the image reads only that); value comes
+      # from GINBOT_DB_PASSWORD so .env carries the secret once.
       POSTGRES_PASSWORD: ${GINBOT_DB_PASSWORD:?GINBOT_DB_PASSWORD is required}
     volumes:
       - ginbot_prod_pgdata:/var/lib/postgresql/data
@@ -97,34 +51,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # Not published to the host by default; only the bot services on the
-    # compose network reach it. Add a `ports:` mapping if you need external access.
+    # Not published to the host; only reachable on the compose network.
 
   ginbot-server:
     image: ghcr.io/lasikuu/ginbot-server:latest
     restart: unless-stopped
     environment:
       <<: *ginbot-env
-      # Overridden for this service ALONE, and it is load-bearing.
-      # cmd/ginbot-server binds net.JoinHostPort(GINBOT_GRPC_HOST, PORT), so
-      # the anchor's "ginbot-server" would bind only the address Docker's DNS
-      # resolves that name to — this container's eth0 — leaving 127.0.0.1
-      # unbound. The healthcheck below runs INSIDE this container and dials
-      # loopback (healthProbeHost in cmd/ginbot-server/main.go), so it would be
-      # refused, the container would never become healthy, and both clients
-      # gate on that. Binding all interfaces is not extra exposure either: no
-      # port is published to the host, so the only reachable path is still the
-      # compose network. The clients keep dialling the service name from the
-      # anchor. cmd/ginbot-server/compose_test.go pins the pairing.
+      # Bind all interfaces: the server binds GINBOT_GRPC_HOST, and the
+      # in-container healthcheck dials loopback, so binding the service name
+      # would leave 127.0.0.1 unbound and the container never healthy. Not extra
+      # exposure — no port is published. cmd/ginbot-server/compose_test.go pins this.
       GINBOT_GRPC_HOST: "0.0.0.0"
-      # Trigger media is persistent state, not cache. The server fetches and
-      # stores the bytes itself (ADR 0007) while the `file` row that points at
-      # them lives in Postgres, so an unmounted storage path does not merely
-      # lose files — it leaves surviving rows referencing blobs that are gone,
-      # and every trigger that replies with a file starts failing. The default
-      # is ./storage relative to the working directory, which is the
-      # container's writable layer and dies with the container on every image
-      # update. Named so it is mounted below.
+      # Trigger media is persistent state (ADR 0007), not cache: the default
+      # ./storage is the container's writable layer and dies with the container,
+      # leaving file rows pointing at gone blobs. Mounted below.
       GINBOT_STORAGE_PATH: /app/storage
     volumes:
       - ./cert:/app/cert:ro
@@ -133,43 +74,23 @@ services:
       psql:
         condition: service_healthy
     healthcheck:
-      # The server binary probes itself, rather than the runtime image's
-      # busybox wget probing it.
-      #
-      # wget cannot do the job once GINBOT_GRPC_TLS is true: the listener is
-      # then TLS-only and auth.ServerTLSConfig sets RequireAndVerifyClientCert,
-      # so a probe has to present a client certificate — which busybox wget has
-      # no way to do, at any URL or scheme. Both clients below gate on
-      # `condition: service_healthy`, so a probe that cannot pass under TLS
-      # does not just misreport the server, it stops the entire stack from
-      # starting. Running the binary instead means the probe reads
-      # GINBOT_GRPC_TLS, GINBOT_GRPC_PORT and GINBOT_CERTS_PATH from this same
-      # environment and loads certificates through the same internal/auth path
-      # the platform clients use, so the scheme, the port and the credentials
-      # cannot drift from the server's.
-      #
-      # Exec form, no shell: the binary's own exit code is the health status.
+      # The binary probes itself, not wget: under GINBOT_GRPC_TLS=true the
+      # listener requires a client cert (RequireAndVerifyClientCert) that wget
+      # cannot present, and both clients gate on service_healthy. Running the
+      # binary reuses the same TLS/port/certs env, so the probe cannot drift.
       test: ["CMD", "/usr/local/bin/ginbot-server", "-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
-      # The budget before this container is declared unhealthy is
-      # start_period + retries*interval — failures inside start_period do not
-      # count toward retries, they only stop an early failure being reported
-      # as unhealthy straight away. So 30s here is not what protects a slow
-      # boot; the 50s of retries after it is. It is set to roughly cover
-      # migrations (db.EnsureLatestVersion runs before the listener opens) so
-      # that `docker compose ps` reports "starting" rather than a failing
-      # check while they apply.
+      # Roughly covers migrations (run before the listener opens) so ps reports
+      # "starting"; the 50s of retries after it is what actually protects boot.
       start_period: 30s
-    # Must exceed shutdownDrainDelay + shutdownTimeout (cmd/ginbot-server/main.go,
-    # 15s worst case) or the runtime SIGKILLs the process mid-drain and
-    # db.CloseDB / log.Sync never run.
+    # Must exceed shutdownDrainDelay + shutdownTimeout (main.go, 15s worst case)
+    # or the runtime SIGKILLs mid-drain and db.CloseDB / log.Sync never run.
     stop_grace_period: 30s
 
   ginbot-discord:
-    # Optional: only started when the `discord` profile is active
-    # (COMPOSE_PROFILES=discord in .env, or `--profile discord`).
+    # Started only under the `discord` profile.
     profiles: ["discord"]
     image: ghcr.io/lasikuu/ginbot-discord:latest
     restart: unless-stopped
@@ -180,21 +101,16 @@ services:
       DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
       DISCORD_COMMAND_PREFIXES: ${DISCORD_COMMAND_PREFIXES:-}
       DISCORD_REMOVE_COMMANDS: ${DISCORD_REMOVE_COMMANDS:-false}
-      # Separate from GINBOT_REPOST and from the chat prefixes, and opt-in on
-      # purpose: it asks Discord for a privileged intent. See ADR 0024.
+      # Opt-in: asks Discord for a privileged intent (ADR 0024).
       DISCORD_MESSAGE_CONTENT: ${DISCORD_MESSAGE_CONTENT:-false}
     volumes:
       - ./cert:/app/cert:ro
     depends_on:
       ginbot-server:
-        # Waiting on the container starting rather than the server actually
-        # listening is why this used to hit refused connections and fall into
-        # the reconnect ladder on every `up`.
         condition: service_healthy
 
   ginbot-matrix:
-    # Optional: only started when the `matrix` profile is active
-    # (COMPOSE_PROFILES=matrix in .env, or `--profile matrix`).
+    # Started only under the `matrix` profile.
     profiles: ["matrix"]
     image: ghcr.io/lasikuu/ginbot-matrix:latest
     restart: unless-stopped
@@ -207,13 +123,9 @@ services:
       - ./cert:/app/cert:ro
     depends_on:
       ginbot-server:
-        # See the same condition on ginbot-discord above: waiting on the
-        # container starting rather than the server listening is what used to
-        # send this client into the reconnect ladder on every `up`.
         condition: service_healthy
 
 volumes:
   ginbot_prod_pgdata:
-  # Only ginbot-server mounts this: the platform clients never touch storage,
-  # and cmd/ginbot-migrate is an operator tool run outside the stack.
+  # Only ginbot-server mounts this; the clients never touch storage.
   ginbot_prod_storage:

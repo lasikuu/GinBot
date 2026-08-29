@@ -48,15 +48,15 @@ func DefaultGuards() Guards {
 	return Guards{MinWidth: 128, MinHeight: 128, MinEntropy: 3.0}
 }
 
-// ContentHash returns the raw SHA-256 digest of content and its lowercase hex form.
+// ContentHash returns the raw SHA-256 digest of content and its lowercase hex.
 func ContentHash(content []byte) (sum []byte, hex string) {
 	digest := sha256.Sum256(content)
 	return digest[:], hexenc.EncodeToString(digest[:])
 }
 
-// Entropy returns the Shannon entropy, in bits (0..8), of img's 8-bit
-// greyscale histogram; a solid colour scores 0. It walks every pixel, so only
-// pass images from decodeBounded.
+// Entropy returns the Shannon entropy in bits (0..8) of img's 8-bit greyscale
+// histogram; a solid colour scores 0. Walks every pixel, so only pass images
+// from decodeBounded.
 func Entropy(img image.Image) float64 {
 	bounds := img.Bounds()
 

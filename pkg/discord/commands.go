@@ -11,23 +11,16 @@ import (
 	"go.uber.org/zap"
 )
 
-// commandRegistry is the single source of truth for both invocation paths and
-// for the generated slash command definitions.
-//
-// It is built in InitializeDiscord rather than at package init because
-// registration failures are reported with log.Z, which is nil until
-// log.InitializeLogger has run.
+// Built in InitializeDiscord, not at package init: registration failures are
+// reported with log.Z, which is nil until log.InitializeLogger has run.
 var commandRegistry *command.Registry
 
-// localization carries the Discord-only translations that the platform-neutral
-// registry does not model.
+// Discord-only translations, which the platform-neutral registry does not model.
 type localization struct {
 	names        map[discordgo.Locale]string
 	descriptions map[discordgo.Locale]string
 }
 
-// commandLocalizations holds only the translations that already existed. This
-// phase adds none.
 var commandLocalizations = map[string]localization{
 	"healthcheck": {
 		names:        map[discordgo.Locale]string{discordgo.Japanese: "ヘルスチェック"},
@@ -41,22 +34,16 @@ var commandLocalizations = map[string]localization{
 	},
 }
 
-// commandGroupDescriptions holds the description of each command group.
-//
-// A Discord group parent is an ApplicationCommand in its own right and needs its
-// own description, but a group is only a name in the neutral registry — there is
-// no Command to carry one. Keyed by the group name as declared; initCommands
-// aborts startup for a group that is missing here, so a group cannot silently
-// ship with an empty description that Discord would reject anyway.
+// A Discord group parent is an ApplicationCommand needing its own description,
+// but a group is only a name in the neutral registry. initCommands aborts
+// startup for a group missing here.
 var commandGroupDescriptions = map[string]string{
 	reminderGroup: "Create and manage your reminders",
 	triggerGroup:  "Create and manage auto-responder triggers",
 }
 
-// Discord's limits on a chat-input command. Exceeding any of them fails
-// ApplicationCommandCreate with an HTTP 400 that names only an option index, so
-// they are checked here where the offending field can be named instead.
-//
+// Discord's limits on a chat-input command. Exceeding one fails
+// ApplicationCommandCreate with an HTTP 400 naming only an option index.
 // https://discord.com/developers/docs/interactions/application-commands
 const (
 	maxCommandName        = 32
@@ -66,9 +53,8 @@ const (
 	maxOptionsPerCommand  = 25
 )
 
-// initCommands builds the registry. A collision or a malformed command is a
-// programming error that would otherwise register a command that never
-// responds, so it aborts startup.
+// A collision or malformed command aborts startup: it would otherwise register
+// a command that never responds.
 func initCommands() {
 	registry := command.NewRegistry()
 
@@ -78,16 +64,14 @@ func initCommands() {
 		}
 	}
 
-	// A group parent is generated, so nothing else would notice a missing
-	// description until Discord rejected the empty one at boot.
+	// Nothing else notices a missing description until Discord rejects it.
 	for _, group := range registry.Groups() {
 		if commandGroupDescriptions[group] == "" {
 			log.Z.Fatal("command group has no description.", zap.String("group", group))
 		}
 	}
 
-	// Checked before the session is opened, so a too-long description is a clear
-	// message here rather than a Discord 400 partway through registering.
+	// Before the session opens, so this beats a 400 partway through registering.
 	if err := validateApplicationCommands(applicationCommands(registry)); err != nil {
 		log.Z.Fatal("generated command definitions are invalid.", zap.Error(err))
 	}
@@ -95,15 +79,9 @@ func initCommands() {
 	commandRegistry = registry
 }
 
-// validateApplicationCommands checks the generated definitions against Discord's
-// documented limits.
-//
-// Deriving the definitions from the registry (ADR-0009) means a command's
-// description is written where no Discord constraint is visible, so nothing
-// stopped one growing past the limit. Discord then rejects it at
-// ApplicationCommandCreate with a fatal error at boot, and reports it as
-// `options.3.description` — an index, with no command name. This turns that into
-// a named failure, and lets a test catch it before it ever reaches a live start.
+// Definitions are derived from the registry (ADR-0009), where no Discord
+// constraint is visible. This turns Discord's `options.3.description` into a
+// named failure a test can catch before a live start.
 func validateApplicationCommands(applications []*discordgo.ApplicationCommand) error {
 	for _, application := range applications {
 		if n := len(application.Name); n == 0 || n > maxCommandName {
@@ -118,8 +96,8 @@ func validateApplicationCommands(applications []*discordgo.ApplicationCommand) e
 			return fmt.Errorf("command %q: description is %d characters, want 1-%d",
 				application.Name, n, maxCommandDescription)
 		}
-		// A group parent's options ARE its subcommands, so this is also the
-		// at-most-25-subcommands-per-group limit.
+		// A group parent's options are its subcommands, so this is also the
+		// 25-subcommands-per-group limit.
 		if n := len(application.Options); n > maxOptionsPerCommand {
 			return fmt.Errorf("command %q: has %d options, want at most %d",
 				application.Name, n, maxOptionsPerCommand)
@@ -136,14 +114,8 @@ func validateApplicationCommands(applications []*discordgo.ApplicationCommand) e
 	return nil
 }
 
-// validateApplicationCommandOption checks one option and descends into a
-// subcommand's own options.
-//
-// A subcommand is an option that carries options of its own, so its name,
-// description and arguments can break a live boot exactly as a top-level
-// command's can — and Discord reports the failure as a bare path like
-// `options.3.options.1.description`. path accumulates the enclosing names so the
-// error can say which field it was instead.
+// path accumulates the enclosing names, so a failure Discord would report as
+// `options.3.options.1.description` can name the field instead.
 func validateApplicationCommandOption(path string, option *discordgo.ApplicationCommandOption) error {
 	if n := len(option.Name); n == 0 || n > maxOptionName {
 		return fmt.Errorf("%s option %q: name is %d characters, want 1-%d",
@@ -171,7 +143,6 @@ func validateApplicationCommandOption(path string, option *discordgo.Application
 	return nil
 }
 
-// commandDefinitions lists every command the Discord client exposes.
 func commandDefinitions() []command.Command {
 	definitions := []command.Command{
 		healthCheckCommand(),
@@ -200,9 +171,8 @@ func commandDefinitions() []command.Command {
 	return append(definitions, digitRollCommands()...)
 }
 
-// localizedAliases lets a localised slash command name work as a chat command
-// too, so that ??tuplat behaves like ??doubles. Discord has no alias concept of
-// its own; the localised name is the closest existing equivalent.
+// Lets a localised slash name work as a chat command too, so ??tuplat behaves
+// like ??doubles.
 func localizedAliases(name string) []string {
 	names := commandLocalizations[name].names
 	if len(names) == 0 {
@@ -213,22 +183,15 @@ func localizedAliases(name string) []string {
 	for _, localized := range names {
 		aliases = append(aliases, localized)
 	}
-	// Map iteration order is random; sorted so the registered command is
-	// identical on every start.
+	// Sorted, so the registered command is identical on every start.
 	slices.Sort(aliases)
 
 	return aliases
 }
 
-// applicationCommands derives the Discord slash command definitions from the
-// registry, so a command cannot be registered with Discord without a handler,
-// nor gain a handler that Discord never routes to.
-//
-// A command with no Group becomes a top-level ApplicationCommand. Commands
-// sharing a Group collapse into ONE ApplicationCommand named after the group,
-// whose options are SubCommand entries carrying each member's own arguments.
-// Registry.All is ordered by name, so both the parent's position and its
-// subcommand order are identical on every start.
+// Commands sharing a Group collapse into one ApplicationCommand named after the
+// group, whose options are SubCommand entries. Registry.All is ordered by name,
+// so parent position and subcommand order are identical on every start.
 func applicationCommands(registry *command.Registry) []*discordgo.ApplicationCommand {
 	all := registry.All()
 	applications := make([]*discordgo.ApplicationCommand, 0, len(all))
@@ -240,21 +203,15 @@ func applicationCommands(registry *command.Registry) []*discordgo.ApplicationCom
 			continue
 		}
 
-		// Keyed folded, because the registry treats "reminder" and "Reminder" as
-		// one group. Keying verbatim would emit two parents for it, which reads
-		// as two unrelated commands instead of failing on the one bad name.
+		// Keyed folded: the registry treats "reminder" and "Reminder" as one
+		// group, and keying verbatim would emit two parents for it.
 		key := strings.ToLower(cmd.Group)
 
 		parent, ok := parents[key]
 		if !ok {
-			// Deliberately no Options beyond the subcommands below: Discord
-			// rejects a command that mixes subcommands with ordinary options, so
-			// the parent is purely a container and carries no arguments of its
-			// own.
-			//
-			// Name is the group as declared, not the folded key, so a group that
-			// is not already lowercase is reported by
-			// validateApplicationCommands rather than quietly corrected.
+			// No Options beyond the subcommands: Discord rejects a command that
+			// mixes subcommands with ordinary options. Name is the group as
+			// declared, so a non-lowercase one is reported rather than corrected.
 			parent = &discordgo.ApplicationCommand{
 				Name:        cmd.Group,
 				Description: commandGroupDescriptions[cmd.Group],
@@ -269,8 +226,6 @@ func applicationCommands(registry *command.Registry) []*discordgo.ApplicationCom
 	return applications
 }
 
-// topLevelApplicationCommand renders an ungrouped command, arguments and
-// translations included.
 func topLevelApplicationCommand(cmd command.Command) *discordgo.ApplicationCommand {
 	application := &discordgo.ApplicationCommand{
 		Name:        cmd.Name,
@@ -290,15 +245,8 @@ func topLevelApplicationCommand(cmd command.Command) *discordgo.ApplicationComma
 	return application
 }
 
-// subCommandOption renders a grouped command as one of its parent's
-// subcommands. Its arguments become the subcommand's OWN options, which is where
-// Discord delivers them from and where handleInteraction reads them.
-//
-// commandLocalizations is deliberately NOT consulted. Its names are translations
-// of a command's flat Name, and a subcommand's Discord name is Sub, so applying
-// one here would ship a translation of the wrong token. No grouped command has a
-// localization today and a test pins that, so the choice has to be made
-// deliberately rather than discovered.
+// commandLocalizations is deliberately not consulted: its names translate a
+// command's flat Name, but a subcommand's Discord name is Sub.
 func subCommandOption(cmd command.Command) *discordgo.ApplicationCommandOption {
 	return &discordgo.ApplicationCommandOption{
 		Name:        cmd.Sub,

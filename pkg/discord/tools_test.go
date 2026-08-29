@@ -10,8 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// TestUsageLine covers the shape shown for AC 1 ("a named command shows its
-// usage"): required arguments in angle brackets, optional in square, name first.
+// TestUsageLine: required arguments in angle brackets, optional in square.
 func TestUsageLine(t *testing.T) {
 	tests := []struct {
 		name string
@@ -56,9 +55,7 @@ func TestUsageLine(t *testing.T) {
 	}
 }
 
-// TestDescribeCommand covers AC 1's "description, usage, arguments and aliases".
-// It asserts each element is present rather than pinning the exact layout, so a
-// wording tweak does not break it but a dropped element does.
+// TestDescribeCommand asserts each element is present without pinning the layout.
 func TestDescribeCommand(t *testing.T) {
 	cmd := command.Command{
 		Name:        "doubles",
@@ -74,18 +71,18 @@ func TestDescribeCommand(t *testing.T) {
 	got := describeCommand(cmd)
 
 	mustContain := []string{
-		"doubles",          // name
-		"Roll for doubles", // description
-		"doubles <count>",  // usage, required in angle brackets
-		"[loud]",           // optional in square brackets
-		"count",            // argument name
-		"how many",         // argument description
-		"number",           // ArgInt rendered
-		"true/false",       // ArgBool rendered
-		"required",         // requirement label
-		"optional",         // requirement label
-		"tuplat",           // alias
-		"moderator",        // clearance, lowercased and de-prefixed
+		"doubles",
+		"Roll for doubles",
+		"doubles <count>",
+		"[loud]",
+		"count",
+		"how many",
+		"number",     // ArgInt rendered
+		"true/false", // ArgBool rendered
+		"required",
+		"optional",
+		"tuplat",
+		"moderator", // clearance, lowercased and de-prefixed
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(got, want) {
@@ -94,8 +91,8 @@ func TestDescribeCommand(t *testing.T) {
 	}
 }
 
-// TestDescribeCommandOmitsAbsentSections keeps the description terse for a bare
-// command: no arguments header, no aliases line, no clearance note.
+// TestDescribeCommandOmitsAbsentSections: a bare command shows no arguments,
+// aliases or clearance section.
 func TestDescribeCommandOmitsAbsentSections(t *testing.T) {
 	got := describeCommand(command.Command{Name: "ping", Description: "pong"})
 
@@ -106,9 +103,8 @@ func TestDescribeCommandOmitsAbsentSections(t *testing.T) {
 	}
 }
 
-// TestGroupedUsageLine covers help advertising the grouped form. The slash
-// surface exposes ONLY /reminder add, so help that listed just the flat name
-// would hide half of what the bot accepts.
+// TestGroupedUsageLine: help advertises the grouped form, since the slash surface
+// exposes only /reminder add.
 func TestGroupedUsageLine(t *testing.T) {
 	grouped := command.Command{
 		Name: "remind", Group: "reminder", Sub: "add",
@@ -125,13 +121,11 @@ func TestGroupedUsageLine(t *testing.T) {
 	if got, want := usageLine(grouped), "remind <when> [repeat]"; got != want {
 		t.Errorf("usageLine() = %q, want %q", got, want)
 	}
-	// An ungrouped command has no second form to advertise.
 	if got := groupedUsageLine(command.Command{Name: "ping"}); got != "" {
 		t.Errorf("groupedUsageLine(ungrouped) = %q, want empty", got)
 	}
 }
 
-// TestDescribeCommandShowsBothForms ties the above to what a user actually sees.
 func TestDescribeCommandShowsBothForms(t *testing.T) {
 	got := describeCommand(command.Command{
 		Name: "remind", Group: "reminder", Sub: "add",
@@ -163,9 +157,8 @@ func TestArgTypeName(t *testing.T) {
 	}
 }
 
-// TestClearanceName covers the label shown in help and userinfo for every enum
-// value, including one outside the set so the fallback does not panic or emit
-// an empty string.
+// TestClearanceName covers every enum value plus one outside the set, so the
+// fallback neither panics nor returns empty.
 func TestClearanceName(t *testing.T) {
 	tests := []struct {
 		clearance pb.Clearance
@@ -185,17 +178,12 @@ func TestClearanceName(t *testing.T) {
 		}
 	}
 
-	// An unknown value must still render something non-empty rather than crash.
 	if got := clearanceName(pb.Clearance(999)); got == "" {
 		t.Error("clearanceName(unknown) returned an empty string")
 	}
 }
 
-// TestFormatUserInfoRendersEveryField covers the /userinfo view (AC 5).
-//
-// The account line used to be a whole-day age computed in this process; it is
-// now a relative Discord timestamp tag, which the viewer's own client renders.
-// The assertion is still "the account's age is shown"; the expected form changed.
+// TestFormatUserInfoRendersEveryField covers the /userinfo view.
 func TestFormatUserInfoRendersEveryField(t *testing.T) {
 	createdAt := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 
@@ -227,9 +215,8 @@ func TestFormatUserInfoRendersEveryField(t *testing.T) {
 	}
 }
 
-// TestFormatUserInfoUsesARelativeTagForTheAccountAge: the whole point of the tag
-// is that the client renders it, so the rendering must not contain a wall-clock
-// stamp or a day count computed here.
+// TestFormatUserInfoUsesARelativeTagForTheAccountAge: the client renders the tag,
+// so the string must carry no wall-clock stamp or day count.
 func TestFormatUserInfoUsesARelativeTagForTheAccountAge(t *testing.T) {
 	createdAt := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 
@@ -252,9 +239,8 @@ func TestFormatUserInfoUsesARelativeTagForTheAccountAge(t *testing.T) {
 	}
 }
 
-// TestFormatUserInfoWithoutOptionalFields: an unset locale, timezone or
-// created_at must read as absent. A missing created_at would otherwise render as
-// <t:0:R>, which Discord shows as "56 years ago" — data, not absence.
+// TestFormatUserInfoWithoutOptionalFields: unset fields read as absent; a missing
+// created_at must not render as the <t:0:R> epoch.
 func TestFormatUserInfoWithoutOptionalFields(t *testing.T) {
 	username := "kohana"
 	got := formatUserInfo(pb.User_builder{Username: &username}.Build())
@@ -273,10 +259,8 @@ func TestFormatUserInfoWithoutOptionalFields(t *testing.T) {
 	}
 }
 
-// TestListCommandsIncludesEveryRegistered ties AC 1's "with no name it lists the
-// commands" to the actual registry: every registered command name appears.
+// TestListCommandsIncludesEveryRegistered: every registered command name appears.
 func TestListCommandsIncludesEveryRegistered(t *testing.T) {
-	// listCommands reads the package-level registry that initCommands builds.
 	commandRegistry = newTestRegistry(t)
 
 	got := listCommands()
@@ -289,7 +273,6 @@ func TestListCommandsIncludesEveryRegistered(t *testing.T) {
 }
 
 func TestFormatLatency(t *testing.T) {
-	// Rounded to the millisecond so the number shown is stable and legible.
 	if got := formatLatency(1500 * time.Microsecond); got != "2ms" {
 		t.Errorf("formatLatency(1.5ms) = %q, want %q", got, "2ms")
 	}

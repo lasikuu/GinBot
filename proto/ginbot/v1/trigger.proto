@@ -23,11 +23,6 @@ service TriggerService {
   rpc UpdateTrigger(UpdateTriggerReq) returns (UpdateTriggerResp);
   rpc DeleteTrigger(DeleteTriggerReq) returns (DeleteTriggerResp);
   rpc GetTriggerStats(GetTriggerStatsReq) returns (GetTriggerStatsResp);
-  // Server-streaming, not unary. ADR-0022 made it unary because authorisation
-  // was unary-only and a streamed file would have been reachable with no
-  // clearance floor at all; ClearanceInterceptor.WrapStreamingHandler removed
-  // that constraint, so the shape ADR-0007 originally anticipated is now the
-  // one that ships. See the ADR superseding 0022.
   rpc GetFile(GetFileReq) returns (stream GetFileChunk);
 }
 
@@ -43,91 +38,55 @@ enum TriggerMode {
   TRIGGER_MODE_REGEX = 3;
 }
 
-// A stored media file attached to a trigger.
 message TriggerFile {
-  // File UUIDv7
   string file_id = 1;
-  // Original filename, for display and for the attachment name on playback
   string filename = 2;
-  // Sniffed content type, never the one the URL claimed
+  // Sniffed content type, never the one the URL claimed.
   string mime_type = 3;
-  // Size in bytes
   int64 byte_size = 4;
 }
 
-// Message representing a Trigger
 message Trigger {
-  // Trigger UUIDv7
   string id = 1;
-  // Phrase to trigger the response
   string phrase = 2;
-  // Reply to send in response to the trigger
   string reply = 3;
-  // File to send in response to the trigger
   string filename = 4;
-  // User UUIDv7 of the creator
   string user_id = 5;
-  // Platform to trigger the response
   repeated TriggerInstance instances = 6;
-  // Chance of the trigger to be triggered
   int32 chance = 7;
-  // Created at
   google.protobuf.Timestamp created_at = 8;
-  // Updated at
   google.protobuf.Timestamp updated_at = 9;
-  // How the phrase is matched
   TriggerMode mode = 10;
-  // Stored file reply, unset when the trigger replies with text
+  // Stored file reply, unset when the trigger replies with text.
   TriggerFile file = 11;
 }
 
 message TriggerInstance {
-  // Platform enum.
-  //
-  // All THREE rules are needed and the reason is not the intuitive one — see
-  // OpenClientActionStreamReq.platform_enum in reverse.proto for the worked
-  // explanation. In short: `required` is a presence check that an explicit
-  // PLATFORM_UNSPECIFIED satisfies, `enum.defined_only` accepts 0 because 0 is a
-  // declared member, and only `enum.not_in = 0` refuses the unspecified
-  // platform. resolveInstance's own HasPlatformEnum() check is satisfied by an
-  // explicit zero too, so without the third rule the request reaches
-  // GetInstanceByMeta, queries for a platform that does not exist, and comes back
-  // NotFound — indistinguishable from a guild the bot is not in.
-  //
-  // The rules live here rather than on each request, so every RPC carrying a
-  // TriggerInstance — TryTrigger, ExecTrigger, GetTriggerStats and the instances
-  // lists on Create/Update/ListTriggers — inherits them.
+  // All three rules are needed: `required` is a presence check an explicit
+  // PLATFORM_UNSPECIFIED satisfies, `enum.defined_only` accepts 0 as a declared
+  // member, and only `enum.not_in = 0` refuses the unspecified platform (which
+  // would otherwise reach the DB and come back NotFound). Placed here so every
+  // RPC carrying a TriggerInstance inherits them.
   Platform platform_enum = 1 [
     (buf.validate.field).required = true,
     (buf.validate.field).enum.defined_only = true,
     (buf.validate.field).enum.not_in = 0
   ];
-  // Instance meta information such as Server ID.
-  //
-  // Required because it is the only thing that identifies WHICH space is meant;
-  // resolveInstance refuses an instance without it, and having the schema say so
-  // moves that refusal to the edge and gives the client a field path instead of
-  // one flat "instance is required" covering two different mistakes.
+  // Identifies which space is meant; required so the refusal moves to the edge
+  // with a field path.
   google.protobuf.Struct instance_meta = 2 [
     (buf.validate.field).required = true
   ];
 }
 
 message TryTriggerReq {
-  // Platform to trigger the response
   TriggerInstance instance = 1;
-  // The full message text to match against
+  // The full message text to match against.
   string phrase = 2;
 
-  // Field 3 previously named the triggerer. The handler always ignored it and
-  // attributes the fire to the caller from gRPC metadata, which is also what the
-  // per-author rate limit on forced fires is keyed by — a caller-supplied id
-  // would have let anyone spend someone else's budget.
-  //
-  // The number and the name stay reserved so they can never be silently reused
-  // with a different meaning.
+  // Was user_id: the fire is attributed to the caller from metadata, which the
+  // forced-fire rate limit is also keyed by.
   reserved 3;
-  // Editions require reserved names as identifiers, not string literals.
   reserved user_id;
 
   // Forced fires bypass the chance roll and record TRIGGER_CALLED instead of
@@ -136,33 +95,24 @@ message TryTriggerReq {
 }
 
 message TryTriggerResp {
-  // Trigger UUIDv7. Unset when nothing fired.
+  // Unset when nothing fired.
   string id = 1;
   oneof oneof_reply {
-    // Reply to send in response to the trigger
     string reply = 2;
-    // File to send in response to the trigger
     TriggerFile file = 3;
   }
 }
 
 message ExecTriggerReq {
-  // Trigger UUIDv7 to fire.
-  //
-  // trigger.id is a Postgres uuid column, so a malformed id has no row it could
-  // ever match. Before this rule it still cost a query and came back as NotFound
-  // — or as an Internal when Postgres refused the cast — so a caller could not
-  // tell a typo from a deleted trigger. string.uuid does not check the version
-  // field; UUIDv7 is what this system mints, not what it has to parse.
+  // string.uuid so a malformed id is refused at the edge rather than costing a
+  // query that returns NotFound (indistinguishable from a deleted trigger).
   string id = 1 [
     (buf.validate.field).string.uuid = true
   ];
-  // Platform the trigger is being fired on
   TriggerInstance instance = 2;
 }
 
 message GetTriggerReq {
-  // Trigger UUIDv7. See ExecTriggerReq.id.
   string id = 1 [
     (buf.validate.field).string.uuid = true
   ];
@@ -173,48 +123,27 @@ message GetTriggerResp {
 }
 
 message ListTriggersReq {
-  // Limit the number of triggers returned.
-  //
-  // Deliberately UNBOUNDED here. pkg/db already clamps it (defaultTriggerListLimit
-  // when 0 or negative, maxTriggerListLimit above the ceiling), and an lte rule
-  // would turn that forgiving clamp into an InvalidArgument for someone who typed
-  // a big number — a regression for real users dressed up as hardening. The same
-  // applies to offset, which pkg/db clamps to 0 when negative.
+  // Unbounded here; pkg/db clamps limit and offset rather than rejecting, so an
+  // lte rule would turn a forgiving clamp into an InvalidArgument.
   int64 limit = 1;
-  // Offset the triggers returned. Clamped, not rejected; see limit above.
   int64 offset = 2;
-  // Search field for trigger phrases
   string phrase = 3;
-  // Search field for trigger replies
   string reply = 4;
 
-  // Field 5 previously named whose triggers to list, superseded by `mine` below.
-  //
-  // The number and the name stay reserved so they can never be silently reused
-  // with a different meaning.
+  // Was user_id, superseded by `mine`.
   reserved 5;
-  // Editions require reserved names as identifiers, not string literals.
   reserved user_id;
 
-  // Platforms to trigger the response on. Bounded; see CreateTriggerReq.instances.
   repeated TriggerInstance instances = 6 [
     (buf.validate.field).repeated.max_items = 20
   ];
-  // Search for triggers starting from this date
   google.protobuf.Timestamp period_start = 7;
-  // Search for triggers ending at this date
   google.protobuf.Timestamp period_end = 8;
-  // Search for triggers with this matching mode. See CreateTriggerReq.mode for
-  // why this is defined_only and deliberately not not_in = 0.
   TriggerMode mode = 9 [
     (buf.validate.field).enum.defined_only = true
   ];
-  // Narrow the listing to the caller's own triggers.
-  //
-  // A boolean rather than a user id: the server already knows who the caller is
-  // from metadata, and the previous user_id field could only ever legitimately
-  // hold that same value -- the handler rejected anything else -- so it cost the
-  // client a GetUser round trip to learn its own id and echo it back.
+  // A boolean, not a user id: the server knows the caller from metadata, so a
+  // user_id could only ever echo it back after a GetUser round trip.
   bool mine = 10;
 }
 
@@ -223,176 +152,104 @@ message ListTriggersResp {
 }
 
 message CreateTriggerReq {
-  // Phrase to trigger the response.
-  //
-  // 200 is trigger.MaxPatternLength: in TRIGGER_MODE_REGEX the phrase is compiled
-  // and run against every message on the instance, so its length is a cost paid
-  // per message, not per request. trigger.Compile stays authoritative — it
-  // measures bytes where string.max_len counts characters, so a multi-byte phrase
-  // can pass here and still be refused there. This bound exists to stop an absurd
-  // one before it is compiled at all, not to replace that check.
+  // 200 mirrors trigger.MaxPatternLength but counts characters, not bytes;
+  // trigger.Compile stays authoritative. This only stops an absurd phrase
+  // before it is compiled per message in regex mode.
   string phrase = 1 [
     (buf.validate.field).string.max_len = 200
   ];
-  // Reply to send in response to the trigger
   string reply = 2;
-  // File to send in response to the trigger
   string filename = 3;
 
-  // Field 4 previously named the creator. The handler always ignored it and
-  // records the caller from gRPC metadata as the owner: ownership is what every
-  // later update and delete is checked against, so letting the request body
-  // choose it would have handed away those checks at creation time.
-  //
-  // The number and the name stay reserved so they can never be silently reused
-  // with a different meaning.
+  // Was user_id: ownership is recorded from the caller's metadata, not the body.
   reserved 4;
-  // Editions require reserved names as identifiers, not string literals.
   reserved user_id;
 
-  // Platforms to trigger the response on.
-  //
-  // Bounded because resolveScopeInstances makes one database round trip per
-  // element (callerScopedInstance), so an unbounded list is a query multiplier
-  // any CLEARANCE_REGISTERED caller can fire at will — one RPC becoming as many
-  // queries as the request has elements. 20 matches CheckRepostReq.candidates and
-  // is far above real use: both platform clients send exactly one, the instance
-  // the command was issued in, and every element must be the call's own origin
-  // anyway.
-  //
-  // No min_items: an empty list means "scope it to where I am", which is the
-  // common case.
+  // Bounded because resolveScopeInstances makes one DB round trip per element,
+  // so an unbounded list is a query multiplier. Empty means "scope to where I am".
   repeated TriggerInstance instances = 5 [
     (buf.validate.field).repeated.max_items = 20
   ];
-  // Chance of the trigger to be triggered.
-  //
-  // 0 is IN range and must stay so: it is the "use the default" sentinel carried
-  // over from the old bot, meaning trigger.DefaultChance at fire time (ADR 0021).
-  // The bounds mirror the SQL CHECK on trigger.chance, so a value outside them
-  // could only ever have come back as an Internal from a constraint violation.
+  // 0 is the "use the default" sentinel (trigger.DefaultChance at fire time), so
+  // it must stay in range. Bounds mirror the SQL CHECK on trigger.chance.
   int32 chance = 6 [
     (buf.validate.field).int32.gte = 0,
     (buf.validate.field).int32.lte = 100
   ];
-  // How the phrase is matched.
-  //
-  // defined_only but deliberately NOT not_in = 0: TRIGGER_MODE_UNSPECIFIED
-  // legitimately means "default to TRIGGER_MODE_ANY", which is what this handler
-  // implements, so refusing it would break every trigger created without an
-  // explicit mode. defined_only is still needed because protobuf enums are open:
-  // an undeclared number round-trips through the generated code and arrives as
-  // TriggerMode(99), which no handler check catches — they test for UNSPECIFIED,
-  // and 99 is not that.
+  // defined_only but not not_in = 0: UNSPECIFIED legitimately means "default to
+  // ANY". defined_only still needed because enums are open — an undeclared
+  // number arrives as TriggerMode(N) that no UNSPECIFIED check catches.
   TriggerMode mode = 7 [
     (buf.validate.field).enum.defined_only = true
   ];
-  // Platform CDN URL the server fetches the media from. The server never trusts
-  // the URL's extension or host without checking both.
-  //
-  // 2048 matches RepostCandidate.url, the other caller-supplied URL this server
-  // fetches. Signed CDN URLs are long, so the bound is generous on purpose; it
-  // exists so the host allow-list and the fetch are never reached by something
-  // absurd. No min_len: an empty file_url means "no file".
+  // Platform CDN URL; the server never trusts its extension or host without
+  // checking both. Empty means "no file".
   string file_url = 8 [
     (buf.validate.field).string.max_len = 2048
   ];
 }
 
 message CreateTriggerResp {
-  // Trigger UUIDv7
   string id = 1;
 }
 
 message UpdateTriggerReq {
-  // Trigger UUIDv7. See ExecTriggerReq.id.
   string id = 1 [
     (buf.validate.field).string.uuid = true
   ];
-  // Phrase to trigger the response. See CreateTriggerReq.phrase.
   string phrase = 2 [
     (buf.validate.field).string.max_len = 200
   ];
-  // Reply to send in response to the trigger
   string reply = 3;
-  // File to send in response to the trigger
   string filename = 4;
 
-  // Field 5 previously named the creator. The handler always ignored it and
-  // resolves ownership from gRPC metadata, then refuses any trigger that is not
-  // the caller's own; a caller-supplied owner in a patch request could only ever
-  // have contradicted that check.
-  //
-  // The number and the name stay reserved so they can never be silently reused
-  // with a different meaning.
+  // Was user_id: ownership is resolved from metadata and the trigger must be the
+  // caller's own.
   reserved 5;
-  // Editions require reserved names as identifiers, not string literals.
   reserved user_id;
 
-  // Platforms to trigger the response on. See CreateTriggerReq.instances.
   repeated TriggerInstance instances = 6 [
     (buf.validate.field).repeated.max_items = 20
   ];
-  // Chance of the trigger to be triggered. See CreateTriggerReq.chance — 0 is
-  // the sentinel here too, so a rule that rejected it would make it impossible
-  // to hand a tuned trigger back to the default.
+  // 0 is the sentinel here too, so it must stay in range.
   int32 chance = 7 [
     (buf.validate.field).int32.gte = 0,
     (buf.validate.field).int32.lte = 100
   ];
-  // How the phrase is matched. See CreateTriggerReq.mode.
   TriggerMode mode = 8 [
     (buf.validate.field).enum.defined_only = true
   ];
-  // Platform CDN URL to replace the current file with. See CreateTriggerReq.file_url.
   string file_url = 9 [
     (buf.validate.field).string.max_len = 2048
   ];
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 message UpdateTriggerResp {}
 
 message DeleteTriggerReq {
-  // Trigger UUIDv7. See ExecTriggerReq.id.
   string id = 1 [
     (buf.validate.field).string.uuid = true
   ];
 }
 
-// Empty on purpose; see UpdateTriggerResp.
 message DeleteTriggerResp {}
 
 message GetTriggerStatsReq {
-  // Instance to scope the leaderboard to
   TriggerInstance instance = 1;
-  // ACTION_TYPE_TRIGGER_OCCURRED or ACTION_TYPE_TRIGGER_CALLED. The handler
-  // refuses every other member, which the schema cannot express without pinning
-  // this list in two places that would then drift apart.
+  // Handler refuses every member but ACTION_TYPE_TRIGGER_OCCURRED and _CALLED.
   ActionType action_type = 2;
-  // Maximum rows returned. Clamped by pkg/db rather than rejected; see
-  // ListTriggersReq.limit.
   int64 limit = 3;
-  // Count actions from this instant onwards
   google.protobuf.Timestamp period_start = 4;
-  // Count actions up to this instant
   google.protobuf.Timestamp period_end = 5;
 }
 
-// One row of the trigger leaderboard.
 message TriggerStat {
-  // Trigger UUIDv7
   string trigger_id = 1;
-  // The trigger's phrase
   string phrase = 2;
-  // How many times the action was recorded in the period
   int64 count = 3;
-  // The trigger's stored chance
   int32 chance = 4;
-  // How the phrase is matched
   TriggerMode mode = 5;
 }
 
@@ -401,31 +258,18 @@ message GetTriggerStatsResp {
 }
 
 message GetFileReq {
-  // File UUIDv7. file.id is a uuid column, so the reasoning in ExecTriggerReq.id
-  // applies unchanged.
   string file_id = 1 [
     (buf.validate.field).string.uuid = true
   ];
 }
 
-// The first and only metadata chunk of a GetFile stream.
-//
-// A wrapper around TriggerFile rather than TriggerFile itself, because this is
-// stream-scoped: anything the stream needs to describe itself — a checksum, a
-// chunk count — belongs here and not on TriggerFile, which is also embedded in
-// TryTriggerResp where none of it would mean anything.
 message GetFileMeta {
-  // File metadata, identical to what TryTriggerResp.file carried.
   TriggerFile file = 1;
 }
 
-// One frame of a GetFile stream.
-//
-// The server sends exactly one meta chunk first, then zero or more content
-// chunks in order; concatenating the content chunks reconstructs the file. A
-// client must treat an unset arm, an out-of-order meta, or an arm it does not
-// recognise as ordinary input rather than a bug — the same rule
-// OpenClientActionStreamResp's payload oneof carries, for the same reason.
+// One frame of a GetFile stream: one meta chunk first, then content chunks in
+// order that concatenate to the file. A client treats an unset or unrecognised
+// arm as ordinary input, not a bug.
 message GetFileChunk {
   oneof chunk {
     GetFileMeta meta = 1;

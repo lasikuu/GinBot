@@ -13,20 +13,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// discordSession is written once by InitializeDiscord and then read from
-// several goroutines (discordgo's dispatch goroutines, and the reverse action
-// stream). Nothing synchronises it, so it must be assigned BEFORE any of those
-// readers is started — see startActionStream.
+// discordSession is written once by InitializeDiscord and read from several
+// goroutines with no synchronisation, so it must be assigned before any reader
+// starts — see startActionStream.
 var discordSession *discordgo.Session
 
 // InitializeDiscord brings up the Discord session and blocks until the process
-// is signalled to stop.
-//
-// ctx bounds the reverse action stream, which is started from here rather than
-// alongside the Connect clients precisely because its handlers read
-// discordSession. clients are the service clients dialed by NewDiscordClient;
-// they travel into every command and action handler through the context — see
-// withClients — rather than as a package global.
+// is signalled to stop. ctx bounds the reverse action stream.
 func InitializeDiscord(ctx context.Context, clients *client.Clients) {
 	var err error
 	if discordSession, err = discordgo.New(config.Options.Discord.BotToken); err != nil {
@@ -43,23 +36,10 @@ func InitializeDiscord(ctx context.Context, clients *client.Clients) {
 		handleInteraction(s, i, clients)
 	})
 
-	// Reading messages at all is opt-in, because it costs a privileged intent.
-	//
-	// MESSAGE_CONTENT is not in discordgo's default set, so without it every
-	// MessageCreate arrives with an empty Content and nothing can ever match.
-	// Requesting it when it is not enabled for the application in the Discord
-	// developer portal makes the gateway close with 4014, which surfaces here
-	// as a fatal "cannot open the session" — so requesting it unconditionally
-	// would stop the bot booting for anyone who does not use the message path.
-	//
-	// THREE capabilities ride on it, and any one is enough: chat commands need
-	// the content to find their prefix, trigger matching needs it to match a
-	// phrase, and WANHA needs both Content and Attachments populated at all.
-	// So the decision is not "are chat prefixes configured" — a deployment
-	// that only wants triggers or only wants WANHA sets DISCORD_MESSAGE_CONTENT
-	// or GINBOT_REPOST instead. The repost half is OR'd in here rather than
-	// folded into messageContentRequired's own signature, which
-	// TestMessageContentRequired exercises directly with two arguments.
+	// The privileged MESSAGE_CONTENT intent is opt-in: without it MessageCreate
+	// arrives with empty Content, and requesting it when the portal has it
+	// disabled closes the gateway with 4014. Chat commands, triggers and WANHA
+	// each need it, so it is requested only when one of them is enabled.
 	if messageContentRequired(config.Options.Discord.CommandPrefixes.Prefixes, config.Options.Discord.MessageContent) || config.Options.Repost.Enabled {
 		discordSession.Identify.Intents |= discordgo.IntentMessageContent
 		discordSession.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -77,8 +57,7 @@ func InitializeDiscord(ctx context.Context, clients *client.Clients) {
 		log.Z.Fatal("cannot open the session.", zap.Error(err))
 	}
 
-	// Only now: discordSession is assigned and connected, so a notification
-	// arriving on the first tick has a session to post through.
+	// Only after Open: handlers on the stream read discordSession.
 	startActionStream(ctx, clients)
 
 	commands := applicationCommands(commandRegistry)
@@ -91,10 +70,8 @@ func InitializeDiscord(ctx context.Context, clients *client.Clients) {
 		registeredCommands[i] = cmd
 	}
 
-	// Error, not Fatal: this is the last thing to run on the shutdown path, and
-	// Fatal's os.Exit(1) would skip every defer still outstanding in the
-	// caller — including cmd/ginbot-discord's log.Sync, which is what flushes
-	// this very line to the log.
+	// Error, not Fatal: os.Exit would skip the caller's outstanding defers,
+	// including the log.Sync that flushes this line.
 	defer func(discordSession *discordgo.Session) {
 		err := discordSession.Close()
 		if err != nil {
@@ -110,10 +87,8 @@ func InitializeDiscord(ctx context.Context, clients *client.Clients) {
 	if config.Options.Discord.EraseCommands {
 		log.Z.Info("removing commands.")
 
-		// Error, not Fatal: one command that refuses to erase must not abandon
-		// the rest of them, nor skip the deferred session Close above, nor
-		// os.Exit past the caller's log.Sync. The loop continues and shutdown
-		// completes; the failed erase is reported per command.
+		// Error, not Fatal: one failed erase must not abandon the rest or skip
+		// the deferred Close and the caller's log.Sync.
 		for _, v := range registeredCommands {
 			err := discordSession.ApplicationCommandDelete(discordSession.State.User.ID, "", v.ID)
 			if err != nil {

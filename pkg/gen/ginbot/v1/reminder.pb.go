@@ -73,7 +73,6 @@ func (x ReminderStatus) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Message representing a Reminder
 type Reminder struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Id          *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
@@ -397,28 +396,17 @@ func (x *Reminder) ClearUpdatedAt() {
 type Reminder_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Reminder UUIDv7
-	Id *string
-	// Date and time of the Reminder (UTC+0)
-	Datetime *timestamppb.Timestamp
-	// Timezone of the Reminder
-	Timezone *string
-	// Repeat in cron format
-	RepeatCron *string
-	// Destinations to send the reminder to
+	Id          *string
+	Datetime    *timestamppb.Timestamp
+	Timezone    *string
+	RepeatCron  *string
 	Destination *ReminderDestination
-	// Status of the Reminder
-	Status *ReminderStatus
-	// User UUIDv7 of the creator
-	UserId *string
-	// Reminder message
-	Message *string
-	// Parent reminder UUIDv7
-	ParentId *string
-	// Created at
-	CreatedAt *timestamppb.Timestamp
-	// Updated at
-	UpdatedAt *timestamppb.Timestamp
+	Status      *ReminderStatus
+	UserId      *string
+	Message     *string
+	ParentId    *string
+	CreatedAt   *timestamppb.Timestamp
+	UpdatedAt   *timestamppb.Timestamp
 }
 
 func (b0 Reminder_builder) Build() *Reminder {
@@ -460,7 +448,6 @@ func (b0 Reminder_builder) Build() *Reminder {
 	return m0
 }
 
-// Destination to send the reminder to
 type ReminderDestination struct {
 	state                      protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_PlatformEnum    Platform               `protobuf:"varint,1,opt,name=platform_enum,json=platformEnum,enum=ginbot.v1.Platform" json:"platform_enum,omitempty"`
@@ -570,17 +557,9 @@ func (x *ReminderDestination) ClearDestinationMeta() {
 type ReminderDestination_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Platform to send the reminder to.
-	//
-	// required alone was not enough: it is a presence check, so an explicit
-	// PLATFORM_UNSPECIFIED satisfied it and reached the handler, where the
-	// destination resolves against no platform at all. See
-	// OpenClientActionStreamReq.platform_enum in reverse.proto for why all three
-	// rules are needed.
-	PlatformEnum *Platform
-	// Platform meta information such as Server ID etc.
-	InstanceMeta *structpb.Struct
-	// Meta information such as Channel ID etc.
+	// All three rules needed; see TriggerInstance.platform_enum in trigger.proto.
+	PlatformEnum    *Platform
+	InstanceMeta    *structpb.Struct
 	DestinationMeta *structpb.Struct
 }
 
@@ -661,7 +640,6 @@ func (x *GetReminderReq) ClearId() {
 type GetReminderReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Reminder UUIDv7
 	Id *string
 }
 
@@ -931,18 +909,12 @@ func (x *ListRemindersReq) ClearStatus() {
 type ListRemindersReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Limit the number of reminders returned
-	Limit *int64
-	// Offset the reminders returned
-	Offset *int64
-	// Search field for reminders
-	Message *string
-	// Search for reminders starting from this date
+	Limit       *int64
+	Offset      *int64
+	Message     *string
 	PeriodStart *timestamppb.Timestamp
-	// Search for reminders ending at this date
-	PeriodEnd *timestamppb.Timestamp
-	// Search for reminders with this status
-	Status *ReminderStatus
+	PeriodEnd   *timestamppb.Timestamp
+	Status      *ReminderStatus
 }
 
 func (b0 ListRemindersReq_builder) Build() *ListRemindersReq {
@@ -1223,26 +1195,14 @@ func (x *CreateReminderReq) ClearParentId() {
 type CreateReminderReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Date and time of the Reminder (UTC+0)
-	Datetime *timestamppb.Timestamp
-	// Timezone of the Reminder
-	Timezone *string
-	// Reminder message
-	Message *string
-	// Destinations to send the reminder to
+	Datetime    *timestamppb.Timestamp
+	Timezone    *string
+	Message     *string
 	Destination *ReminderDestination
-	// Repeat in cron format.
-	//
-	// The pattern is a shape check, not a semantic one: it accepts @descriptors,
-	// @every durations, and 5-6 whitespace-separated fields using *, numbers,
-	// three-letter month/day names, ranges, lists and steps. It deliberately does
-	// NOT range-check field values, so "99 99 99 99 99" passes here and is
-	// rejected later by the real cron parser. Erring toward acceptance is
-	// intentional: a false rejection blocks a legitimate reminder, a false
-	// acceptance is caught at scheduling time.
+	// Shape check only: field values are not range-checked (the real cron parser
+	// does that), erring toward acceptance so a false rejection can't block a reminder.
 	RepeatCron *string
-	// Parent reminder UUIDv7
-	ParentId *string
+	ParentId   *string
 }
 
 func (b0 CreateReminderReq_builder) Build() *CreateReminderReq {
@@ -1334,7 +1294,6 @@ func (x *CreateReminderResp) ClearId() {
 type CreateReminderResp_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Reminder UUIDv7
 	Id *string
 }
 
@@ -1571,29 +1530,15 @@ func (x *UpdateReminderReq) ClearParentId() {
 type UpdateReminderReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Reminder UUIDv7
-	Id *string
-	// Date and time of the Reminder (UTC+0)
-	Datetime *timestamppb.Timestamp
-	// Timezone of the Reminder
-	Timezone *string
-	// Reminder message
-	Message *string
-	// Destinations to send the reminder to
+	Id          *string
+	Datetime    *timestamppb.Timestamp
+	Timezone    *string
+	Message     *string
 	Destination *ReminderDestination
-	// Repeat in cron format.
-	//
-	// This field is PATCH-SHAPED, unlike the rest of the message: leaving it
-	// unset leaves the stored schedule untouched, so a client that only wants to
-	// change the message or the time cannot silently destroy an existing repeat.
-	//
-	// Setting it to the EMPTY STRING is the explicit "clear the repeat" sentinel —
-	// hence the trailing `?` on the pattern, which the create-side pattern does not
-	// have (there is nothing to clear at create time). Any other value must be a
-	// syntactically plausible schedule, checked semantically by the handler.
+	// Patch-shaped: unset leaves the stored schedule untouched; empty string is
+	// the "clear the repeat" sentinel (hence the trailing `?`, absent on create).
 	RepeatCron *string
-	// Parent reminder UUIDv7
-	ParentId *string
+	ParentId   *string
 }
 
 func (b0 UpdateReminderReq_builder) Build() *UpdateReminderReq {
@@ -1625,10 +1570,8 @@ func (b0 UpdateReminderReq_builder) Build() *UpdateReminderReq {
 	return m0
 }
 
-// Empty on purpose, and named rather than google.protobuf.Empty. Empty is a
-// shared well-known type: an RPC using it can never gain a field without
-// changing its signature, and sharing one message across RPCs violates buf's
-// RPC_REQUEST_RESPONSE_UNIQUE.
+// Empty and named rather than google.protobuf.Empty so it can gain a field
+// later and to satisfy buf's RPC_REQUEST_RESPONSE_UNIQUE.
 type UpdateReminderResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1750,7 +1693,6 @@ func (b0 DeleteReminderReq_builder) Build() *DeleteReminderReq {
 	return m0
 }
 
-// Empty on purpose; see UpdateReminderResp.
 type DeleteReminderResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1883,11 +1825,9 @@ func (x *ConfirmDeliveryReq) ClearDelivered() {
 type ConfirmDeliveryReq_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Reminder UUIDv7 that was delivered.
 	Id *string
-	// Whether the client managed to post the reminder. A false outcome (the
-	// channel is gone and the DM fallback also failed, or the user blocked the
-	// bot) lets the server record the failure rather than retry forever.
+	// False (channel gone and DM fallback failed, or bot blocked) records the
+	// failure rather than retrying forever.
 	Delivered *bool
 }
 
@@ -1906,8 +1846,6 @@ func (b0 ConfirmDeliveryReq_builder) Build() *ConfirmDeliveryReq {
 	return m0
 }
 
-// Empty on purpose; see UpdateReminderResp. The outcome the client reports is in
-// the request; there is nothing for the server to report back.
 type ConfirmDeliveryResp struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields

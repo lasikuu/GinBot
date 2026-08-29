@@ -4,17 +4,6 @@ import (
 	"testing"
 )
 
-// ── Assumed symbols from pkg/reminder ────────────────────────────────────────
-//
-// The minimum-interval rule.
-//
-//	func ValidateRepeatInterval(expr string, isDM bool) error
-//
-// Floors come straight from the implementation constants MinIntervalPublic (12h)
-// and MinIntervalDM (10m).
-//
-// Boundary policy: the implementation rejects only gap < floor, so exactly at
-// the floor is ALLOWED. The cases marked BOUNDARY below assert that.
 var (
 	validateRepeatInterval = ValidateRepeatInterval
 
@@ -22,8 +11,6 @@ var (
 	dmFloor      = MinIntervalDM
 )
 
-// TestValidateRepeatIntervalChannel: a channel reminder firing more often than
-// every 12h is rejected; at or slower than the floor is allowed.
 func TestValidateRepeatIntervalChannel(t *testing.T) {
 	const isDM = false
 
@@ -52,8 +39,6 @@ func TestValidateRepeatIntervalChannel(t *testing.T) {
 	}
 }
 
-// TestValidateRepeatIntervalDM: a DM reminder is allowed down to the 10-minute
-// floor but no faster.
 func TestValidateRepeatIntervalDM(t *testing.T) {
 	const isDM = true
 
@@ -81,10 +66,8 @@ func TestValidateRepeatIntervalDM(t *testing.T) {
 	}
 }
 
-// TestValidateRepeatIntervalDMLooserThanChannel: the same fast cron that a
-// channel refuses, a DM permits, as long as it is at or above the DM floor.
-// @every 15m is the discriminating case: rejected for a channel, allowed for a
-// DM. This asserts the two floors are genuinely different, not the same value.
+// TestValidateRepeatIntervalDMLooserThanChannel pins that the two floors are
+// genuinely different values.
 func TestValidateRepeatIntervalDMLooserThanChannel(t *testing.T) {
 	const expr = "@every 15m"
 

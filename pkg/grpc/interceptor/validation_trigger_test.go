@@ -13,12 +13,10 @@ import (
 // validTriggerUUID is a well-formed UUIDv7.
 const validTriggerUUID = "018f0000-0000-7000-8000-000000000001"
 
-// undefinedTriggerMode is far outside the declared range (0..3), so adding a
-// mode cannot quietly make these tests stop testing anything.
 const undefinedTriggerMode = pb.TriggerMode(99)
 
-// discordInstance is a well-formed TriggerInstance, so a rejection of a list
-// built from copies of it can only be about the list's length.
+// discordInstance is a well-formed TriggerInstance, so a rejection of a list of
+// copies can only be about length.
 func discordInstance() *pb.TriggerInstance {
 	return pb.TriggerInstance_builder{
 		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
@@ -42,8 +40,7 @@ func triggerInstances(n int) []*pb.TriggerInstance {
 	return out
 }
 
-// validCreateTrigger must pass validation, so a mutation of it is the only
-// thing wrong with the result.
+// validCreateTrigger passes validation, so a mutation of it is the only fault.
 func validCreateTrigger() *pb.CreateTriggerReq {
 	phrase := "boundary-phrase"
 	reply := "boundary-reply"
@@ -58,7 +55,7 @@ func validCreateTrigger() *pb.CreateTriggerReq {
 	}.Build()
 }
 
-// validUpdateTrigger is the UpdateTriggerReq equivalent.
+// validUpdateTrigger is the UpdateTriggerReq equivalent of validCreateTrigger.
 func validUpdateTrigger() *pb.UpdateTriggerReq {
 	id := validTriggerUUID
 	reply := "boundary-reply"
@@ -70,7 +67,7 @@ func validUpdateTrigger() *pb.UpdateTriggerReq {
 }
 
 // urlOfLength builds a plausible CDN URL of exactly n bytes, so a max_len case
-// cannot fail a shape rule instead.
+// cannot fail a shape rule.
 func urlOfLength(n int) string {
 	const prefix = "https://cdn.discordapp.com/attachments/"
 	if n <= len(prefix) {
@@ -79,8 +76,7 @@ func urlOfLength(n int) string {
 	return prefix + strings.Repeat("a", n-len(prefix))
 }
 
-// resolveScopeInstances makes one database round trip per element, so an
-// unbounded list is a query multiplier any registered caller can reach.
+// An unbounded instances list is a query multiplier: one DB round trip per element.
 func TestTriggerInstancesListIsBounded(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -119,7 +115,6 @@ func TestTriggerInstancesListIsBounded(t *testing.T) {
 				t.Fatalf("repeated.max_items = %d, which would refuse every list", bound)
 			}
 
-			// Exactly at the bound is legal.
 			requireValid(t, tt.build(triggerInstances(bound)))
 
 			requireOnlyViolation(t, tt.build(triggerInstances(bound+1)), "instances", "repeated.max_items")
@@ -127,7 +122,6 @@ func TestTriggerInstancesListIsBounded(t *testing.T) {
 	}
 }
 
-// A malformed id must be refused before it reaches Postgres.
 func TestTriggerIdsMustBeUUIDs(t *testing.T) {
 	valid := validTriggerUUID
 
@@ -188,7 +182,6 @@ func TestTriggerIdsMustBeUUIDs(t *testing.T) {
 	}
 }
 
-// Exactly at the limit must still be accepted: CDN URLs are long and signed.
 func TestTriggerFileURLLengthIsBounded(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -216,8 +209,7 @@ func TestTriggerFileURLLengthIsBounded(t *testing.T) {
 	}
 }
 
-// In regex mode the phrase runs against every message, so an unbounded one is a
-// denial-of-service surface.
+// In regex mode the phrase runs against every message, so an unbounded one is a DoS surface.
 func TestTriggerPhraseLengthIsBounded(t *testing.T) {
 	limit := declaredMaxLen(t, validCreateTrigger(), "phrase")
 

@@ -6,11 +6,8 @@ option go_package = "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1;ginbotv1";
 
 import "ginbot/v1/platform.proto";
 
-// buf/validate/validate.proto is deliberately NOT imported. The only message a
-// client sends on this service is OpenClientActionStreamReq, which now has no
-// fields at all: identity moved to the headers, where the clearance interceptor
-// checks it. There is nothing left here for protovalidate to constrain, and an
-// unused import is a lint failure.
+// protovalidate is not imported: the only client message here has no fields
+// (identity moved to headers), and an unused import fails lint.
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/go_features.proto";
 
@@ -27,97 +24,51 @@ service ReverseService {
   rpc OpenClientActionStream(stream OpenClientActionStreamReq) returns (stream OpenClientActionStreamResp);
 }
 
-// The client half of the reverse stream. It carries no fields, and that is the
-// point.
-//
-// Field 1 used to be `platform_enum`, which made this the one RPC in the
-// repository that took caller identity from the request BODY — the exact
-// pattern ADR-0030 exists to forbid, surviving here only because the stream
-// predates the audited path. The platform now arrives in the
-// ginbot-platform-enum header like every other call, so the handler registers
-// the client from headers the clearance interceptor has already parsed rather
-// than from a message it has not.
-//
-// The message itself stays because the RPC stays bidirectional. A client must
-// still send one of these to open the stream: connect issues the underlying
-// HTTP request lazily, on the first Send or CloseRequest, so a client that
-// never sent would never reach the handler at all. It is a hello, not a
-// registration, and the server ignores its contents.
-//
-// The number and the name stay reserved so they can never be silently reused —
-// a future field 1 of a different type on a message clients still send would be
-// a wire-level type confusion.
+// Carries no fields: the platform now arrives in the ginbot-platform-enum
+// header. The message stays only because a client must Send once to open the
+// stream (connect issues the HTTP request lazily); it is a hello the server
+// ignores. Field 1 (platform_enum) stays reserved to prevent wire-type confusion.
 message OpenClientActionStreamReq {
   reserved 1;
-  // Editions require reserved names as identifiers, not string literals.
   reserved platform_enum;
 }
 
-// One reminder to post, pushed to the platform client that owns its destination.
-//
-// Every value here is a platform-level string the client can act on directly.
-// The client never sees the reminder row: it posts the message, then reports the
-// outcome with ConfirmDelivery.
+// One reminder to post, pushed to the platform client owning its destination.
+// Every field is a platform-level string; the client posts, then reports via
+// ConfirmDelivery.
 message ReminderDelivery {
-  // Reminder UUIDv7, passed straight back as ConfirmDeliveryReq.id.
-  //
-  // The one value here that is never legitimately empty. Without it the client
-  // cannot confirm, so the server's reclaim returns the reminder to PENDING and
-  // pushes it again every grace period until it fails out — the user is notified
-  // repeatedly for a delivery that can never be acknowledged. A delivery missing
-  // it is dropped by the client rather than posted.
+  // Passed straight back as ConfirmDeliveryReq.id. Never legitimately empty: a
+  // delivery missing it is dropped rather than posted, since it could never be
+  // confirmed and would be re-pushed every grace period.
   string reminder_id = 1;
-  // The reminder text to post. Legitimately EMPTY: a reminder with no message is
-  // still a reminder, and the client substitutes its own minimal body.
+  // Legitimately empty; the client substitutes a minimal body.
   string message = 2;
-  // The platform's identifier for the channel or room to post in, taken from the
-  // destination's destination_meta. Legitimately EMPTY when the reminder has no
-  // resolvable channel, in which case the client falls back to a direct message.
+  // Channel/room id from destination_meta. Empty falls back to a direct message.
   string destination_uid = 3;
-  // The platform's identifier for the reminder's owner — a platform snowflake,
-  // never the GinBot user_account UUID, hence _uid like MessageRef.author_uid.
-  // It is both the direct-message target and the caller identity attached to the
-  // outgoing ConfirmDelivery. Legitimately EMPTY when the owner has no
-  // resolvable platform identity, which costs the DM fallback and makes the
-  // confirmation be rejected — survivable, and bounded by the reclaim's attempt
-  // limit.
+  // The owner's platform snowflake (not the user_account UUID), used as the DM
+  // target and the ConfirmDelivery caller identity. Empty costs the DM fallback
+  // and makes the confirm be rejected; bounded by the reclaim attempt limit.
   string owner_uid = 4;
 }
 
-// Development-only heartbeat. Cron emits it once a minute when
-// AppEnvironment == DEVELOPMENT and never in production, so nothing may depend
-// on receiving it: it exists solely to show that the server-to-client push path
-// is alive.
+// Development-only heartbeat, emitted once a minute only when
+// AppEnvironment == DEVELOPMENT. Nothing may depend on receiving it.
 message TestAction {
-  // When the server emitted the heartbeat. The only thing worth carrying: the
-  // client already knows the action, so the arrival time compared against this
-  // is all the heartbeat can actually tell an operator.
   google.protobuf.Timestamp emitted_at = 1;
 }
 
 message OpenClientActionStreamResp {
-  // Platform of the Connection
   Platform platform_enum = 1;
-  // Action to be taken by the client
   ClientAction client_action = 2;
 
-  // Field 3 previously carried the payload as an untyped google.protobuf.Struct,
-  // which the two ends agreed on only by convention: a set of shared string-key
-  // constants, a single writer, and nil-guarded reads on the client that existed
-  // purely to survive a payload of the wrong shape. The oneof below replaces
-  // that convention with a compiler guarantee.
-  //
-  // The number and the name stay reserved so they can never be silently reused
-  // with a different meaning — a Struct and a message are not interchangeable on
-  // the wire, and a field number never changes type.
+  // Was an untyped google.protobuf.Struct payload; the oneof below replaces that
+  // convention with a compiler guarantee. Reserved to prevent wire-type confusion.
   reserved 3;
-  // Editions require reserved names as identifiers, not string literals.
   reserved content;
 
-  // The payload for client_action. Set arms and actions correspond, but the
-  // pairing is not enforceable in the schema, so a client must still check which
-  // arm it actually got: an unset arm and an arm it does not recognise are both
-  // ordinary inputs, not bugs, and neither may be assumed away.
+  // Arms and actions correspond but the pairing is not schema-enforced, so a
+  // client must check which arm it got; an unset or unrecognised arm is ordinary
+  // input, not a bug.
   oneof payload {
     ReminderDelivery reminder_delivery = 4;
     TestAction test = 5;
