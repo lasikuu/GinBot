@@ -74,8 +74,8 @@ func encodeGIF(t *testing.T, img image.Image) []byte {
 // both dHash and pHash historically collapsed on (docs/plans/wanha.md, W4).
 func solidImage(width, height int, c color.Gray) *image.Gray {
 	img := image.NewGray(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			img.SetGray(x, y, c)
 		}
 	}
@@ -89,8 +89,8 @@ func solidImage(width, height int, c color.Gray) *image.Gray {
 func nearBlankImage(width, height int) *image.Gray {
 	img := image.NewGray(image.Rect(0, 0, width, height))
 	rng := rand.New(rand.NewPCG(1, 1))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			v := uint8(10)
 			// Roughly 1% of pixels perturbed to a different fixed value.
 			if rng.IntN(100) == 0 {
@@ -107,8 +107,8 @@ func nearBlankImage(width, height int) *image.Gray {
 func uniformNoiseImage(width, height int, seed uint64) *image.Gray {
 	img := image.NewGray(image.Rect(0, 0, width, height))
 	rng := rand.New(rand.NewPCG(seed, seed+1))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			img.SetGray(x, y, color.Gray{Y: uint8(rng.IntN(256))})
 		}
 	}
@@ -123,8 +123,8 @@ func structuredImage(width, height int, seed uint64) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	rng := rand.New(rand.NewPCG(seed, seed+7))
 
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			// Diagonal gradient base.
 			base := uint8((x*255)/max(width, 1)+(y*255)/max(height, 1)) / 2
 			noise := uint8(rng.IntN(40))
@@ -146,13 +146,6 @@ func structuredImage(width, height int, seed uint64) *image.RGBA {
 	fillRect(width/2, height/2, width-width/8, height-height/8, color.RGBA{R: 200, G: 20, B: 200, A: 255})
 
 	return img
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // ── Entropy ───────────────────────────────────────────────────────────────────

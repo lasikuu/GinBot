@@ -90,15 +90,13 @@ func InitializeMatrix(ctx context.Context, clients *client.Clients) {
 
 	syncCtx, cancelSync := context.WithCancel(context.Background())
 	var syncStopWait sync.WaitGroup
-	syncStopWait.Add(1)
 
-	go func() {
-		defer syncStopWait.Done()
+	syncStopWait.Go(func() {
 		// Scoped to the goroutine: assigning to the outer err would race with main.
 		if syncErr := matrixClient.SyncWithContext(syncCtx); syncErr != nil && !errors.Is(syncErr, context.Canceled) {
 			log.Z.Error("failed to sync", zap.Error(syncErr))
 		}
-	}()
+	})
 
 	stop := make(chan os.Signal, 1)
 	// SIGTERM as well as SIGINT, so container shutdowns are graceful.

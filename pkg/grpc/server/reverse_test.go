@@ -444,7 +444,7 @@ func TestSendActionDoesNotBlockWhenBufferIsFull(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < clientSendBuffer*3; i++ {
+		for range clientSendBuffer * 3 {
 			s.SendAction(testAction(pb.Platform_PLATFORM_DISCORD))
 		}
 	}()
@@ -495,7 +495,7 @@ func TestSendActionWithNoClientsIsANoop(t *testing.T) {
 func fillRegistry(t *testing.T, s *ReverseServer) {
 	t.Helper()
 
-	for i := 0; i < maxStreamClients; i++ {
+	for i := range maxStreamClients {
 		_, deregister, ok := s.register(pb.Platform_PLATFORM_DISCORD)
 		if !ok {
 			t.Fatalf("register refused client %d of %d, before the cap was reached", i+1, maxStreamClients)
@@ -606,7 +606,7 @@ func TestACapacityFreedByADeregistrationIsReusable(t *testing.T) {
 	// Registered manually rather than through fillRegistry, because this test
 	// needs to release one of them mid-test rather than at cleanup.
 	deregisters := make([]func(), 0, maxStreamClients)
-	for i := 0; i < maxStreamClients; i++ {
+	for i := range maxStreamClients {
 		_, deregister, ok := s.register(pb.Platform_PLATFORM_DISCORD)
 		if !ok {
 			t.Fatalf("register refused client %d of %d", i+1, maxStreamClients)
@@ -665,10 +665,8 @@ func TestConcurrentRegistrationNeverExceedsTheCap(t *testing.T) {
 	)
 
 	start.Add(1)
-	for i := 0; i < attempts; i++ {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+	for range attempts {
+		done.Go(func() {
 			start.Wait() // release all goroutines together
 
 			client, deregister, ok := s.register(pb.Platform_PLATFORM_DISCORD)
@@ -685,7 +683,7 @@ func TestConcurrentRegistrationNeverExceedsTheCap(t *testing.T) {
 			mu.Lock()
 			releases = append(releases, deregister)
 			mu.Unlock()
-		}()
+		})
 	}
 	start.Done()
 	done.Wait()

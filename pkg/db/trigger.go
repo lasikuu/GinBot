@@ -263,10 +263,7 @@ func ListTriggers(ctx context.Context, filter ListTriggersFilter) ([]*model.Trig
 	limitPlaceholder := fmt.Sprintf("$%d", len(args))
 	// Clamped rather than passed through: Postgres rejects a negative OFFSET,
 	// which would surface to the caller as an opaque Internal error.
-	offset := filter.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(filter.Offset, 0)
 	args = append(args, offset)
 	offsetPlaceholder := fmt.Sprintf("$%d", len(args))
 

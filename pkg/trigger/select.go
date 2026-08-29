@@ -30,10 +30,7 @@ func Select(message string, candidates []Candidate, roll Roller) *Candidate {
 		return nil
 	}
 
-	limit := len(candidates)
-	if limit > MaxCandidates {
-		limit = MaxCandidates
-	}
+	limit := min(len(candidates), MaxCandidates)
 
 	var matched []Candidate
 	var exactMatched []Candidate

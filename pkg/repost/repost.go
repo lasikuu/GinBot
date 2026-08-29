@@ -37,7 +37,7 @@ const ChunkCount = 8
 // parameter without an explicit conversion at every call site.
 func Chunks(hash uint64) [ChunkCount]int16 {
 	var chunks [ChunkCount]int16
-	for i := 0; i < ChunkCount; i++ {
+	for i := range ChunkCount {
 		shift := uint((ChunkCount - 1 - i) * 8)
 		chunks[i] = int16((hash >> shift) & 0xFF)
 	}

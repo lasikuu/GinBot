@@ -126,7 +126,7 @@ func TestForcedLimiterEmptyAuthorIDAlwaysRefused(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if limiter.Allow("") {
 			t.Errorf("Allow(\"\") call #%d = true, want false always", i)
 		}
@@ -173,7 +173,7 @@ func TestForcedLimiterConcurrentAllowIsRaceFree(t *testing.T) {
 	results := make([]bool, authors)
 
 	var wg sync.WaitGroup
-	for i := 0; i < authors; i++ {
+	for i := range authors {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -204,17 +204,15 @@ func TestForcedLimiterConcurrentAllowForTheSameAuthorAllowsExactlyOnce(t *testin
 	var start sync.WaitGroup
 	var done sync.WaitGroup
 	start.Add(1)
-	for i := 0; i < attempts; i++ {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+	for range attempts {
+		done.Go(func() {
 			start.Wait()
 			if limiter.Allow("same-author") {
 				mu.Lock()
 				allowedCount++
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 	start.Done()
 	done.Wait()

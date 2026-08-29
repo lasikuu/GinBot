@@ -106,8 +106,8 @@ func gradientImage(size int, angle, cycles float64) image.Image {
 	dx, dy := math.Cos(angle), math.Sin(angle)
 	span := float64(size) * (math.Abs(dx) + math.Abs(dy))
 
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
+	for y := range size {
+		for x := range size {
 			projection := (float64(x)*dx + float64(y)*dy) / span
 			value := uint8(127.5 * (1 + math.Sin(2*math.Pi*cycles*projection)))
 			img.Set(x, y, color.RGBA{R: value, G: value, B: value, A: 255})
@@ -119,8 +119,8 @@ func gradientImage(size int, angle, cycles float64) image.Image {
 // checkerImage draws a checkerboard of the given cell size, offset by phase.
 func checkerImage(size, cell, phase int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
+	for y := range size {
+		for x := range size {
 			on := (((x+phase)/cell)+((y+phase)/cell))%2 == 0
 			value := uint8(24)
 			if on {
@@ -143,8 +143,8 @@ func blockImage(size, cells int, rng *rand.Rand) image.Image {
 	}
 
 	cellSize := size / cells
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
+	for y := range size {
+		for x := range size {
 			cx := min(x/cellSize, cells-1)
 			cy := min(y/cellSize, cells-1)
 			value := values[cy*cells+cx]
@@ -159,8 +159,8 @@ func blockImage(size, cells int, rng *rand.Rand) image.Image {
 // high-frequency bits.
 func noiseImage(size int, rng *rand.Rand) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
+	for y := range size {
+		for x := range size {
 			img.Set(x, y, color.RGBA{
 				R: uint8(rng.IntN(256)),
 				G: uint8(rng.IntN(256)),
@@ -175,8 +175,8 @@ func noiseImage(size int, rng *rand.Rand) image.Image {
 // radialImage draws concentric rings around an off-centre origin.
 func radialImage(size int, originX, originY, cycles float64) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
+	for y := range size {
+		for x := range size {
 			dx := float64(x)/float64(size) - originX
 			dy := float64(y)/float64(size) - originY
 			distance := math.Hypot(dx, dy)
@@ -195,8 +195,8 @@ func shifted(src image.Image, dx, dy int) image.Image {
 	width, height := bounds.Dx(), bounds.Dy()
 	out := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			sx := ((x+dx)%width + width) % width
 			sy := ((y+dy)%height + height) % height
 			out.Set(x, y, src.At(bounds.Min.X+sx, bounds.Min.Y+sy))
@@ -230,8 +230,8 @@ func rescaled(src image.Image, size int) image.Image {
 	bounds := src.Bounds()
 	out := image.NewRGBA(image.Rect(0, 0, size, size))
 
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
+	for y := range size {
+		for x := range size {
 			sx := bounds.Min.X + x*bounds.Dx()/size
 			sy := bounds.Min.Y + y*bounds.Dy()/size
 			out.Set(x, y, src.At(sx, sy))
@@ -250,7 +250,7 @@ func buildSelectivityCorpus() []image.Image {
 	var base []image.Image
 
 	// Gradients: 16 angles x 4 spatial frequencies.
-	for angleStep := 0; angleStep < 16; angleStep++ {
+	for angleStep := range 16 {
 		angle := float64(angleStep) * math.Pi / 16
 		for _, cycles := range []float64{0.5, 1, 2.5, 6} {
 			base = append(base, gradientImage(size, angle, cycles))
@@ -266,13 +266,13 @@ func buildSelectivityCorpus() []image.Image {
 
 	// Blocky, screenshot-like content at three grid resolutions.
 	for _, cells := range []int{4, 8, 16} {
-		for i := 0; i < 12; i++ {
+		for range 12 {
 			base = append(base, blockImage(size, cells, rng))
 		}
 	}
 
 	// Flat-spectrum noise.
-	for i := 0; i < 24; i++ {
+	for range 24 {
 		base = append(base, noiseImage(size, rng))
 	}
 

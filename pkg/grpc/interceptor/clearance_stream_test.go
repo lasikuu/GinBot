@@ -2,6 +2,7 @@ package interceptor
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"testing"
 
@@ -55,9 +56,7 @@ func streamCall(procedure string, header http.Header, reqs Requirements, resolve
 	})
 
 	conn := newFakeStreamingHandlerConn(procedure)
-	for key, values := range header {
-		conn.header[key] = values
-	}
+	maps.Copy(conn.header, header)
 
 	intercept := NewClearanceInterceptor(reqs, resolve)
 	result.err = intercept.WrapStreamingHandler(handler)(context.Background(), conn)

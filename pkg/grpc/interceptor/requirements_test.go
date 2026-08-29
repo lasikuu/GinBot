@@ -13,6 +13,7 @@
 package interceptor_test
 
 import (
+	"slices"
 	"testing"
 
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
@@ -200,13 +201,7 @@ func TestRequirementsCoverageCatchesAMissingProcedure(t *testing.T) {
 
 	missing := missingFromRequirements(t, incomplete, productionPublicMethods())
 
-	found := false
-	for _, procedure := range missing {
-		if procedure == victim {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(missing, victim)
 	if !found {
 		t.Fatalf("removing %s from the map was not reported by missingFromRequirements (reported: %v); "+
 			"the coverage test would not catch a dropped procedure", victim, missing)

@@ -12,17 +12,17 @@ import (
 // invoked, so tests can assert on cache hits vs misses rather than only on the
 // returned value.
 type countingLoader struct {
-	calls int32
+	calls atomic.Int32
 	fn    func(ctx context.Context, instanceID int64) ([]Candidate, error)
 }
 
 func (l *countingLoader) load(ctx context.Context, instanceID int64) ([]Candidate, error) {
-	atomic.AddInt32(&l.calls, 1)
+	l.calls.Add(1)
 	return l.fn(ctx, instanceID)
 }
 
 func (l *countingLoader) count() int {
-	return int(atomic.LoadInt32(&l.calls))
+	return int(l.calls.Load())
 }
 
 var errLoadFailed = errors.New("simulated load failure")
@@ -76,7 +76,7 @@ func TestCacheEmptyResultIsCached(t *testing.T) {
 	}}
 	cache := NewCache(loader.load)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		got, err := cache.Candidates(context.Background(), 1)
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)
@@ -170,11 +170,11 @@ func TestCacheConcurrentCandidatesAndInvalidate(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, goroutines*opsPerGoroutine)
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < opsPerGoroutine; i++ {
+			for i := range opsPerGoroutine {
 				instanceID := int64((g + i) % 8)
 				switch i % 3 {
 				case 0:

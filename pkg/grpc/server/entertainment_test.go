@@ -36,7 +36,7 @@ func TestGetRandomNumberDoubles(t *testing.T) {
 	for _, digits := range []int32{1, 2, 3, 4, 5, 6, 18} {
 		t.Run(strconv.Itoa(int(digits)), func(t *testing.T) {
 			// Repeat: the value is random, so a single draw proves little.
-			for i := 0; i < 200; i++ {
+			for range 200 {
 				resp, err := s.GetRandomNumber(context.Background(), connect.NewRequest(doublesReq(digits)))
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -88,7 +88,7 @@ func TestGetRandomNumberInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(strconv.FormatInt(tt.lower, 10)+".."+strconv.FormatInt(tt.upper, 10), func(t *testing.T) {
-			for i := 0; i < 200; i++ {
+			for range 200 {
 				resp, err := s.GetRandomNumber(context.Background(), connect.NewRequest(intervalReq(tt.lower, tt.upper)))
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

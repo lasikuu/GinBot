@@ -3,6 +3,7 @@ package interceptor
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"sync"
 	"testing"
@@ -96,9 +97,7 @@ func callOrigin(header http.Header, resolve OriginResolver, caller *model.User) 
 	})
 
 	req := newFakeRequest(publicMethod)
-	for key, values := range header {
-		req.Header()[key] = values
-	}
+	maps.Copy(req.Header(), header)
 
 	intercept := NewOriginInterceptor(resolve)
 	_, result.err = intercept.WrapUnary(handler)(originTestCtx(header, caller), req)
@@ -272,9 +271,7 @@ func TestBootstrapRunsOncePerOrigin(t *testing.T) {
 	for range requests {
 		req := newFakeRequest(publicMethod)
 		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
-		for key, values := range header {
-			req.Header()[key] = values
-		}
+		maps.Copy(req.Header(), header)
 		if _, err := intercept.WrapUnary(handler)(originTestCtx(header, caller), req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -318,9 +315,7 @@ func TestBootstrapDistinguishesOrigins(t *testing.T) {
 	for _, tt := range calls {
 		req := newFakeRequest(publicMethod)
 		header := originHeader(tt.platform, "uid", tt.origin)
-		for key, values := range header {
-			req.Header()[key] = values
-		}
+		maps.Copy(req.Header(), header)
 
 		if _, err := intercept.WrapUnary(handler)(originTestCtx(header, caller), req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -351,9 +346,7 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 	for i := range reqs {
 		reqs[i] = newFakeRequest(publicMethod)
 		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
-		for key, values := range header {
-			reqs[i].Header()[key] = values
-		}
+		maps.Copy(reqs[i].Header(), header)
 		ctxs[i] = originTestCtx(header, caller)
 	}
 
@@ -397,9 +390,7 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 	for range concurrency {
 		req := newFakeRequest(publicMethod)
 		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
-		for key, values := range header {
-			req.Header()[key] = values
-		}
+		maps.Copy(req.Header(), header)
 		// originTestCtx, not a bare callerContextKey: bootstrap reads the
 		// platform through MetaFromContext and returns before it ever consults
 		// the cache when that is absent. A context carrying only the caller
@@ -431,9 +422,7 @@ func TestFailedBootstrapIsRetriedAndDoesNotFailTheCall(t *testing.T) {
 	call := func() error {
 		req := newFakeRequest(publicMethod)
 		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
-		for key, values := range header {
-			req.Header()[key] = values
-		}
+		maps.Copy(req.Header(), header)
 		_, err := intercept.WrapUnary(handler)(originTestCtx(header, caller), req)
 		return err
 	}

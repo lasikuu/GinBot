@@ -49,8 +49,8 @@ func distinctImage(width, height, variant int) *image.RGBA {
 	// given gradient formula happens to pick.
 	rng := rand.New(rand.NewPCG(uint64(variant)*7919+1, uint64(variant)*104729+7))
 
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			var base uint8
 			switch variant % 5 {
 			case 0: // diagonal gradient
@@ -122,13 +122,13 @@ func resizeBox(img *image.RGBA, newWidth, newHeight int) *image.RGBA {
 	srcW, srcH := bounds.Dx(), bounds.Dy()
 	out := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
 
-	for y := 0; y < newHeight; y++ {
+	for y := range newHeight {
 		y0 := y * srcH / newHeight
 		y1 := (y + 1) * srcH / newHeight
 		if y1 <= y0 {
 			y1 = y0 + 1
 		}
-		for x := 0; x < newWidth; x++ {
+		for x := range newWidth {
 			x0 := x * srcW / newWidth
 			x1 := (x + 1) * srcW / newWidth
 			if x1 <= x0 {
@@ -285,13 +285,13 @@ func TestUnrelatedImagesAreNotFlagged(t *testing.T) {
 	const fixtureCount = 5
 
 	hashes := make([]uint64, fixtureCount)
-	for i := 0; i < fixtureCount; i++ {
+	for i := range fixtureCount {
 		img := distinctImage(size, size, i)
 		hashes[i] = hashOrFatal(t, hasher, encodePNG(t, img), "image/png")
 	}
 
 	minDistance := -1
-	for i := 0; i < fixtureCount; i++ {
+	for i := range fixtureCount {
 		for j := i + 1; j < fixtureCount; j++ {
 			distance := repost.Distance(hashes[i], hashes[j])
 			t.Logf("unrelated pair (variant %d, variant %d): distance = %d (MaxDistance = %d)",

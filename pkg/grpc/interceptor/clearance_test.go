@@ -3,6 +3,7 @@ package interceptor
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -118,9 +119,7 @@ func call(procedure string, header http.Header, reqs Requirements, resolve Calle
 	})
 
 	req := newFakeRequest(procedure)
-	for key, values := range header {
-		req.Header()[key] = values
-	}
+	maps.Copy(req.Header(), header)
 
 	intercept := NewClearanceInterceptor(reqs, resolve)
 	_, result.err = intercept.WrapUnary(handler)(context.Background(), req)

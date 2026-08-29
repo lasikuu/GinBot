@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -185,10 +186,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Fetched, error) {
 		return nil, ErrTooLarge
 	}
 
-	sniffLen := len(content)
-	if sniffLen > sniffSampleSize {
-		sniffLen = sniffSampleSize
-	}
+	sniffLen := min(len(content), sniffSampleSize)
 	mimeType := stripMIMEParams(http.DetectContentType(content[:sniffLen]))
 	if !allowedMIMEType(mimeType) {
 		return nil, ErrUnsupportedType
@@ -214,19 +212,14 @@ func AllowedMIMETypes() []string {
 }
 
 func allowedMIMEType(mimeType string) bool {
-	for _, allowed := range AllowedMIMETypes() {
-		if allowed == mimeType {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(AllowedMIMETypes(), mimeType)
 }
 
 // stripMIMEParams drops a trailing "; charset=..." or similar parameter, so
 // the sniffed type compares equal to the bare entries in AllowedMIMETypes.
 func stripMIMEParams(mimeType string) string {
-	if idx := strings.IndexByte(mimeType, ';'); idx >= 0 {
-		return strings.TrimSpace(mimeType[:idx])
+	if before, _, ok := strings.Cut(mimeType, ";"); ok {
+		return strings.TrimSpace(before)
 	}
 	return mimeType
 }

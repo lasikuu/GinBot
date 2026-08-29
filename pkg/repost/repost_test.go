@@ -123,7 +123,7 @@ func TestDistanceKnownValues(t *testing.T) {
 func TestDistanceAgreesWithOnesCountXOR(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 
-	for i := 0; i < 500; i++ {
+	for range 500 {
 		a := rng.Uint64()
 		b := rng.Uint64()
 
@@ -182,7 +182,7 @@ func TestPigeonholeGuaranteeWithinDistanceSeven(t *testing.T) {
 	for k := 0; k <= MaxDistance; k++ {
 		k := k
 		t.Run(distanceLabel(k), func(t *testing.T) {
-			for trial := 0; trial < trialsPerDistance; trial++ {
+			for trial := range trialsPerDistance {
 				original := rng.Uint64()
 				flipped := flipBits(rng, original, k)
 

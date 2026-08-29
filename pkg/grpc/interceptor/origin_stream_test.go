@@ -2,6 +2,7 @@ package interceptor
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"testing"
 
@@ -54,9 +55,7 @@ func streamOrigin(procedure string, header http.Header, resolve OriginResolver, 
 	})
 
 	conn := newFakeStreamingHandlerConn(procedure)
-	for key, values := range header {
-		conn.header[key] = values
-	}
+	maps.Copy(conn.header, header)
 
 	intercept := NewOriginInterceptor(resolve)
 	result.err = intercept.WrapStreamingHandler(handler)(originTestCtx(header, caller), conn)

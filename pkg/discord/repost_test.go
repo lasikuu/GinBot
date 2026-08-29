@@ -381,7 +381,7 @@ func TestRepostCandidatesReturnsNilForNeither(t *testing.T) {
 func TestRepostCandidatesCapsAtTwenty(t *testing.T) {
 	links := func(n int) string {
 		var b strings.Builder
-		for i := 0; i < n; i++ {
+		for i := range n {
 			b.WriteString("https://example.com/")
 			b.WriteString(strconv.Itoa(i))
 			b.WriteString(" ")
@@ -391,7 +391,7 @@ func TestRepostCandidatesCapsAtTwenty(t *testing.T) {
 
 	attachments := func(n int) []*discordgo.MessageAttachment {
 		out := make([]*discordgo.MessageAttachment, 0, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			name := "x" + strconv.Itoa(i) + ".png"
 			out = append(out, attachment("https://cdn.discordapp.com/"+name, "image/png", name))
 		}
@@ -441,7 +441,7 @@ func TestRepostCandidatesKeepsTheLinkWhenAttachmentsWouldFillTheCap(t *testing.T
 	const linkURL = "https://example.com/the-link"
 
 	files := make([]*discordgo.MessageAttachment, 0, maxRepostCandidates)
-	for i := 0; i < maxRepostCandidates; i++ {
+	for i := range maxRepostCandidates {
 		name := "x" + strconv.Itoa(i) + ".png"
 		files = append(files, attachment("https://cdn.discordapp.com/"+name, "image/png", name))
 	}

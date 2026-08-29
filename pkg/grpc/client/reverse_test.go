@@ -723,7 +723,7 @@ func saturate(t *testing.T, outcome streamOutcome) time.Duration {
 	const maxSteps = 64
 
 	backoff := reconnectMinBackoff
-	for i := 0; i < maxSteps; i++ {
+	for i := range maxSteps {
 		next := nextBackoff(backoff, outcome)
 		if next > reconnectMaxBackoff {
 			t.Fatalf("nextBackoff returned %v at escalation %d, above the %v cap", next, i+1, reconnectMaxBackoff)
@@ -977,7 +977,7 @@ func TestEnsureRegisteredRunsOnEveryAttempt(t *testing.T) {
 	fake := &fakeUserClient{}
 	c := &Clients{User: fake}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := c.ensureRegistered(context.Background(), testIdentity); err != nil {
 			t.Fatalf("call %d: ensureRegistered = %v, want nil", i, err)
 		}
@@ -1119,7 +1119,7 @@ func TestDispatchStillDeliversAfterAPanickingHandler(t *testing.T) {
 	}
 
 	const rounds = 3
-	for i := 0; i < rounds; i++ {
+	for range rounds {
 		dispatchNoPanic(t, action(t, pb.ClientAction_CLIENT_ACTION_SEND_TEST), handlers)
 		dispatchNoPanic(t, action(t, pb.ClientAction_CLIENT_ACTION_SEND_NOTIFICATION), handlers)
 	}

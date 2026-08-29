@@ -113,7 +113,7 @@ func (i *retryInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 
 		resp, err := next(ctx, req)
 
-		for attempt := 0; attempt < retryMaxAttempts; attempt++ {
+		for attempt := range retryMaxAttempts {
 			if err == nil || connect.CodeOf(err) != connect.CodeUnavailable {
 				return resp, err
 			}

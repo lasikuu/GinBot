@@ -315,18 +315,18 @@ func TestFetcherRefusesOversizedBodyWithLyingOrAbsentContentLength(t *testing.T)
 	const totalChunks = 8192 // 8 MiB intended, far more than the 1 KiB cap
 	const intendedTotal = int64(chunkSize) * int64(totalChunks)
 
-	var written int64
+	var written atomic.Int64
 	chunk := make([]byte, chunkSize)
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, _ := w.(http.Flusher)
 		deadline := time.Now().Add(5 * time.Second)
-		for i := 0; i < totalChunks; i++ {
+		for range totalChunks {
 			if time.Now().After(deadline) {
 				return // safety valve: the client is gone, do not spin forever
 			}
 			n, err := w.Write(chunk)
-			atomic.AddInt64(&written, int64(n))
+			written.Add(int64(n))
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -348,7 +348,7 @@ func TestFetcherRefusesOversizedBodyWithLyingOrAbsentContentLength(t *testing.T)
 	// stop, so the counter below is not read mid-write.
 	time.Sleep(200 * time.Millisecond)
 
-	got := atomic.LoadInt64(&written)
+	got := written.Load()
 	if got >= intendedTotal/2 {
 		t.Errorf("handler wrote %d bytes (intended %d); the fetcher did not stop early, it drained most or all of the stream",
 			got, intendedTotal)

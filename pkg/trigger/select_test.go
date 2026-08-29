@@ -163,7 +163,7 @@ func TestSelectReturnsACopyNotAPointerIntoTheSlice(t *testing.T) {
 func TestFiresThreshold(t *testing.T) {
 	c := Candidate{Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Chance: 10}
 
-	for roll := 0; roll < 10; roll++ {
+	for roll := range 10 {
 		if !Fires(c, fixedRoller(roll)) {
 			t.Errorf("Fires with roll=%d = false, want true (chance 10)", roll)
 		}
@@ -196,7 +196,7 @@ func TestFiresExactMultiplierShiftsTheBoundary(t *testing.T) {
 func TestFiresAtEffectiveChance100AlwaysFires(t *testing.T) {
 	c := Candidate{Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Chance: 100}
 
-	for roll := 0; roll < int(MaxChance); roll++ {
+	for roll := range int(MaxChance) {
 		if !Fires(c, fixedRoller(roll)) {
 			t.Fatalf("Fires with roll=%d = false, want true (effective chance 100)", roll)
 		}

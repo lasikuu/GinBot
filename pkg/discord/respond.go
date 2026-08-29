@@ -33,8 +33,7 @@ func errorMessage(err error) string {
 	// prefix would leak wire-protocol vocabulary into a chat reply.
 	switch connect.CodeOf(err) {
 	case connect.CodeInvalidArgument, connect.CodeFailedPrecondition:
-		var connectErr *connect.Error
-		if errors.As(err, &connectErr) {
+		if connectErr, ok := errors.AsType[*connect.Error](err); ok {
 			message = connectErr.Message()
 		}
 	case connect.CodePermissionDenied:

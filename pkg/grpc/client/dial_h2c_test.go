@@ -149,8 +149,7 @@ func TestDialCarriesUnaryAndBidiTrafficOverPlaintextH2C(t *testing.T) {
 			proto, major)
 	}
 
-	streamCtx, cancelStream := context.WithCancel(context.Background())
-	defer cancelStream()
+	streamCtx := t.Context()
 
 	stream := clients.Reverse.OpenClientActionStream(streamCtx)
 	t.Cleanup(func() {

@@ -53,9 +53,9 @@ func FuzzStripSpoilers(f *testing.F) {
 // later by a closing "||" — the exact condition StripSpoilers's algorithm is
 // specified to eliminate.
 func hasCompleteSpoilerSpan(s string) bool {
-	open := strings.Index(s, "||")
-	if open == -1 {
+	_, after, ok := strings.Cut(s, "||")
+	if !ok {
 		return false
 	}
-	return strings.Contains(s[open+2:], "||")
+	return strings.Contains(after, "||")
 }

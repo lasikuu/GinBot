@@ -14,9 +14,7 @@ import (
 func sessionAs(id string) *discordgo.Session {
 	return &discordgo.Session{
 		State: &discordgo.State{
-			Ready: discordgo.Ready{
-				User: &discordgo.User{ID: id},
-			},
+			User: &discordgo.User{ID: id},
 		},
 	}
 }

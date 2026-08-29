@@ -252,7 +252,7 @@ func fillRealRegistryToCap(t *testing.T, ctx context.Context, reverseClient ginb
 	results := make([]attemptResult, fillAttempts)
 	var wg sync.WaitGroup
 	wg.Add(fillAttempts)
-	for i := 0; i < fillAttempts; i++ {
+	for i := range fillAttempts {
 		go func(i int) {
 			defer wg.Done()
 			stream, err := openAndCheckAdmission(ctx, reverseClient)
