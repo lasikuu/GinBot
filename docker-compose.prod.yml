@@ -68,11 +68,7 @@ services:
     # compose network reach it. Add a `ports:` mapping if you need external access.
 
   ginbot-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: server
-    image: ginbot-server:latest
+    image: ghcr.io/lasikuu/ginbot-server:latest
     restart: unless-stopped
     environment:
       <<: *ginbot-env
@@ -132,11 +128,7 @@ services:
     # Optional: only started when the `discord` profile is active
     # (COMPOSE_PROFILES=discord in .env, or `--profile discord`).
     profiles: ["discord"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: discord
-    image: ginbot-discord:latest
+    image: ghcr.io/lasikuu/ginbot-discord:latest
     restart: unless-stopped
     environment:
       <<: *ginbot-env
@@ -158,11 +150,7 @@ services:
     # Optional: only started when the `matrix` profile is active
     # (COMPOSE_PROFILES=matrix in .env, or `--profile matrix`).
     profiles: ["matrix"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: matrix
-    image: ginbot-matrix:latest
+    image: ghcr.io/lasikuu/ginbot-matrix:latest
     restart: unless-stopped
     environment:
       <<: *ginbot-env
