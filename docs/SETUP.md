@@ -39,8 +39,9 @@ database name to `POSTGRES_USER`). Verify:
 docker compose -f docker-compose.dev.yml ps
 ```
 
-> The compose file declares no named volume, so **data does not survive `docker compose down`**.
-> That is fine for development; migrations re-run on the next boot.
+> Data lives in the named volume `ginbot_dev_pgdata`, so it survives
+> `docker compose down` and image updates. Use `docker compose -f docker-compose.dev.yml down -v`
+> when you actually want a clean database; migrations re-run on the next boot.
 
 ## 2. Configuration
 
@@ -62,7 +63,10 @@ Two things that catch people out:
 - **Do not prefix `DISCORD_BOT_TOKEN` with `Bot `.** The config layer adds it.
 - `.env` is loaded from the **working directory**, and it is gitignored. Never commit it.
 
-Environment variables are read only in `internal/config`; nothing else calls `os.Getenv`.
+Environment variables are read only in `internal/config`; nothing else calls `os.Getenv`. The same
+`.env` also drives `docker-compose.prod.yml`, which interpolates the secrets and feature flags out
+of it rather than declaring a second set of names — `internal/config/exampleenv_test.go` fails the
+build if `example.env` and `internal/config` disagree in either direction, so the list stays whole.
 
 ## 3. Run
 
@@ -365,18 +369,25 @@ and does not buy.
 
 ## Production compose
 
-Not needed for local development; this is what `docker compose -f docker-compose.prod.yml up -d`
+Not needed for local development; this is what
+`docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d`
 actually does.
 
-Each binary is its own image, built from a dedicated Dockerfile stage. `psql` and `ginbot-server`
-always start; the two clients sit behind Compose profiles, so set `COMPOSE_PROFILES` in `.env`:
+Each binary runs its own published image (see [Published images](#published-images)). There are no
+`build:` blocks, so `up --build` does nothing; add one in an override file to run a locally compiled
+image instead. `psql` and `ginbot-server` always start; the two clients sit behind Compose profiles,
+so set `COMPOSE_PROFILES` in `.env`:
 
 ```bash
 COMPOSE_PROFILES=discord          # server + discord
 COMPOSE_PROFILES=discord,matrix   # server + both clients
 ```
 
-Four things about that file are easy to get wrong and are commented in place:
+The one variable the stack refuses to start without is **`GINBOT_DB_PASSWORD`**. The `psql` service
+maps it onto the `POSTGRES_PASSWORD` its image insists on, so the secret is spelled once, under the
+name `example.env` documents and `internal/config` reads.
+
+Six things about that file are easy to get wrong and are commented in place:
 
 - **`GINBOT_GRPC_HOST` means two different things.** It is both the address the server binds and
   the address the clients dial. The shared anchor sets it to `ginbot-server` for the clients, and
@@ -394,6 +405,16 @@ Four things about that file are easy to get wrong and are commented in place:
   certificate, which no HTTP client in the image can present; since the clients gate on
   `service_healthy`, a probe that cannot pass under TLS stops the whole stack rather than just
   mislabelling one container.
+- **`GINBOT_STORAGE_PATH` must be on a volume**, and is — `ginbot_prod_storage` at `/app/storage` on
+  the server alone. Trigger media is persistent state: the server fetches and stores the bytes while
+  the `file` row pointing at them lives in Postgres, so leaving the default `./storage` in the
+  container's writable layer does not merely lose files on the next image update, it leaves
+  surviving rows referencing blobs that are gone.
+- **Repost detection needs ffmpeg for video and animated GIF, and the images do not carry one.**
+  `GINBOT_REPOST` is passed through for both binaries, but [ADR 0006](adr/0006-ffmpeg-as-a-subprocess.md)
+  keeps ffmpeg a system dependency of whoever deploys rather than something GinBot redistributes.
+  Its absence degrades those formats to exact-hash-only; still images are unaffected and nothing
+  crashes. Point `GINBOT_REPOST_FFMPEG_PATH` at a mounted binary, or build a derived image.
 
 `cmd/ginbot-server/compose_test.go` asserts those relationships against the actual file, so a change
 that breaks one of them fails `go test ./...` rather than only failing on deploy.
@@ -402,6 +423,7 @@ that breaks one of them fails `go test ./...` rather than only failing on deploy
 
 ## Published images
 
+`docker-compose.prod.yml` runs these images directly — it has no `build:` blocks.
 `.github/workflows/publish.yml` builds the three Dockerfile stages for `linux/amd64` and
 `linux/arm64` and pushes them to the GitHub Container Registry:
 
@@ -430,9 +452,10 @@ gh attestation verify oci://ghcr.io/lasikuu/ginbot-server:latest --repo lasikuu/
 docker buildx imagetools inspect ghcr.io/lasikuu/ginbot-server:latest
 ```
 
-`docker-compose.prod.yml` still builds locally and is unchanged. To run the published images
-instead, override the `image:` keys and drop the `build:` blocks in a compose override file, then
-`docker compose ... pull` rather than `--build`.
+`docker-compose.prod.yml` references these images by their `:latest` tag and carries no `build:`
+block, so the normal flow is `docker compose ... pull` then `up -d`, never `--build`. Pin a
+`v*.*.*` tag or a digest for anything you actually deploy. To run a locally compiled image instead,
+add a `build:` block back in a compose override file.
 
 `cmd/ginbot-migrate` has no image on purpose: the server applies the embedded goose migrations at
 boot unless `GINBOT_DB_MIGRATIONS=false`, so that binary is an operator tool rather than a deployed

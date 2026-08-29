@@ -78,6 +78,25 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
 - `ListTriggers` no longer forces the Discord client into an extra round trip purely to learn the
   caller's own id.
 - `GINBOT_CERTS_PATH` is now actually used; it was parsed into config and ignored.
+- **`docker-compose.prod.yml` reads the database password from `GINBOT_DB_PASSWORD`, not
+  `POSTGRES_PASSWORD`.** `example.env` only ever documented `GINBOT_DB_PASSWORD`, so `cp example.env
+  .env` followed by the prod stack failed with `POSTGRES_PASSWORD is required` while the password
+  that was set went unread. The secret now has one name — the `psql` service still maps it onto the
+  `POSTGRES_PASSWORD` its image requires. `cmd/ginbot-server/compose_test.go` pins that only that one
+  name is interpolated.
+- **Trigger media now persists in production.** `ginbot-server` wrote blobs to `./storage` inside
+  the container's writable layer, so every image update discarded them while the `file` rows
+  referencing them survived in Postgres, leaving file-replying triggers broken. It now mounts a
+  named `ginbot_prod_storage` volume at `GINBOT_STORAGE_PATH`, pinned by a compose test.
+- `example.env` was missing eleven variables `internal/config` reads — `GINBOT_STORAGE_PATH`,
+  `DISCORD_MESSAGE_CONTENT`, `GINBOT_REPOST` and the eight `GINBOT_REPOST_*` knobs. It is now
+  complete, and `internal/config/exampleenv_test.go` fails the build if it drifts from the code in
+  either direction. `docker-compose.prod.yml` also passes these through, and documents that video
+  and animated-GIF repost fingerprinting needs an ffmpeg the published images do not carry
+  ([ADR 0006](adr/0006-ffmpeg-as-a-subprocess.md)).
+- Stale operational docs: `docker-compose.prod.yml` runs published GHCR images and has no `build:`
+  block, so `up --build` no longer applies; the dev compose keeps its data in a named volume. Both
+  `docs/SETUP.md` and the compose file's own comments said otherwise.
 
 ## [0.1.0] - 2025-01-04
 
