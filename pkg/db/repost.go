@@ -15,24 +15,11 @@ import (
 )
 
 // PerceptualAlgoPHash64 is repost_fingerprint.algo for a 64-bit DCT pHash.
-// The only value defined so far; the column exists so a future wider hash can
-// be added as a new algo value rather than a new table.
 const PerceptualAlgoPHash64 int32 = 1
 
-// matchRepostExact backs MatchRepostBySourceKey and MatchRepostByContentHash:
-// both are the same shape, an exact lookup on one identity column, excluding
-// one author, oldest match first since the oldest is the true original.
-//
-// column is always one of the two constant names below, supplied internally
-// by this file — never caller input — so building the query string with it is
-// not an injection risk.
-//
-// The author exclusion is guarded by an explicit NULL check rather than being
-// left to IS DISTINCT FROM alone. `NULL IS DISTINCT FROM NULL` is FALSE, so a
-// bare predicate would drop every entry whose author is unknown as soon as the
-// caller excludes nobody — and user_id is ON DELETE SET NULL, so entries do
-// become authorless once an account goes. That contradicts the documented
-// contract that an empty excludeUserID excludes nobody.
+// matchRepostExact interpolates column, which is always an internal constant and
+// never caller input. The explicit NULL guard on the exclusion is required:
+// `NULL IS DISTINCT FROM NULL` is FALSE, which would drop authorless entries.
 func matchRepostExact(ctx context.Context, instanceID int64, column string, value any, excludeUserID string) (*model.RepostEntry, error) {
 	var row model.RepostEntry
 	query := `SELECT ` + model.RepostEntryColumns + `
@@ -53,55 +40,28 @@ func matchRepostExact(ctx context.Context, instanceID int64, column string, valu
 	return &row, nil
 }
 
-// MatchRepostBySourceKey returns the oldest live entry in instanceID whose
-// source_key equals sourceKey and whose user_id is distinct from
-// excludeUserID. An empty excludeUserID excludes nobody. ErrNotFound when
-// there is none.
+// MatchRepostBySourceKey returns the oldest matching entry, or ErrNotFound. An
+// empty excludeUserID excludes nobody.
 func MatchRepostBySourceKey(ctx context.Context, instanceID int64, sourceKey string, excludeUserID string) (*model.RepostEntry, error) {
 	return matchRepostExact(ctx, instanceID, "source_key", sourceKey, excludeUserID)
 }
 
-// MatchRepostByContentHash is the same lookup on content_hash, catching any
-// re-upload of identical bytes regardless of declared type.
 func MatchRepostByContentHash(ctx context.Context, instanceID int64, contentHash []byte, excludeUserID string) (*model.RepostEntry, error) {
 	return matchRepostExact(ctx, instanceID, "content_hash", contentHash, excludeUserID)
 }
 
-// PerceptualMatch is a pigeonhole candidate that bit_count verified.
 type PerceptualMatch struct {
 	Entry    *model.RepostEntry
 	Distance int32
 }
 
-// MatchRepostByPerceptualHash runs the pigeonhole candidate query
-// (docs/plans/wanha.md "Matching 3") and returns the closest verified match
-// within maxDistance, preferring the oldest among equally close ones.
-// ErrNotFound when there is none.
-//
-// The 8-way OR over c0..c7 is exact recall, not approximate: splitting phash
-// into 8 disjoint 8-bit chunks guarantees that any true match within Hamming
-// distance 7 shares at least one chunk exactly (pkg/repost.Chunks), so
-// Postgres resolves this via a BitmapOr across the eight chunk indexes and
-// bit_count then verifies and grades each candidate.
-//
-// The instance is asserted TWICE — once on the fingerprint in the CTE, which is
-// what makes the chunk indexes selective, and again on the joined entry. The
-// second is not redundant belt-and-braces: repost_fingerprint.instance_id is
-// denormalised with no constraint tying it to its entry's instance, so without
-// the outer predicate the whole of AC11's per-instance isolation would rest on
-// one unconstrained column being written correctly. Cross-guild leakage is a
-// privacy failure, not just a wrong answer, so it gets a second check.
+// MatchRepostByPerceptualHash returns the closest match within maxDistance,
+// oldest first among ties, or ErrNotFound. The instance is re-asserted on the
+// joined entry: repost_fingerprint.instance_id is denormalised and unconstrained,
+// and cross-instance leakage is a privacy failure rather than a wrong answer.
 func MatchRepostByPerceptualHash(ctx context.Context, instanceID int64, phash int64, chunks [8]int16, maxDistance int32, excludeUserID string) (*PerceptualMatch, error) {
-	// bit_count is cast to bit(64) rather than applied to the bigint XOR
-	// directly. Postgres defines bit_count only for bytea and bit — there is no
-	// bit_count(bigint) — so the query as written in docs/plans/wanha.md fails
-	// outright, and because a failed lookup here is logged and treated as "no
-	// match", it would have failed silently: every perceptual detection lost,
-	// with nothing but a log line to show for it.
-	//
-	// The distance is computed once, in the CTE, rather than repeated in the
-	// SELECT list and the WHERE clause. A cast this easy to get wrong must not
-	// exist in two places that can drift apart.
+	// Postgres has no bit_count(bigint), only bytea and bit, hence the bit(64)
+	// cast; a failed lookup here is swallowed as "no match", so it would be silent.
 	query := `
 		WITH candidates AS (
 		    SELECT f.entry_id,
@@ -141,7 +101,6 @@ func MatchRepostByPerceptualHash(ctx context.Context, instanceID int64, phash in
 	return &PerceptualMatch{Entry: &row, Distance: distance}, nil
 }
 
-// CreateRepostEntryParams describes one entry to remember.
 type CreateRepostEntryParams struct {
 	InstanceID    int64
 	DestinationID *int64
@@ -160,9 +119,8 @@ type CreateRepostEntryParams struct {
 	PHash *int64
 }
 
-// CreateRepostEntry inserts one entry, and its fingerprint when PHash is set,
-// in a single transaction — a fingerprint without its entry, or an entry
-// silently missing its fingerprint, would both corrupt the index.
+// CreateRepostEntry writes the entry and its fingerprint in one transaction:
+// either half alone corrupts the index.
 func CreateRepostEntry(ctx context.Context, params CreateRepostEntryParams) (int64, error) {
 	tx, err := db().Begin(ctx)
 	if err != nil {
@@ -206,15 +164,13 @@ func CreateRepostEntry(ctx context.Context, params CreateRepostEntryParams) (int
 	return entryID, nil
 }
 
-// RepostRetention is an instance with a finite retention window.
 type RepostRetention struct {
 	InstanceID    int64
 	RetentionDays int32
 }
 
-// ListRepostRetentions returns every live instance with a non-null
-// repost_retention_days. A NULL keeps everything, which is the default (W1)
-// and is therefore never returned here: nothing to sweep for it.
+// ListRepostRetentions skips instances with a NULL repost_retention_days, the
+// default, which keeps everything.
 func ListRepostRetentions(ctx context.Context) ([]RepostRetention, error) {
 	rows, err := db().Query(ctx,
 		`SELECT id, repost_retention_days
@@ -241,9 +197,8 @@ func ListRepostRetentions(ctx context.Context) ([]RepostRetention, error) {
 	return retentions, nil
 }
 
-// DeleteRepostEntriesBefore removes at most limit entries in instanceID
-// posted before before, reporting how many went. Fingerprints cascade via
-// repost_fingerprint's ON DELETE CASCADE foreign key.
+// DeleteRepostEntriesBefore removes at most limit entries and reports how many
+// went. Fingerprints follow via ON DELETE CASCADE.
 func DeleteRepostEntriesBefore(ctx context.Context, instanceID int64, before time.Time, limit int64) (int64, error) {
 	tag, err := db().Exec(ctx,
 		`DELETE FROM repost_entry

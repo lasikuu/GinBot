@@ -1,13 +1,5 @@
-// Package command holds the platform-neutral command catalogue.
-//
-// The same command must be reachable as a Discord slash command, as a chat
-// message with a prefix, and eventually as a Matrix message. Keeping the
-// catalogue here means one registration per command instead of one per
-// platform, and it lets Discord's ApplicationCommand definitions be generated
-// from the registry so the two invocation paths cannot diverge.
-//
-// Nothing in this package may import a platform SDK. Platform layers translate
-// their own invocation shape into an Invocation and render a Response.
+// Package command holds the platform-neutral command catalogue. Nothing here
+// may import a platform SDK.
 package command
 
 import (
@@ -19,7 +11,6 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// ArgType is the type of a command argument.
 type ArgType int
 
 const (
@@ -28,66 +19,44 @@ const (
 	ArgBool
 )
 
-// Arg declares one argument of a command.
 type Arg struct {
 	Name        string
 	Description string
 	Type        ArgType
 	Required    bool
-	// Default is used when the argument is absent. Ignored when Required.
+	// Default applies when the argument is absent. Ignored when Required.
 	Default any
 }
 
-// Response is a platform-neutral command result. The platform layer renders it.
-//
-// Every field beyond Content is a REQUEST, not an instruction: a platform that
-// cannot express one degrades rather than fails (ADR-0010).
-//
-// File is the exception ADR-0010 predicted. Dropping it loses the response
-// itself, and a file-only response has an empty Content to degrade to, so a
-// platform without attachments must say something of its own rather than send
-// an empty message.
+// Response is a platform-neutral command result. Every field beyond Content is
+// a request a platform may degrade rather than fail on (ADR-0010).
 type Response struct {
 	Content string
-	// Ephemeral asks the platform to show the response only to the invoker.
-	// Platforms without the concept ignore it.
+	// Ephemeral asks that the response be shown only to the invoker.
 	Ephemeral bool
-	// ReRollID, when non-empty, asks the platform to attach a re-invoke control
-	// carrying this identifier. Platforms without the concept ignore it.
+	// ReRollID, when non-empty, asks for a re-invoke control carrying this id.
 	ReRollID string
-	// File, when non-nil, asks the platform to attach this file to the response.
-	// Platforms without attachments should fall back to Content alone rather
-	// than dropping the response.
+	// File must not be silently dropped: an empty Content is not a response.
 	File *ResponseFile
 }
 
-// ResponseFile is an attachment on a command response. It carries bytes rather
-// than a URL because the server stores trigger media itself and the platform's
-// own CDN URL has expired by the time a trigger fires (ADR-0007).
+// ResponseFile carries bytes rather than a URL: see ADR-0007.
 type ResponseFile struct {
 	Name     string
 	MIMEType string
 	Content  []byte
 }
 
-// Invocation is a resolved call: a command's declared arguments bound to the
-// values supplied by the caller.
-//
-// Caller identity is deliberately absent. It travels in the context as gRPC
-// metadata (see pkg/grpc/callermeta), so a handler never has to choose between
-// two sources of truth for who is calling.
+// Invocation is a command's declared arguments bound to the caller's values.
+// Caller identity travels in the context instead, see pkg/grpc/callermeta.
 type Invocation struct {
-	// Args holds only the arguments that were supplied. An absent optional
-	// argument is resolved by the accessors from its declared Default, so that
-	// Has can still distinguish "supplied" from "defaulted".
+	// Args holds only supplied arguments; the accessors fall back to specs, so
+	// Has still distinguishes supplied from defaulted.
 	Args map[string]any
 
-	// specs carries the declared arguments so the accessors can fall back to
-	// Arg.Default without the caller passing the Command back in.
 	specs map[string]Arg
 }
 
-// String returns a string argument, or its default, or "".
 func (inv *Invocation) String(name string) string {
 	if value, ok := inv.Args[name].(string); ok {
 		return value
@@ -99,7 +68,6 @@ func (inv *Invocation) String(name string) string {
 	return ""
 }
 
-// Int returns an integer argument, or its default, or 0.
 func (inv *Invocation) Int(name string) int64 {
 	if value, ok := toInt64(inv.Args[name]); ok {
 		return value
@@ -111,7 +79,6 @@ func (inv *Invocation) Int(name string) int64 {
 	return 0
 }
 
-// Bool returns a boolean argument, or its default, or false.
 func (inv *Invocation) Bool(name string) bool {
 	if value, ok := inv.Args[name].(bool); ok {
 		return value
@@ -123,14 +90,12 @@ func (inv *Invocation) Bool(name string) bool {
 	return false
 }
 
-// Has reports whether the argument was supplied.
 func (inv *Invocation) Has(name string) bool {
 	_, ok := inv.Args[name]
 	return ok
 }
 
-// toInt64 accepts the integer kinds a Default may be written as: an untyped
-// literal assigned to an `any` field lands as int, not int64.
+// toInt64 also accepts int: an untyped literal Default lands as one.
 func toInt64(value any) (int64, bool) {
 	switch number := value.(type) {
 	case int64:
@@ -144,65 +109,40 @@ func toInt64(value any) (int64, bool) {
 	return 0, false
 }
 
-// Handler executes a command. ctx already carries caller identity metadata.
+// Handler executes a command; ctx already carries caller identity.
 type Handler func(ctx context.Context, inv *Invocation) (*Response, error)
 
-// Command is one registered command.
 type Command struct {
 	Name        string
 	Aliases     []string
 	Description string
 	Args        []Arg
-	// Group, when non-empty, nests this command under a shared parent on platforms
-	// that support it. Discord renders it as /{Group} {Sub}. Platforms without the
-	// concept keep using Name.
+	// Group nests this command under a shared parent, /{Group} {Sub} on
+	// Discord; platforms without the concept use Name.
 	Group string
-	// Sub is the command's name WITHIN its group. Required when Group is set,
-	// ignored otherwise.
+	// Sub is the name WITHIN the group, required when Group is set.
 	Sub string
 	// Clearance is the minimum required level. Not enforced in this phase.
 	Clearance pb.Clearance
-	// Slow marks a handler that may outlast a platform's acknowledgement
-	// deadline. Discord gives three seconds before it tells the user "the
-	// application did not respond" and invalidates the token, which is not
-	// enough for a handler whose server side fetches media from a CDN.
-	//
-	// A platform that must acknowledge before the handler returns does so
-	// first and delivers the result afterwards. Because that acknowledgement
-	// has to commit to a visibility before the Response exists, Ephemeral is
-	// decided by the acknowledgement rather than by the handler on this path —
-	// unsupported intent degrades, per ADR-0010. Platforms with no such
-	// deadline ignore the field.
+	// Slow marks a handler that may outlast Discord's three-second
+	// acknowledgement deadline, which then also decides Ephemeral.
 	Slow    bool
 	Handler Handler
 }
 
-// commandGroup is one registered group: the name as it was declared, and its
-// members keyed by folded Sub onto the folded canonical command name.
-//
-// The declared name is kept because a platform renders the group verbatim — the
-// folded key exists only so matching is case-insensitive like every other name
-// here.
 type commandGroup struct {
 	name    string
 	members map[string]string
 }
 
-// Registry holds the commands.
-//
-// A Registry is NOT safe for concurrent use while it is being written to.
-// Build it completely before serving: platform clients dispatch handlers from
-// many goroutines, and Register mutates unsynchronised maps. Concurrent reads
-// after the last Register are safe.
+// Registry holds the commands. Register mutates unsynchronised maps, so build
+// it completely before serving; concurrent reads afterwards are safe.
 type Registry struct {
 	// commands is keyed by folded canonical name.
 	commands map[string]Command
-	// canonical maps a folded name or alias onto the folded canonical name, so
-	// that alias resolution costs one lookup and collisions are detectable.
+	// canonical maps a folded name or alias onto the folded canonical name.
 	canonical map[string]string
-	// groups is keyed by folded group name. A group shares the canonical
-	// namespace: a group name that is also a command name or alias would make
-	// ResolveChat ambiguous, so Register refuses it.
+	// groups is keyed by folded group name, sharing the canonical namespace.
 	groups map[string]commandGroup
 }
 
@@ -214,14 +154,8 @@ func NewRegistry() *Registry {
 	}
 }
 
-// Register adds a command. It returns an error if the name or any alias
-// collides with an already-registered name, alias or group.
-//
-// It also rejects a command that cannot work once dispatched — no handler, no
-// name, a duplicate argument name, or an optional argument before a required
-// one. Chat arguments bind positionally, so a required argument after an
-// optional one is unbindable. Registration happens at startup, where a loud
-// failure is cheap; a silently broken command is not.
+// Register errors on any collision with a registered name, alias or group, and
+// on a declaration dispatch could not satisfy.
 func (r *Registry) Register(cmd Command) error {
 	name := fold(cmd.Name)
 	if name == "" {
@@ -237,8 +171,8 @@ func (r *Registry) Register(cmd Command) error {
 		return err
 	}
 
-	// Collect first, insert second: a command must not half-register when its
-	// second alias collides.
+	// Collect first, insert second: a second alias colliding must not
+	// half-register the command.
 	keys := make([]string, 0, 1+len(cmd.Aliases))
 	keys = append(keys, name)
 	for _, alias := range cmd.Aliases {
@@ -259,8 +193,7 @@ func (r *Registry) Register(cmd Command) error {
 		if _, duplicate := seen[key]; duplicate {
 			return fmt.Errorf("command %q declares %q more than once", cmd.Name, key)
 		}
-		// A flat name that is also a group name would shadow the whole group,
-		// since ResolveChat prefers the flat interpretation.
+		// ResolveChat prefers the flat name, which would shadow the group.
 		if existing, taken := r.groups[key]; taken {
 			return fmt.Errorf("command %q: %q is already a command group (%q)", cmd.Name, key, existing.name)
 		}
@@ -295,11 +228,6 @@ func (r *Registry) Register(cmd Command) error {
 	return nil
 }
 
-// validateGrouping rejects a half-declared or unusable Group/Sub pair.
-//
-// Both fields are checked before anything is inserted, because a group is a
-// second namespace: a command that lands in one under a blank or lopsided key
-// would be reachable by neither /{Group} {Sub} nor a sensible chat invocation.
 func validateGrouping(cmd Command) error {
 	if cmd.Group == "" && cmd.Sub == "" {
 		return nil
@@ -320,8 +248,6 @@ func validateGrouping(cmd Command) error {
 	return nil
 }
 
-// validateArgs rejects argument declarations that positional binding cannot
-// satisfy.
 func validateArgs(cmd Command) error {
 	seen := make(map[string]struct{}, len(cmd.Args))
 	optionalSeen := false
@@ -336,8 +262,6 @@ func validateArgs(cmd Command) error {
 		}
 		seen[name] = struct{}{}
 
-		// An out-of-range type would otherwise surface as codes.Internal at
-		// dispatch, and only for an argument the caller actually supplied.
 		if arg.Type < ArgString || arg.Type > ArgBool {
 			return fmt.Errorf("command %q declares argument %q with unknown type %d", cmd.Name, arg.Name, arg.Type)
 		}
@@ -364,13 +288,8 @@ func (r *Registry) Lookup(name string) (Command, bool) {
 	return cmd, ok
 }
 
-// ResolveChat resolves a chat invocation to a command and the arguments that
-// remain after the command name is consumed.
-//
-// It tries a flat name or alias first, so ??remindme keeps working. Failing
-// that, when name matches a group and the first argument names one of its
-// subcommands, it resolves that and consumes the subcommand token — so
-// ??reminder add behaves exactly like ??remindme.
+// ResolveChat returns the command and the arguments left after the name is
+// consumed. A flat name wins; failing that, a group plus a consumed sub token.
 func (r *Registry) ResolveChat(name string, args []string) (cmd Command, rest []string, ok bool) {
 	if cmd, found := r.Lookup(name); found {
 		return cmd, args, true
@@ -394,19 +313,14 @@ func (r *Registry) ResolveChat(name string, args []string) (cmd Command, rest []
 	return cmd, args[1:], true
 }
 
-// Groups returns every registered group name as it was declared, ordered.
-//
-// Membership is not returned with it: a group's members are the commands in All
-// whose Group matches, which the platform layer already walks to generate its
-// own definitions.
+// Groups returns every group name as declared, ordered.
 func (r *Registry) Groups() []string {
 	groups := make([]string, 0, len(r.groups))
 	for _, group := range r.groups {
 		groups = append(groups, group.name)
 	}
 
-	// Map iteration order is random; sorted so a platform generates an identical
-	// definition on every start.
+	// Sorted so a platform generates the same definition on every start.
 	slices.Sort(groups)
 
 	return groups
@@ -426,9 +340,7 @@ func (r *Registry) All() []Command {
 	return all
 }
 
-// fold normalises a name for case-insensitive matching. Command names are
-// ASCII by convention, but localised aliases are not, so the comparison is
-// Unicode-aware.
+// fold is Unicode-aware: localised aliases are not ASCII.
 func fold(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }

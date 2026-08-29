@@ -11,19 +11,9 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// ClearanceInterceptor.WrapStreamingHandler is new in this stage:
-// OpenClientActionStream previously had no identity check at all, because a
-// unary-only interceptor cannot wrap it (see ADR-0012 and the comment on
-// requirements.go). connect.StreamingHandlerConn is an ordinary exported
-// interface with no sealed methods — unlike connect.BidiStream itself, which
-// has no public constructor outside connectrpc.com/connect — so it can be
-// faked directly here, which is what makes a pure, transport-free unit test
-// of the streaming path possible at all.
-
 // fakeStreamingHandlerConn is a minimal connect.StreamingHandlerConn: enough
-// for ClearanceInterceptor.WrapStreamingHandler to read a procedure and
-// headers from, and nothing else. It is not a stream — Receive/Send are
-// unused by the interceptor and are stubbed only to satisfy the interface.
+// for an interceptor to read a procedure and headers from. Receive and Send
+// are stubs, only there to satisfy the interface.
 type fakeStreamingHandlerConn struct {
 	procedure string
 	header    http.Header
@@ -43,9 +33,7 @@ func (f *fakeStreamingHandlerConn) Send(any) error               { return nil }
 func (f *fakeStreamingHandlerConn) ResponseHeader() http.Header  { return make(http.Header) }
 func (f *fakeStreamingHandlerConn) ResponseTrailer() http.Header { return make(http.Header) }
 
-// streamCall runs one fake stream through the clearance interceptor and
-// reports what the wrapped handler observed, mirroring callResult for the
-// unary path.
+// streamCall is the streaming counterpart of call.
 func streamCall(procedure string, header http.Header, reqs Requirements, resolve CallerResolver) callResult {
 	var result callResult
 
@@ -64,9 +52,6 @@ func streamCall(procedure string, header http.Header, reqs Requirements, resolve
 	return result
 }
 
-// TestClearanceWrapStreamingHandlerRejectsAnUnauthorisedCaller is the
-// assertion that was impossible before this stage: a stream that never
-// carries identity headers at all must never reach the handler.
 func TestClearanceWrapStreamingHandlerRejectsAnUnauthorisedCaller(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
@@ -81,8 +66,6 @@ func TestClearanceWrapStreamingHandlerRejectsAnUnauthorisedCaller(t *testing.T) 
 	}
 }
 
-// TestClearanceWrapStreamingHandlerRejectsAnUnregisteredCaller: well-formed
-// identity, but the resolver reports no matching account.
 func TestClearanceWrapStreamingHandlerRejectsAnUnregisteredCaller(t *testing.T) {
 	resolver := &recordingResolver{err: db.ErrNotFound}
 
@@ -94,8 +77,6 @@ func TestClearanceWrapStreamingHandlerRejectsAnUnregisteredCaller(t *testing.T) 
 	}
 }
 
-// TestClearanceWrapStreamingHandlerRejectsInsufficientClearance mirrors
-// TestClearanceBoundaries for the streaming path, at one representative gate.
 func TestClearanceWrapStreamingHandlerRejectsInsufficientClearance(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))}
 
@@ -107,9 +88,6 @@ func TestClearanceWrapStreamingHandlerRejectsInsufficientClearance(t *testing.T)
 	}
 }
 
-// TestClearanceWrapStreamingHandlerAdmitsARegisteredCaller: the positive
-// case. The resolved caller must reach the handler exactly as it does on the
-// unary path, retrievable through the same CallerFromContext.
 func TestClearanceWrapStreamingHandlerAdmitsARegisteredCaller(t *testing.T) {
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
 	resolver := &recordingResolver{user: caller}
@@ -127,9 +105,6 @@ func TestClearanceWrapStreamingHandlerAdmitsARegisteredCaller(t *testing.T) {
 	}
 }
 
-// TestClearanceWrapStreamingHandlerPublicProcedureResolvesNobody: a stream
-// procedure absent from the map must behave exactly as a public unary method
-// does — reachable with no identity and no resolver call.
 func TestClearanceWrapStreamingHandlerPublicProcedureResolvesNobody(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 

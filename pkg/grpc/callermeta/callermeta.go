@@ -1,21 +1,6 @@
-// Package callermeta defines how caller identity and call origin travel to
-// ginbot-server: as Connect/HTTP request headers on the wire, and as context
-// values on the client side that produce them.
-//
-// Identity here is *asserted by the platform client*, which is a trusted
-// component. Nothing authenticates it: there is no token and no binding to the
-// transport, so anything that can reach the Connect port can claim to be any
-// user, in any guild. Mutual TLS does not close that — it authenticates a bot
-// process, not a Discord or Matrix user — and it is off unless GINBOT_GRPC_TLS
-// is set.
-//
-// What the header contract buys is uniformity, not authentication. Identity
-// used to be available both as headers and as request fields; one channel
-// means every RPC reads the caller through a single audited path, and this
-// package owns both ends of the encoding so producer and consumer cannot
-// disagree about it — which they previously did: the Discord client sent the
-// enum's name while the server parsed it with strconv.ParseInt, so every RPC
-// that required caller identity failed with InvalidArgument.
+// Package callermeta encodes caller identity and call origin as Connect request
+// headers. Identity is asserted by the platform client and is not authenticated:
+// anything that can reach the Connect port can claim to be any user.
 package callermeta
 
 import (
@@ -28,52 +13,21 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// The header names identity and origin travel under.
-//
-// They are hyphenated and prefixed rather than snake_cased because that is
-// what they actually are: ordinary HTTP/2 header fields, lowercased on the
-// wire, and any transport or proxy in front of them treats them as such —
-// where an underscore is legal but unidiomatic and is dropped outright by
-// some proxies. The ginbot- prefix keeps them from colliding with anything
-// standard.
-//
-// This is a WIRE contract and renaming it is safe: server and clients are
-// deployed together, and both ends of the encoding live in this package. Renaming
-// the jsonb group below is not safe — see the comment there.
+// Wire header names. HeaderPlatformEnum carries the pb.Platform enum name
+// (e.g. "PLATFORM_DISCORD"); HeaderUserID carries the platform-scoped user id,
+// not the GinBot user_account UUID.
 const (
-	// HeaderPlatformEnum carries the pb.Platform enum *name*, e.g. "PLATFORM_DISCORD".
-	// Names are used rather than numbers because they are stable across proto
-	// changes and legible when debugging the wire.
 	HeaderPlatformEnum = "ginbot-platform-enum"
 
-	// HeaderUserID carries the platform-scoped user id, e.g. a Discord snowflake.
-	// It is the platform's identifier, not the GinBot user_account UUID.
 	HeaderUserID = "ginbot-user-id"
 
-	// HeaderInstanceUID carries the platform's identifier for the space a call
-	// came from: a Discord guild, a Matrix homeserver's room space, and so on.
 	HeaderInstanceUID = "ginbot-instance-uid"
 
-	// HeaderDestinationUID carries the platform's identifier for the channel or
-	// room a call came from.
 	HeaderDestinationUID = "ginbot-destination-uid"
 )
 
-// The jsonb field names used inside instance.instance_meta and
-// destination.destination_meta.
-//
-// They name the same two things as the headers above and are deliberately not
-// defined in terms of them. The headers are a wire contract between the clients
-// and this server, changeable by deploying both at once; these are a STORAGE
-// contract, indexed by uq_instance_platform_meta and matched by jsonb equality
-// against rows already written.
-//
-// The header rename above is exactly the event this separation exists for. Had
-// the two shared a constant, that rename would have orphaned every existing
-// instance row and silently started creating duplicates for guilds the bot
-// already knows — no error, no log line, triggers and reminders simply stopping
-// resolving. DO NOT rename these, and do not "tidy up" the duplication by
-// deriving one group from the other.
+// jsonb keys inside instance.instance_meta and destination.destination_meta,
+// matched by equality against existing rows. Never derive these from Header*.
 const (
 	FieldInstanceUID    = "instance_uid"
 	FieldDestinationUID = "destination_uid"
@@ -88,21 +42,13 @@ type Caller struct {
 
 // Origin is where on the platform a call came from. It is not identity: two
 // different users share an origin when they type in the same channel.
-//
-// It travels as a header for the same reason identity does: the server needs it
-// uniformly on every RPC, through one path. Like identity it is asserted by the
-// client and not verified.
 type Origin struct {
 	InstanceUID    string
 	DestinationUID string
 }
 
-// InstanceMeta is the canonical jsonb shape of instance.instance_meta.
-//
-// The shape lives here rather than at each producer because instance rows are
-// looked up by jsonb equality: two producers keying the same guild differently
-// ({"guild_id": x} vs {"instance_uid": x}) would create two instance rows for
-// one guild, and nothing would report the split.
+// InstanceMeta is the canonical jsonb shape of instance.instance_meta. Rows are
+// looked up by jsonb equality, so producers must not key a guild differently.
 func (o Origin) InstanceMeta() *structpb.Struct {
 	return &structpb.Struct{
 		Fields: map[string]*structpb.Value{
@@ -112,7 +58,6 @@ func (o Origin) InstanceMeta() *structpb.Struct {
 }
 
 // DestinationMeta is the canonical jsonb shape of destination.destination_meta.
-// See InstanceMeta for why the shape is centralised.
 func (o Origin) DestinationMeta() *structpb.Struct {
 	return &structpb.Struct{
 		Fields: map[string]*structpb.Value{
@@ -121,42 +66,22 @@ func (o Origin) DestinationMeta() *structpb.Struct {
 	}
 }
 
-// callerContextKey and originContextKey type the context values NewOutgoingContext
-// and NewOutgoingOrigin attach, so they cannot collide with another package's
-// key. WriteHeader is what turns them into the actual request headers, at the
-// point a call is finally sent — see NewClientInterceptor.
 type callerContextKey struct{}
 type originContextKey struct{}
 
-// outgoingCaller is the context value NewOutgoingContext stores. It is a
-// plain (platform, uid) pair rather than *Caller, so it can carry an empty
-// platformUID without a caller having to decide whether nil or "" means
-// "none" — WriteHeader is the single place that decision is made, matching
-// the outgoing gRPC metadata behaviour this replaces.
 type outgoingCaller struct {
 	platform    pb.Platform
 	platformUID string
 }
 
-// NewOutgoingContext attaches caller identity to ctx, to be written onto
-// request headers by NewClientInterceptor when a call is actually made.
+// NewOutgoingContext attaches caller identity to ctx, written onto request
+// headers by NewClientInterceptor when a call is made.
 func NewOutgoingContext(ctx context.Context, platform pb.Platform, platformUID string) context.Context {
 	return context.WithValue(ctx, callerContextKey{}, outgoingCaller{platform: platform, platformUID: platformUID})
 }
 
-// NewOutgoingOrigin attaches origin to ctx, to be written onto request
-// headers by NewClientInterceptor when a call is actually made.
-//
-// Unlike the gRPC metadata API this replaced, calling it before or after
-// NewOutgoingContext no longer matters: each attaches its OWN context value
-// under its own key, so neither call can discard what the other set. The
-// two used to share one underlying metadata map that
-// metadata.NewOutgoingContext replaced wholesale, which made the order load-
-// bearing; context.WithValue values simply accumulate, so that hazard is
-// gone.
-//
-// An origin without an instance is dropped: a direct message belongs to no
-// guild or room, and there is nothing to bootstrap for it.
+// NewOutgoingOrigin attaches origin to ctx. An origin with no InstanceUID is
+// dropped: a direct message belongs to no guild or room.
 func NewOutgoingOrigin(ctx context.Context, origin Origin) context.Context {
 	if origin.InstanceUID == "" {
 		return ctx
@@ -166,10 +91,7 @@ func NewOutgoingOrigin(ctx context.Context, origin Origin) context.Context {
 }
 
 // WriteHeader writes whatever caller identity and origin ctx carries onto h.
-//
-// A ctx carrying neither writes nothing: an RPC made with no identity
-// attached is deliberately anonymous (UtilityService/Ping, for instance), not
-// an error to guard against here.
+// A ctx carrying neither writes nothing; an anonymous RPC is not an error here.
 func WriteHeader(ctx context.Context, h http.Header) {
 	if caller, ok := ctx.Value(callerContextKey{}).(outgoingCaller); ok {
 		h.Set(HeaderPlatformEnum, caller.platform.String())
@@ -186,20 +108,14 @@ func WriteHeader(ctx context.Context, h http.Header) {
 	}
 }
 
-// NewClientInterceptor returns a connect.Interceptor that copies caller
-// identity and origin from the context onto outgoing request headers, on both
-// unary calls and streaming clients.
-//
-// This is what actually turns NewOutgoingContext/NewOutgoingOrigin's context
-// values into wire headers; pkg/grpc/client.Dial installs it on every
-// generated client this process builds; see the ordering note there.
+// NewClientInterceptor returns a connect.Interceptor that copies caller identity
+// and origin from the context onto outgoing request headers.
 func NewClientInterceptor() connect.Interceptor {
 	return &clientInterceptor{}
 }
 
 type clientInterceptor struct{}
 
-// WrapUnary implements connect.Interceptor.
 func (clientInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		WriteHeader(ctx, req.Header())
@@ -207,10 +123,8 @@ func (clientInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	}
 }
 
-// WrapStreamingClient sets the headers via conn.RequestHeader() on the
-// returned connect.StreamingClientConn — a streaming call has no per-message
-// AnyRequest for WrapUnary's approach to reach, only the connection's own
-// header set, sent once with the opening request.
+// WrapStreamingClient uses conn.RequestHeader(): a stream has no per-message
+// AnyRequest, only the connection headers sent with the opening request.
 func (clientInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		conn := next(ctx, spec)
@@ -219,13 +133,11 @@ func (clientInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) c
 	}
 }
 
-// WrapStreamingHandler is a no-op: this is a client-side interceptor, and
-// this process never mounts a handler that would need it.
+// WrapStreamingHandler is a no-op: this interceptor is client-side only.
 func (clientInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return next
 }
 
-// FromHeader extracts caller identity from Connect request headers.
 func FromHeader(header http.Header) (*Caller, error) {
 	platformValue := header.Get(HeaderPlatformEnum)
 	if platformValue == "" {
@@ -252,11 +164,8 @@ func FromHeader(header http.Header) (*Caller, error) {
 	}, nil
 }
 
-// OriginFromHeader extracts the origin of a call from Connect request
-// headers.
-//
-// ok is false when the call carried none, which is normal rather than an
-// error: direct messages and non-platform callers have no instance.
+// OriginFromHeader returns ok false when the call carried no origin, which is
+// normal: direct messages and non-platform callers have no instance.
 func OriginFromHeader(header http.Header) (Origin, bool) {
 	instanceValue := header.Get(HeaderInstanceUID)
 	if instanceValue == "" {

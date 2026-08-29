@@ -9,9 +9,6 @@ import (
 	"github.com/lasikuu/GinBot/pkg/trigger"
 )
 
-// triggerHarness registers one Discord identity at the given clearance,
-// mirroring registeredHarness in user_test.go but named locally so this file
-// has no dependency on that one's specific constants.
 func triggerHarness(t *testing.T, clearance pb.Clearance) (*harness, string) {
 	t.Helper()
 
@@ -23,7 +20,6 @@ func triggerHarness(t *testing.T, clearance pb.Clearance) (*harness, string) {
 	return h, platformUID
 }
 
-// TestCreateTriggerRequiresPhrase.
 func TestCreateTriggerRequiresPhrase(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -35,7 +31,6 @@ func TestCreateTriggerRequiresPhrase(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestCreateTriggerRequiresReplyOrFileURL.
 func TestCreateTriggerRequiresReplyOrFileURL(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -47,8 +42,7 @@ func TestCreateTriggerRequiresReplyOrFileURL(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// createRegexReq builds an otherwise-valid CreateTriggerReq in REGEX mode, so
-// only the clearance gate under test can be the reason for a PermissionDenied.
+// createRegexReq is otherwise valid, so only the clearance gate can deny it.
 func createRegexReq() *pb.CreateTriggerReq {
 	phrase := "^abc.*$"
 	reply := "a reply"
@@ -56,8 +50,6 @@ func createRegexReq() *pb.CreateTriggerReq {
 	return pb.CreateTriggerReq_builder{Phrase: &phrase, Reply: &reply, Mode: &mode}.Build()
 }
 
-// TestCreateTriggerRegexModeIsGatedBelowModerator is AC5: a REGISTERED caller
-// is refused with PermissionDenied.
 func TestCreateTriggerRegexModeIsGatedBelowModerator(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -65,11 +57,7 @@ func TestCreateTriggerRegexModeIsGatedBelowModerator(t *testing.T) {
 	requireCode(t, err, connect.CodePermissionDenied)
 }
 
-// TestCreateTriggerRegexModeIsAdmittedAtModerator is the other half of AC5: a
-// MODERATOR caller must not be refused for CLEARANCE reasons. The call may
-// still fail further in (this harness has no database and no bootstrapped
-// call origin, so instance scoping cannot resolve), but that failure must not
-// be PermissionDenied.
+// The call may still fail further in — no database, no origin — but not PermissionDenied.
 func TestCreateTriggerRegexModeIsAdmittedAtModerator(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_MODERATOR)
 
@@ -77,9 +65,6 @@ func TestCreateTriggerRegexModeIsAdmittedAtModerator(t *testing.T) {
 	requireNotCode(t, err, connect.CodePermissionDenied)
 }
 
-// TestCreateTriggerRejectsUncompilableRegex is AC6: an uncompilable regex is
-// rejected at creation with InvalidArgument, even for a caller with enough
-// clearance to use regex mode at all.
 func TestCreateTriggerRejectsUncompilableRegex(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_MODERATOR)
 
@@ -93,7 +78,6 @@ func TestCreateTriggerRejectsUncompilableRegex(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestCreateTriggerRejectsAPhraseOverMaxPatternLength is AC6's other half.
 func TestCreateTriggerRejectsAPhraseOverMaxPatternLength(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -106,7 +90,6 @@ func TestCreateTriggerRejectsAPhraseOverMaxPatternLength(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestCreateTriggerRejectsChanceOutsideRange.
 func TestCreateTriggerRejectsChanceOutsideRange(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -124,7 +107,6 @@ func TestCreateTriggerRejectsChanceOutsideRange(t *testing.T) {
 	}
 }
 
-// TestTryTriggerRequiresFields: missing instance/phrase is InvalidArgument.
 func TestTryTriggerRequiresFields(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -135,7 +117,6 @@ func TestTryTriggerRequiresFields(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestExecTriggerRequiresFields.
 func TestExecTriggerRequiresFields(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -146,7 +127,6 @@ func TestExecTriggerRequiresFields(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestGetTriggerRequiresID.
 func TestGetTriggerRequiresID(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -157,7 +137,6 @@ func TestGetTriggerRequiresID(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestDeleteTriggerRequiresID.
 func TestDeleteTriggerRequiresID(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -168,7 +147,6 @@ func TestDeleteTriggerRequiresID(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestGetTriggerStatsRequiresInstance.
 func TestGetTriggerStatsRequiresInstance(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -179,7 +157,6 @@ func TestGetTriggerStatsRequiresInstance(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestGetFileRequiresFileID.
 func TestGetFileRequiresFileID(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -190,13 +167,7 @@ func TestGetFileRequiresFileID(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestGetFileRefusesAnUnauthorisedCallerWithNoChunksSent is the acceptance
-// criterion the streaming port exists for: an unauthorised caller must be
-// rejected before a single byte of the file reaches the wire. Driven with
-// drainGetFileChunks rather than the triggerClient.GetFile adapter so the
-// CHUNK COUNT is directly observable, not just inferred from a nil meta and
-// empty content — a helper bug that silently swallowed a chunk would not be
-// caught by the adapter alone.
+// drainGetFileChunks, not the adapter, so the chunk count is directly observable.
 func TestGetFileRefusesAnUnauthorisedCallerWithNoChunksSent(t *testing.T) {
 	h, _ := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -211,12 +182,6 @@ func TestGetFileRefusesAnUnauthorisedCallerWithNoChunksSent(t *testing.T) {
 	}
 }
 
-// TestGetFileRefusesInsufficientClearanceWithNoChunksSent covers the other
-// half of "unauthorised": a real, resolvable caller whose clearance never
-// reaches CLEARANCE_REGISTERED, distinct from carrying no identity at all —
-// and distinct in its own right from TestGetFileRefusesACallerWithNoRelationToTheReferencingTrigger
-// (trigger_media_integration_test.go), which is a REGISTERED caller refused
-// for lacking any relation to the file, not for clearance.
 func TestGetFileRefusesInsufficientClearanceWithNoChunksSent(t *testing.T) {
 	h, uid := triggerHarness(t, pb.Clearance_CLEARANCE_UNSPECIFIED)
 
@@ -235,20 +200,9 @@ func TestGetFileRefusesInsufficientClearanceWithNoChunksSent(t *testing.T) {
 	}
 }
 
-// ListTriggers has no test here for refusing another user's id, and cannot
-// have one: ListTriggersReq.user_id is deleted and reserved, so the request has
-// no way to name a subject and the handler's PermissionDenied branch for it is
-// gone with it. What replaced it — `mine`, which can only ever mean the
-// resolved caller — is a database-shaped property and is covered in
-// trigger_integration_test.go, since asserting WHICH rows come back needs rows.
+// ListTriggersReq.user_id is deleted and reserved; `mine` replaced it and needs rows.
 
-// TestAllTriggerRPCsRefuseAnAnonymousCaller: every trigger RPC must reject a
-// call carrying no caller identity at all. The exact code produced by the
-// clearance interceptor for a guarded method with no metadata is
-// InvalidArgument (see TestGuardedMethodWithoutMetadataIsRejected in
-// user_test.go for the same behaviour on UserService); what matters here is
-// that it is never treated as a success, i.e. never treated as a legitimate,
-// answered request.
+// The chain answers InvalidArgument here; what matters is that it is never a success.
 func TestAllTriggerRPCsRefuseAnAnonymousCaller(t *testing.T) {
 	h, _ := triggerHarness(t, pb.Clearance_CLEARANCE_REGISTERED)
 	ctx := anonymousCtx()

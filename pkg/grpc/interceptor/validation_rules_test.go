@@ -13,27 +13,11 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// Shared machinery for the schema-rule tests in this package
-// (validation_trigger_test.go, validation_instance_test.go,
-// validation_enum_test.go).
-//
-// These tests talk to protovalidate directly rather than going through
-// NewValidationUnaryInterceptor, and that is a deliberate choice of layer. The
-// interceptor flattens every violation into one InvalidArgument string, so a
-// test driven through it can only ever assert "something was rejected" — which
-// is exactly the assertion that cannot tell required from enum.defined_only
-// from enum.not_in, and cannot tell a rejection caused by the field under test
-// from one caused by an unrelated field on the same request. Validating here
-// gives the structured violation list, so each case pins the ONE rule it is
-// about, by rule id, on the ONE field it is about.
-//
-// The end-to-end half is not skipped: pkg/grpc/server/trigger_validation_test.go
-// drives the instances bound and a malformed id through the server harness and
-// the production interceptor chain, so the rules are also proven to be reachable
-// by a real client.
+// Shared machinery for the schema-rule tests in this package. They call
+// protovalidate directly: the interceptor flattens every violation into one
+// InvalidArgument string, which cannot pin which rule fired on which field.
 
-// violation is one protovalidate finding, reduced to the two things a test
-// cares about: which field, and which declared rule.
+// violation is one protovalidate finding: which field, and which declared rule.
 type violation struct {
 	Field string
 	Rule  string
@@ -41,8 +25,6 @@ type violation struct {
 
 func (v violation) String() string { return v.Field + " [" + v.Rule + "]" }
 
-// validateMessage runs the same validator the production interceptors build and
-// returns the violations as an ordered list.
 func validateMessage(t *testing.T, msg proto.Message) []violation {
 	t.Helper()
 
@@ -73,8 +55,8 @@ func validateMessage(t *testing.T, msg proto.Message) []violation {
 	return out
 }
 
-// fieldPath renders a violation's field path the way the schema spells it,
-// e.g. "instances[0].platform_enum".
+// fieldPath renders a field path as the schema spells it, e.g.
+// "instances[0].platform_enum".
 func fieldPath(path *validate.FieldPath) string {
 	var parts []string
 	for _, element := range path.GetElements() {
@@ -88,12 +70,8 @@ func fieldPath(path *validate.FieldPath) string {
 	return strings.Join(parts, ".")
 }
 
-// requireValid asserts a message is accepted outright.
-//
-// Every rejection case below is paired with one of these on an otherwise
-// identical message. Without that pairing a rejection test proves nothing: a
-// request that was already invalid for an unrelated reason would produce the
-// same "rejected" verdict no matter what the rule under test does.
+// requireValid asserts a message is accepted outright. Every rejection case is
+// paired with one of these; without it a rejection test proves nothing.
 func requireValid(t *testing.T, msg proto.Message) {
 	t.Helper()
 
@@ -102,13 +80,8 @@ func requireValid(t *testing.T, msg proto.Message) {
 	}
 }
 
-// requireOnlyViolation asserts that a message is rejected for exactly one
-// reason: the named rule on the named field.
-//
-// "Exactly one" is the point. A case that merely contains the expected
-// violation would still pass if the fixture were malformed elsewhere, and a
-// case that only asserts rejection cannot distinguish the three enum rules from
-// each other at all.
+// requireOnlyViolation asserts a message is rejected for exactly one reason:
+// the named rule on the named field. "Exactly one" catches malformed fixtures.
 func requireOnlyViolation(t *testing.T, msg proto.Message, field, rule string) {
 	t.Helper()
 
@@ -123,11 +96,8 @@ func requireOnlyViolation(t *testing.T, msg proto.Message, field, rule string) {
 	}
 }
 
-// declaredRules reads the buf.validate rules a field carries in the schema.
-//
-// Reading the bound out of the descriptor is what keeps a boundary test honest:
-// the number lives in the .proto and nowhere else, so the test cannot drift
-// from it and cannot silently keep passing if the rule is dropped.
+// declaredRules reads the buf.validate rules a field carries in the schema, so
+// a boundary test cannot drift from the number declared in the .proto.
 func declaredRules(t *testing.T, msg proto.Message, field protoreflect.Name) *validate.FieldRules {
 	t.Helper()
 
@@ -151,8 +121,7 @@ func declaredRules(t *testing.T, msg proto.Message, field protoreflect.Name) *va
 	return rules
 }
 
-// declaredMaxItems reads a repeated.max_items bound, failing loudly when the
-// rule is absent rather than falling back to a number invented here.
+// declaredMaxItems reads a repeated.max_items bound, failing when it is absent.
 func declaredMaxItems(t *testing.T, msg proto.Message, field protoreflect.Name) int {
 	t.Helper()
 

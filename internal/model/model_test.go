@@ -8,10 +8,7 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// The column lists and the ScanTargets slices are maintained by hand and must
-// stay in lockstep. A count mismatch produces a scan error at runtime; worse, a
-// same-count reordering of two same-typed columns (User has three *string
-// fields in a row) silently loads wrong data. This at least pins the count.
+// Hand-maintained lists: a count mismatch is a runtime scan error.
 func TestColumnCountsMatchScanTargets(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -40,7 +37,6 @@ func TestColumnCountsMatchScanTargets(t *testing.T) {
 	}
 }
 
-// Scan targets must all be pointers, or pgx cannot write into them.
 func TestScanTargetsAreDistinctPointers(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -69,8 +65,7 @@ func TestScanTargetsAreDistinctPointers(t *testing.T) {
 	}
 }
 
-// ToProto must not panic on a zero value, and nil optional columns must stay
-// unset rather than materialising as empty strings.
+// Nil optional columns must stay unset, not become empty strings.
 func TestUserToProtoHandlesNilOptionals(t *testing.T) {
 	u := &User{
 		ID:        "018f0000-0000-7000-8000-000000000001",
@@ -138,10 +133,7 @@ func TestUserToProtoCarriesOptionals(t *testing.T) {
 	}
 }
 
-// Reminder.ToProto takes the destination as an argument, so it must tolerate nil
-// — GetReminder passes nil when the destination row has been removed, treating
-// db.ErrNotFound from the destination lookup as "no destination" rather than as a
-// failure.
+// GetReminder passes nil when the destination row has been removed.
 func TestReminderToProtoHandlesNilDestination(t *testing.T) {
 	message := "water the plants"
 	r := &Reminder{
@@ -194,9 +186,6 @@ func TestInstanceToProtoHandlesNilDefaultChannel(t *testing.T) {
 	}
 }
 
-// TestTriggerToProtoMapsEveryFieldAndTheModeEnum: every scalar field lands in
-// the proto, and Mode is converted to the matching pb.TriggerMode rather than
-// left as a raw int32.
 func TestTriggerToProtoMapsEveryFieldAndTheModeEnum(t *testing.T) {
 	reply := "a reply"
 	fileID := "018f0000-0000-7000-8000-000000000010"
@@ -244,9 +233,6 @@ func TestTriggerToProtoMapsEveryFieldAndTheModeEnum(t *testing.T) {
 	}
 }
 
-// TestTriggerToProtoToleratesNilFileAndInstances: file is looked up
-// separately by the caller and is optional, likewise instances; ToProto must
-// not panic and must leave both unset when nil is passed.
 func TestTriggerToProtoToleratesNilFileAndInstances(t *testing.T) {
 	tr := &Trigger{
 		ID:     "018f0000-0000-7000-8000-000000000005",
@@ -271,8 +257,6 @@ func TestTriggerToProtoToleratesNilFileAndInstances(t *testing.T) {
 	}
 }
 
-// TestTriggerToProtoCarriesFileAndInstances: when supplied, the file and
-// instances arguments must appear in the built proto.
 func TestTriggerToProtoCarriesFileAndInstances(t *testing.T) {
 	tr := &Trigger{
 		ID:     "018f0000-0000-7000-8000-000000000006",
@@ -304,9 +288,6 @@ func TestTriggerToProtoCarriesFileAndInstances(t *testing.T) {
 	}
 }
 
-// TestFileToProtoMapsEveryFieldAndUsesTheSuppliedFilename: filename is not a
-// stored column, so ToProto takes it as an argument; every other field comes
-// from the row.
 func TestFileToProtoMapsEveryFieldAndUsesTheSuppliedFilename(t *testing.T) {
 	f := &File{
 		ID:       "018f0000-0000-7000-8000-000000000030",
@@ -333,9 +314,6 @@ func TestFileToProtoMapsEveryFieldAndUsesTheSuppliedFilename(t *testing.T) {
 	}
 }
 
-// TestFileToProtoDifferentFilenamesForTheSameRow: the filename is caller
-// supplied, not derived from the row, so two calls with different names on the
-// same row must produce different display names.
 func TestFileToProtoDifferentFilenamesForTheSameRow(t *testing.T) {
 	f := &File{ID: "018f0000-0000-7000-8000-000000000031", MimeType: "image/gif"}
 

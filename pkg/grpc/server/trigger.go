@@ -21,20 +21,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// regexClearanceFloor is the minimum clearance required to create or update a
-// TRIGGER_MODE_REGEX trigger: a regex runs against every message on the
-// instances it is scoped to, so it is not an ordinary user action the way an
-// exact- or any-mode trigger is. interceptor.DefaultRequirements keeps the
-// per-RPC floor at CLEARANCE_REGISTERED; this is an in-handler check on top.
+// regexClearanceFloor gates TRIGGER_MODE_REGEX in-handler, above the per-RPC
+// floor: a regex runs against every message on the instances it is scoped to.
 const regexClearanceFloor = pb.Clearance_CLEARANCE_MODERATOR
 
-// triggerFileKeyPrefix namespaces trigger media within the shared blob store.
 const triggerFileKeyPrefix = "trigger/"
 
-// mimeExtensions maps a sniffed, allow-listed MIME type onto a filename
-// extension. file.path stores no original name, so this is how GetFile and
-// every trigger reply derive one for display and for the attachment name on
-// playback.
+// mimeExtensions maps a sniffed MIME type to an extension; no original filename is stored.
 var mimeExtensions = map[string]string{
 	"image/png":  ".png",
 	"image/jpeg": ".jpg",
@@ -47,7 +40,6 @@ var mimeExtensions = map[string]string{
 	"audio/wave": ".wav",
 }
 
-// TriggerServer implements TriggerService.
 type TriggerServer struct {
 	ginbotv1connect.UnimplementedTriggerServiceHandler
 
@@ -58,8 +50,6 @@ type TriggerServer struct {
 	roll    trigger.Roller
 }
 
-// NewTriggerServer returns a TriggerServer wired to the package-level storage
-// and a fetcher restricted to the platform CDN hosts.
 func NewTriggerServer() *TriggerServer {
 	return newTriggerServer(
 		storage.NewFetcher(nil, storage.DefaultAllowedHosts(), storage.MaxFileBytes),
@@ -67,21 +57,12 @@ func NewTriggerServer() *TriggerServer {
 	)
 }
 
-// newTriggerServer builds a TriggerServer over an explicit fetcher and blob
-// store.
-//
-// It exists as a seam: the media path is only reachable through the CDN
-// allow-list, so without a way to substitute both the fetcher and the store the
-// fetch-store-dedupe-play-back path could not be exercised without a live
-// external dependency. Production goes through NewTriggerServer.
 func newTriggerServer(fetcher *storage.Fetcher, blobs storage.Storage) *TriggerServer {
 	s := &TriggerServer{
 		limiter: trigger.NewForcedLimiter(nil),
 		fetcher: fetcher,
 		blobs:   blobs,
-		// This is a chance roll, not a security decision: math/rand/v2's
-		// package-level source is auto-seeded and safe for concurrent use,
-		// which is what the cache and every handler sharing this server need.
+		// A chance roll, not a security decision; math/rand/v2's source is concurrency-safe.
 		roll: rand.IntN,
 	}
 	s.cache = trigger.NewCache(s.loadCandidates)
@@ -89,21 +70,11 @@ func newTriggerServer(fetcher *storage.Fetcher, blobs storage.Storage) *TriggerS
 	return s
 }
 
-// PruneForcedLimiter drops forced-fire records that can no longer refuse
-// anything.
-//
-// trigger.ForcedLimiter keeps one entry per author and documents that Allow does
-// not prune, so that it stays O(1) — pruning is the caller's job and nothing was
-// doing it. That was harmless only while no client ever set forced; the Discord
-// client now sets it on every mention, so the map would otherwise grow by one
-// entry per distinct author for the lifetime of the process.
+// PruneForcedLimiter must be called periodically: Allow itself never prunes.
 func (s *TriggerServer) PruneForcedLimiter() {
 	s.limiter.Prune()
 }
 
-// loadCandidates is the trigger.Loader backing s.cache: it fetches every live
-// trigger scoped to an instance and compiles each one's pattern once, here,
-// rather than per message.
 func (s *TriggerServer) loadCandidates(ctx context.Context, instanceID int64) ([]trigger.Candidate, error) {
 	actives, err := db.ListActiveTriggersByInstance(ctx, instanceID)
 	if err != nil {
@@ -115,8 +86,7 @@ func (s *TriggerServer) loadCandidates(ctx context.Context, instanceID int64) ([
 		mode := pb.TriggerMode(active.Mode)
 		compiled, compileErr := trigger.Compile(active.Phrase, mode)
 		if compileErr != nil {
-			// No zap.Error here: a regexp compile error embeds the offending
-			// pattern text, and a stored phrase must never be echoed into logs.
+			// No zap.Error: a regexp compile error embeds the pattern text, which must not be logged.
 			log.Z.Warn("skipping trigger whose pattern no longer compiles",
 				zap.String("trigger_id", active.ID))
 			continue
@@ -133,12 +103,7 @@ func (s *TriggerServer) loadCandidates(ctx context.Context, instanceID int64) ([
 	return candidates, nil
 }
 
-// resolveInstance maps a *pb.TriggerInstance onto its instance row's id.
-//
-// codes.NotFound rather than a get-or-create: interceptor.NewOriginInterceptor
-// already bootstraps the instance for a call's own origin on every
-// authenticated RPC, so by the time a handler runs, any instance the caller
-// could legitimately name already exists.
+// resolveInstance never creates: the origin interceptor already bootstrapped it.
 func resolveInstance(ctx context.Context, instance *pb.TriggerInstance) (int64, error) {
 	if instance == nil || !instance.HasPlatformEnum() || !instance.HasInstanceMeta() {
 		return 0, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("instance is required"))
@@ -156,10 +121,7 @@ func resolveInstance(ctx context.Context, instance *pb.TriggerInstance) (int64, 
 	return row.ID, nil
 }
 
-// callerOriginInstanceID resolves the instance id for the call's own origin —
-// the same instance interceptor.NewOriginInterceptor already bootstrapped
-// for this request. ok is false for a call with no origin (e.g. a direct
-// message) or whose origin cannot be resolved.
+// callerOriginInstanceID reports ok false with no origin, such as a direct message.
 func callerOriginInstanceID(ctx context.Context) (int64, bool) {
 	origin, ok := interceptor.OriginFromContext(ctx)
 	if !ok {
@@ -179,18 +141,7 @@ func callerOriginInstanceID(ctx context.Context) (int64, bool) {
 	return row.ID, true
 }
 
-// callerScopedInstance resolves the single instance an RPC is allowed to act
-// on, and refuses a request that names any other one.
-//
-// A request may carry an instance, but instance_meta is only the platform's own
-// guild or room identifier, which is public. Trusting it unchecked would let any
-// registered caller read, fire or plant triggers in a guild they have nothing to
-// do with, so the named instance must be the one the call actually came from.
-// NotFound rather than PermissionDenied, so the error cannot be used to discover
-// which guilds the bot is in.
-//
-// A nil requested instance falls back to the origin, which is what a caller that
-// simply did not name one means.
+// callerScopedInstance refuses any instance but the origin, since instance_meta is public.
 func callerScopedInstance(ctx context.Context, requested *pb.TriggerInstance) (int64, error) {
 	originID, ok := callerOriginInstanceID(ctx)
 	if !ok {
@@ -212,17 +163,11 @@ func callerScopedInstance(ctx context.Context, requested *pb.TriggerInstance) (i
 	return originID, nil
 }
 
-// displayFilename derives a display name for a stored file: the original
-// name is never kept, so this is the file id plus the extension its sniffed
-// MIME type implies.
 func displayFilename(file *model.File) string {
 	return file.ID + mimeExtensions[file.MimeType]
 }
 
-// invalidPatternError maps a trigger.Compile failure to InvalidArgument
-// without echoing the submitted phrase back — a regexp compile error embeds
-// the offending pattern text, so the message names which rule was broken
-// instead of repeating it.
+// invalidPatternError avoids echoing the phrase, which a regexp error would embed.
 func invalidPatternError(err error) error {
 	switch {
 	case errors.Is(err, trigger.ErrEmptyPhrase):
@@ -234,9 +179,6 @@ func invalidPatternError(err error) error {
 	}
 }
 
-// mapFetchError maps a storage.Fetcher failure to the gRPC status a caller
-// should see: refusals of the caller's own input are InvalidArgument, and
-// anything else is the server breaking.
 func mapFetchError(err error) error {
 	switch {
 	case errors.Is(err, storage.ErrHostNotAllowed):
@@ -251,18 +193,14 @@ func mapFetchError(err error) error {
 	}
 }
 
-// fetchAndStoreFile downloads fileURL and resolves it to a file row id,
-// writing the blob through storage only when the row is new — that is the
-// content-hash dedupe.
+// fetchAndStoreFile writes the blob only when the row is new: content-hash dedupe.
 func (s *TriggerServer) fetchAndStoreFile(ctx context.Context, fileURL string) (string, error) {
 	fetched, err := s.fetcher.Fetch(ctx, fileURL)
 	if err != nil {
 		return "", mapFetchError(err)
 	}
 
-	// Fan-out by the first two hex characters of the hash, per pkg/storage's
-	// documented key layout, so one flat directory does not grow without
-	// bound.
+	// Fan-out by the first two hex characters of the hash, per pkg/storage's key layout.
 	key := triggerFileKeyPrefix + fetched.Hash[:2] + "/" + fetched.Hash
 
 	fileID, inserted, err := db.GetOrCreateFileByHash(ctx, fetched.Hash, key, fetched.MIMEType, int32(len(fetched.Content)))
@@ -272,7 +210,6 @@ func (s *TriggerServer) fetchAndStoreFile(ctx context.Context, fileURL string) (
 	}
 
 	if !inserted {
-		// Identical bytes already have a row and a blob: this is the dedupe.
 		return fileID, nil
 	}
 
@@ -288,13 +225,7 @@ func (s *TriggerServer) fetchAndStoreFile(ctx context.Context, fileURL string) (
 	return fileID, nil
 }
 
-// resolveScopeInstances turns a caller-supplied instance list into instance
-// ids, falling back to the caller's own call origin when none was supplied.
-//
-// Every named instance must be the call's own origin. Scoping a new trigger to
-// an arbitrary instance would let any registered user plant an auto-responder
-// in a guild they have nothing to do with, so a list naming anything else is
-// refused rather than filtered.
+// resolveScopeInstances refuses any instance but the origin, rather than filtering.
 func resolveScopeInstances(ctx context.Context, requested []*pb.TriggerInstance) ([]int64, error) {
 	if len(requested) == 0 {
 		instanceID, err := callerScopedInstance(ctx, nil)
@@ -318,13 +249,10 @@ func resolveScopeInstances(ctx context.Context, requested []*pb.TriggerInstance)
 	return ids, nil
 }
 
-// buildTriggerFile loads a file row and builds the protobuf TriggerFile for
-// it, deriving the display filename since the original name is not stored.
 func (s *TriggerServer) buildTriggerFile(ctx context.Context, fileID string) (*pb.TriggerFile, error) {
 	fileRow, err := db.GetFile(ctx, fileID)
 	if errors.Is(err, db.ErrNotFound) {
-		// trigger.file_id is a foreign key: a missing row here means the
-		// referenced file was hard-deleted out of band, not a caller mistake.
+		// file_id is a foreign key, so a missing row means an out-of-band hard delete.
 		log.Z.Error("trigger references a missing file row", zap.String("file_id", fileID))
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load trigger file"))
 	}
@@ -336,13 +264,9 @@ func (s *TriggerServer) buildTriggerFile(ctx context.Context, fileID string) (*p
 	return fileRow.ToProto(displayFilename(fileRow)), nil
 }
 
-// buildTryTriggerResp loads the fired trigger's row and builds the reply or
-// file response for it.
 func (s *TriggerServer) buildTryTriggerResp(ctx context.Context, triggerID string) (*pb.TryTriggerResp, error) {
 	row, err := db.GetTrigger(ctx, triggerID)
 	if errors.Is(err, db.ErrNotFound) {
-		// The candidate came from the cache; the row was deleted between the
-		// cache load and now. Nothing to reply with, and not the caller's fault.
 		return pb.TryTriggerResp_builder{}.Build(), nil
 	}
 	if err != nil {
@@ -363,8 +287,7 @@ func (s *TriggerServer) buildTryTriggerResp(ctx context.Context, triggerID strin
 		}
 		builder.File = file
 	default:
-		// Impossible per chk_reply_or_file, but a handler must not return a
-		// malformed response for a row it cannot fully explain.
+		// Impossible per chk_reply_or_file.
 		log.Z.Error("trigger row has neither a reply nor a file", zap.String("trigger_id", id))
 		return pb.TryTriggerResp_builder{}.Build(), nil
 	}
@@ -372,10 +295,7 @@ func (s *TriggerServer) buildTryTriggerResp(ctx context.Context, triggerID strin
 	return builder.Build(), nil
 }
 
-// TryTrigger evaluates message-matching against an instance's compiled set
-// and, on a fire, records the outcome. It never queries the database when
-// nothing matches: candidates come from the cache, and only a match's own row
-// is fetched afterwards.
+// TryTrigger matches against the cached set; nothing is queried unless it matches.
 func (s *TriggerServer) TryTrigger(ctx context.Context, connReq *connect.Request[pb.TryTriggerReq]) (*connect.Response[pb.TryTriggerResp], error) {
 	req := connReq.Msg
 
@@ -404,15 +324,12 @@ func (s *TriggerServer) TryTrigger(ctx context.Context, connReq *connect.Request
 
 	selected := trigger.Select(req.GetPhrase(), candidates, s.roll)
 	if selected == nil {
-		// A non-match is not an error.
 		return connect.NewResponse(pb.TryTriggerResp_builder{}.Build()), nil
 	}
 
 	actionType := pb.ActionType_ACTION_TYPE_TRIGGER_OCCURRED
 	if req.GetForced() {
 		if !s.limiter.Allow(caller.ID) {
-			// Rate limited is not an error either; the client simply says
-			// nothing.
 			return connect.NewResponse(pb.TryTriggerResp_builder{}.Build()), nil
 		}
 		actionType = pb.ActionType_ACTION_TYPE_TRIGGER_CALLED
@@ -425,8 +342,6 @@ func (s *TriggerServer) TryTrigger(ctx context.Context, connReq *connect.Request
 		return nil, err
 	}
 
-	// Recording the action must not fail the RPC: a dropped statistic is
-	// better than a swallowed trigger.
 	if err := db.RecordTriggerFire(ctx, actionType, selected.ID, caller.ID); err != nil {
 		log.Z.Error("failed to record trigger fire", zap.Error(err))
 	}
@@ -434,10 +349,7 @@ func (s *TriggerServer) TryTrigger(ctx context.Context, connReq *connect.Request
 	return connect.NewResponse(resp), nil
 }
 
-// ExecTrigger fires a specific trigger unconditionally, provided it is scoped
-// to the given instance. No chance roll: an explicit execution always fires.
-// Not rate limited: it is an explicit command, and any cooldown belongs at the
-// command layer.
+// ExecTrigger always fires: no chance roll and no rate limit.
 func (s *TriggerServer) ExecTrigger(ctx context.Context, connReq *connect.Request[pb.ExecTriggerReq]) (*connect.Response[pb.TryTriggerResp], error) {
 	req := connReq.Msg
 
@@ -473,9 +385,7 @@ func (s *TriggerServer) ExecTrigger(ctx context.Context, connReq *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load trigger"))
 	}
 	if !slices.Contains(scopedIDs, instanceID) {
-		// NotFound rather than PermissionDenied: a caller must not be able to
-		// fire another guild's trigger into theirs, and must not learn that
-		// the id exists elsewhere.
+		// NotFound, so a caller cannot learn the id exists in another guild.
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
 
@@ -491,10 +401,7 @@ func (s *TriggerServer) ExecTrigger(ctx context.Context, connReq *connect.Reques
 	return connect.NewResponse(resp), nil
 }
 
-// GetTrigger returns a trigger with its file and instances. A trigger is
-// readable by its creator, and by any caller on an instance it is scoped to
-// — a trigger that can fire in your guild is not a secret from you. Anyone
-// else gets NotFound, so the response does not confirm the id exists.
+// GetTrigger is visible to the creator and to callers on an instance it is scoped to.
 func (s *TriggerServer) GetTrigger(ctx context.Context, connReq *connect.Request[pb.GetTriggerReq]) (*connect.Response[pb.GetTriggerResp], error) {
 	req := connReq.Msg
 
@@ -551,17 +458,8 @@ func (s *TriggerServer) GetTrigger(ctx context.Context, connReq *connect.Request
 	}.Build()), nil
 }
 
-// ListTriggers is scoped to the caller's own call origin instance, and narrows
-// further to the caller's own triggers when `mine` is set. There is no way to
-// ask for another user's: the owner predicate can only ever be filled from the
-// resolved caller, which is why the request carries a boolean rather than a user
-// id.
-//
-// A call with no resolvable origin instance, such as a direct message, falls
-// back to the caller's own triggers. It must not fall through unscoped: an
-// unset instance and an unset user id together would make db.ListTriggers skip
-// both predicates and return every trigger in the database, across every guild.
-// The else branch below is what prevents that, and it does not depend on `mine`.
+// ListTriggers must set one of the two predicates: both unset makes
+// db.ListTriggers return every trigger in the database.
 func (s *TriggerServer) ListTriggers(ctx context.Context, connReq *connect.Request[pb.ListTriggersReq]) (*connect.Response[pb.ListTriggersResp], error) {
 	req := connReq.Msg
 
@@ -627,10 +525,6 @@ func (s *TriggerServer) ListTriggers(ctx context.Context, connReq *connect.Reque
 	}.Build()), nil
 }
 
-// CreateTrigger validates the pattern and the chance at creation time, never
-// at match time, gates TRIGGER_MODE_REGEX behind regexClearanceFloor, fetches
-// and dedupes a file_url when given one, and scopes the trigger to the
-// requested instances or, absent those, to the caller's own call origin.
 func (s *TriggerServer) CreateTrigger(ctx context.Context, connReq *connect.Request[pb.CreateTriggerReq]) (*connect.Response[pb.CreateTriggerResp], error) {
 	req := connReq.Msg
 
@@ -688,10 +582,7 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, connReq *connect.Requ
 		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("an exact trigger with this phrase already exists"))
 	}
 	if err != nil {
-		// If the trigger insert fails after a file_url blob was written, that
-		// blob is left behind for the GC job to collect rather than being
-		// compensation-deleted here: a compensating delete could remove a blob
-		// another trigger deduped onto.
+		// An abandoned blob is left for the GC job; another trigger may have deduped onto it.
 		log.Z.Error("failed to create trigger", zap.Error(err))
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create trigger"))
 	}
@@ -705,13 +596,7 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, connReq *connect.Requ
 	}.Build()), nil
 }
 
-// UpdateTrigger applies the same validation CreateTrigger does to any field
-// being changed. Ownership is enforced in SQL by db.UpdateTriggerByUser, but a
-// phrase or mode change is validated here first — which needs the trigger's
-// CURRENT phrase and mode too, since editing only one of the pair must still
-// be checked against the combination that will actually be stored, not an
-// assumed default that could let a broken regex-mode phrase through
-// unvalidated.
+// UpdateTrigger validates the combination that will be stored, not the changed field alone.
 func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Request[pb.UpdateTriggerReq]) (*connect.Response[pb.UpdateTriggerResp], error) {
 	req := connReq.Msg
 
@@ -724,10 +609,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	// Ownership is resolved first, before anything expensive or observable
-	// happens. Deferring it until after the file fetch would let a caller who
-	// owns nothing name any id plus a file_url and still cause a CDN download, a
-	// file row and a blob write on the way to being told NotFound.
+	// Ownership first, or an unauthorised caller still causes a CDN download and a blob write.
 	current, err := db.GetTrigger(ctx, req.GetId())
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
@@ -736,10 +618,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 		log.Z.Error("failed to load trigger for update", zap.Error(err))
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update trigger"))
 	}
-	// Matches UpdateTriggerByUser's own privacy check: a trigger that is not
-	// the caller's own is NotFound, checked here too so no validation, clearance
-	// detail or side effect can run against a trigger the caller could not
-	// update anyway.
+	// Duplicates UpdateTriggerByUser's check so nothing runs against another's trigger.
 	if current.UserID == nil || *current.UserID != caller.ID {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
@@ -767,9 +646,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 		if req.HasPhrase() {
 			effectivePhrase = req.GetPhrase()
 		}
-		// An explicit UNSPECIFIED means ANY, per the enum's own doc comment.
-		// Writing the current mode back instead would make the same request
-		// behave differently depending on the row it landed on.
+		// An explicit UNSPECIFIED means ANY, not "keep the current mode".
 		effectiveMode := pb.TriggerMode(current.Mode)
 		if req.HasMode() {
 			effectiveMode = req.GetMode()
@@ -795,10 +672,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 		}
 	}
 
-	// Last, because it is the only step with a side effect outside this
-	// transaction: a fetched blob that a later failure abandons is left for the
-	// orphan sweep rather than deleted, since another trigger may have deduped
-	// onto it.
+	// Last: the only step with a side effect outside the transaction.
 	if req.HasFileUrl() && req.GetFileUrl() != "" {
 		fileID, fetchErr := s.fetchAndStoreFile(ctx, req.GetFileUrl())
 		if fetchErr != nil {
@@ -808,8 +682,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 		update.FileID = fileID
 	}
 
-	// Read before the write: once the row is updated (or deleted concurrently)
-	// there is nothing left to look up the OLD scope from.
+	// Read before the write; afterwards the old scope is unrecoverable.
 	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, req.GetId())
 	if err != nil {
 		log.Z.Error("failed to load trigger scope for invalidation", zap.Error(err))
@@ -835,7 +708,6 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 	return connect.NewResponse(pb.UpdateTriggerResp_builder{}.Build()), nil
 }
 
-// DeleteTrigger soft-deletes the caller's own trigger.
 func (s *TriggerServer) DeleteTrigger(ctx context.Context, connReq *connect.Request[pb.DeleteTriggerReq]) (*connect.Response[pb.DeleteTriggerResp], error) {
 	req := connReq.Msg
 
@@ -848,8 +720,7 @@ func (s *TriggerServer) DeleteTrigger(ctx context.Context, connReq *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	// Read before the write, matching UpdateTrigger: after the delete there is
-	// nothing left to look up the scope from.
+	// Read before the write; afterwards the scope is unrecoverable.
 	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, req.GetId())
 	if err != nil {
 		log.Z.Error("failed to load trigger scope for invalidation", zap.Error(err))
@@ -872,8 +743,6 @@ func (s *TriggerServer) DeleteTrigger(ctx context.Context, connReq *connect.Requ
 	return connect.NewResponse(pb.DeleteTriggerResp_builder{}.Build()), nil
 }
 
-// GetTriggerStats returns a leaderboard derived from action_record, scoped to
-// an instance and to a period.
 func (s *TriggerServer) GetTriggerStats(ctx context.Context, connReq *connect.Request[pb.GetTriggerStatsReq]) (*connect.Response[pb.GetTriggerStatsResp], error) {
 	req := connReq.Msg
 
@@ -885,8 +754,6 @@ func (s *TriggerServer) GetTriggerStats(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("instance is required"))
 	}
 
-	// A leaderboard exposes another guild's phrases, chances and fire counts,
-	// so the named instance has to be the one the call came from.
 	instanceID, err := callerScopedInstance(ctx, req.GetInstance())
 	if err != nil {
 		return nil, err
@@ -937,36 +804,12 @@ func (s *TriggerServer) GetTriggerStats(ctx context.Context, connReq *connect.Re
 	}.Build()), nil
 }
 
-// GetFileChunkBytes bounds a single GetFileChunk's content payload. It is a
-// streaming chunk size, not a security limit — storage.MaxFileBytes is still
-// the authority on how much a caller may ever receive; this only keeps one
-// blob read from allocating more than 1 MiB at a time.
-//
-// Exported because it is not merely an internal detail: it must stay strictly
-// below the message caps both ends install (cmd/ginbot-server's
-// baselineMessageBytes and internal/clientopts' messageBytes), or GetFile
-// fails at the transport for every file. Those packages assert the
-// relationship against this constant rather than restating the number.
+// GetFileChunkBytes must stay below the message caps both ends install, or
+// GetFile fails at the transport for every file.
 const GetFileChunkBytes = 1 << 20
 
-// GetFile streams a trigger file as one metadata chunk followed by zero or
-// more content chunks, in order; the client concatenates the content chunks
-// to reconstruct the file. A file is readable by a caller who could see a
-// trigger that references it: one they created, or one scoped to their own
-// call origin instance.
-//
-// It used to be a unary RPC returning the whole file inline (ADR-0022), which
-// meant buffering an entire file, up to storage.MaxFileBytes, into one
-// message. That stopped being tenable once clearance moved onto the stream
-// path too — interceptor.ClearanceInterceptor.WrapStreamingHandler exists as
-// of stage 3, so nothing about authorisation still requires a unary
-// response — and streaming lets a handler hold at most one chunk in memory
-// at a time instead of the whole file.
-//
-// Every authorisation and existence check runs before the first stream.Send:
-// an unauthorised or unknown caller must be rejected with no bytes sent at
-// all, because once a byte is on the wire a client cannot be told to
-// disregard it.
+// GetFile streams one meta chunk then content chunks. Every authorisation check
+// runs before the first Send, since a sent byte cannot be recalled.
 func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb.GetFileReq], stream *connect.ServerStream[pb.GetFileChunk]) error {
 	req := connReq.Msg
 
@@ -988,9 +831,7 @@ func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get file"))
 	}
 
-	// A zero instance id (no origin, e.g. a direct message) simply never
-	// matches inside FileVisibleToCaller, leaving the ownership check as the
-	// only path to visibility — no special-cased "no origin" branch needed.
+	// A zero instance id never matches in FileVisibleToCaller, so no origin needs no branch.
 	originInstanceID, _ := callerOriginInstanceID(ctx)
 	visible, err := db.FileVisibleToCaller(ctx, fileRow.ID, caller.ID, originInstanceID)
 	if err != nil {
@@ -1001,11 +842,7 @@ func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb
 		return connect.NewError(connect.CodeNotFound, fmt.Errorf("file not found"))
 	}
 
-	// The row's recorded size is checked before anything is opened so the
-	// common oversize case is refused before a single byte reaches the wire.
-	// It is not the last word, though: the row and the blob on disk can
-	// disagree (e.g. a blob overwritten out of band), so the running total
-	// below is still the authority.
+	// Cheap pre-check; the row and the blob can disagree, so the running total is the authority.
 	if int64(fileRow.ByteSize) > storage.MaxFileBytes {
 		log.Z.Error("trigger file row exceeds the size cap", zap.String("file_id", fileRow.ID))
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("file exceeds the maximum size"))
@@ -1033,23 +870,12 @@ func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb
 		return err
 	}
 
-	// One buffer, reused across iterations: the point of streaming is that a
-	// handler never holds more than one chunk of a file in memory, so
-	// allocating per chunk would defeat it.
-	//
-	// Reuse is safe even though buf[:n] is aliased into the message below:
-	// connect's envelope writer copies the marshalled bytes into a buffer of
-	// its own and retains no reference to the message, and Send performs that
-	// write synchronously before returning. Nothing holds the slice past the
-	// Send, so the next Read may overwrite it.
+	// Reused: connect's envelope writer copies buf[:n] synchronously within Send
+	// and keeps no reference to it.
 	buf := make([]byte, GetFileChunkBytes)
-	// read, not "sent": it counts bytes taken off the reader, and it is
-	// incremented BEFORE the cap test below so that an over-cap chunk is
-	// refused rather than transmitted and then complained about.
+	// Incremented before the cap test, so an over-cap chunk is refused rather than sent.
 	var read int64
 	for {
-		// A client that has gone away must not make the server keep reading a
-		// whole file into a dead stream.
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1057,12 +883,7 @@ func (s *TriggerServer) GetFile(ctx context.Context, connReq *connect.Request[pb
 		n, readErr := reader.Read(buf)
 		if n > 0 {
 			read += int64(n)
-			// Unlike the unary version, this can fire with bytes already on
-			// the wire: the row's byte_size passed the check above, but the
-			// blob on disk is larger anyway. Terminating the stream with an
-			// error is exactly what tells the client the file is incomplete
-			// — a client must never treat a stream that ends in an error as
-			// a whole file.
+			// Can fire with bytes already sent; an errored stream means an incomplete file.
 			if read > storage.MaxFileBytes {
 				log.Z.Error("trigger file blob exceeds the size cap", zap.String("file_id", fileRow.ID))
 				return connect.NewError(connect.CodeInternal, fmt.Errorf("file exceeds the maximum size"))

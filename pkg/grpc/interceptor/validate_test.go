@@ -11,23 +11,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// pkg/grpc/interceptor/validate.go — the hand-rolled validation interceptor
-// pair (NewValidationUnaryInterceptor / NewValidationStreamInterceptor) — is
-// deleted as part of the Connect port. Validation is now
-// connectrpc.com/validate's own connect.Interceptor, wired directly into
-// cmd/ginbot-server's chain rather than through anything this package
-// exports. This file is rewritten rather than deleted, because
-// validation_user_test.go (and every other validation_*_test.go in this
-// package) call the invoke helper defined here; deleting it outright would
-// have broken every one of them for a reason that has nothing to do with what
-// they are actually testing. invoke's SIGNATURE is preserved for exactly that
-// reason — only its insides changed, from the deleted hand-rolled interceptor
-// to connectvalidate.NewInterceptor().
-//
-// validation_rules_test.go, validation_trigger_test.go,
-// validation_instance_test.go and validation_enum_test.go do not use invoke
-// at all: they call protovalidate directly, and are untouched by this file.
-
 // invoke runs req through connectvalidate's interceptor, reporting whether the
 // handler was reached and what error surfaced.
 func invoke(t *testing.T, req any) (reached bool, err error) {
@@ -72,7 +55,6 @@ func TestValidDatetimePassesValidation(t *testing.T) {
 	}
 }
 
-// timestamp.gt_now must reject reminders scheduled in the past.
 func TestPastDatetimeIsRejected(t *testing.T) {
 	req := pb.CreateReminderReq_builder{
 		Datetime: timestamppb.New(time.Now().Add(-time.Hour)),
@@ -90,7 +72,6 @@ func TestPastDatetimeIsRejected(t *testing.T) {
 	}
 }
 
-// required = true must reject a missing datetime.
 func TestMissingDatetimeIsRejected(t *testing.T) {
 	req := pb.CreateReminderReq_builder{}.Build()
 
@@ -99,9 +80,7 @@ func TestMissingDatetimeIsRejected(t *testing.T) {
 	}
 }
 
-// The repeat_cron pattern must accept real cron expressions. This is the
-// regression test for the pattern having been written with /.../ delimiters,
-// which RE2 treats as literal slashes and which therefore rejected everything.
+// RE2 has no /.../ delimiters: a pattern written with them rejects everything.
 func TestRepeatCronAcceptsValidExpressions(t *testing.T) {
 	valid := []string{
 		"0 9 * * *",
@@ -164,10 +143,7 @@ func TestRepeatCronRejectsGarbage(t *testing.T) {
 	}
 }
 
-// The pattern is a shape check and deliberately does not range-check values.
-// Documenting that here so the looseness is a recorded decision rather than an
-// unnoticed gap: out-of-range fields are rejected by the real cron parser at
-// scheduling time, and erring toward acceptance avoids blocking valid input.
+// The pattern is a shape check; the cron parser range-checks at scheduling time.
 func TestRepeatCronDoesNotRangeCheckValues(t *testing.T) {
 	for _, cron := range []string{"99 99 99 99 99", "0 0 0 0 0"} {
 		t.Run(cron, func(t *testing.T) {
@@ -202,7 +178,6 @@ func TestParentIDMustBeUUID(t *testing.T) {
 	}
 }
 
-// Messages without any declared constraints must pass straight through.
 func TestUnconstrainedMessagePassesThrough(t *testing.T) {
 	digits := int32(2)
 	reqType := pb.GetRandomNumberReq_DOUBLES
@@ -219,14 +194,3 @@ func TestUnconstrainedMessagePassesThrough(t *testing.T) {
 		t.Error("handler was not reached")
 	}
 }
-
-// TestNonProtoRequestPassesThrough from the hand-rolled interceptor is
-// deliberately NOT ported. That interceptor special-cased a non-proto.Message
-// payload as a pass-through; connectvalidate.Interceptor does not — it type-
-// asserts req.Any() and returns a bare error when it fails, which is
-// observably DIFFERENT behaviour on the exact same input. That is not this
-// project's decision to pin: every real Connect request handled through
-// generated stubs always carries an actual proto.Message, so the case cannot
-// occur outside a test harness that constructs one on purpose, and testing
-// connectrpc.com/validate's own defensive coding is not this package's job —
-// it is a well-tested third-party dependency, not code this project owns.

@@ -1,13 +1,5 @@
 //go:build integration
 
-// The forgiving-paging contract for ListTriggers, end to end.
-//
-//	docker compose -f docker-compose.dev.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/grpc/server/...
-//
-// Reuses liveTriggerHarness, triggerCtx, createTriggerVia (from
-// trigger_integration_test.go), registeredCaller, cleanupInstanceRows (from
-// reminder_integration_test.go) and uniqueUID (from user_integration_test.go).
 package server
 
 import (
@@ -19,25 +11,8 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 )
 
-// limit and offset are CLAMPED by pkg/db, never rejected, and this is the
-// end-to-end record of that decision.
-//
-// Neither field carries an lte rule and neither should gain one. A limit of a
-// million is what someone typing a big number produces; pkg/db reduces it to
-// maxTriggerListLimit and answers, and a schema rule would instead hand that
-// person an InvalidArgument for a request that has an obvious sensible reading.
-// A future well-meaning cap fails here rather than reaching users.
-//
-// The negative offset is the sharper half. Postgres rejects a negative OFFSET
-// outright, so it distinguishes three outcomes rather than two: InvalidArgument
-// means a schema rule was added, Internal means the clamp in
-// db.ListTriggers was removed and the value reached SQL, and success means the
-// clamp is doing its job.
-//
-// The exact clamp values are pinned where they are declared, in
-// pkg/db/trigger_list_integration_test.go's
-// TestListTriggersLimitDefaultsAndClamps; restating them here would only
-// duplicate a constant this package cannot see.
+// limit and offset are CLAMPED by pkg/db, never rejected: a future lte rule fails here.
+// Postgres rejects a negative OFFSET, so an Internal means the clamp itself was removed.
 func TestListTriggersToleratesAbsurdPaging(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -81,9 +56,7 @@ func TestListTriggersToleratesAbsurdPaging(t *testing.T) {
 				ids = append(ids, trigger.GetId())
 			}
 
-			// The clamped listing must still answer with the rows, not with an
-			// empty page: a clamp that reduced the limit to zero would pass a
-			// bare "no error" assertion while returning nothing.
+			// A clamp that reduced the limit to zero would pass a bare "no error" assertion.
 			for _, want := range []string{first, second} {
 				if !slices.Contains(ids, want) {
 					t.Errorf("trigger %s missing from the clamped listing (got %v)", want, ids)

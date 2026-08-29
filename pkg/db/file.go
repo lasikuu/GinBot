@@ -11,24 +11,12 @@ import (
 	"github.com/lasikuu/GinBot/internal/model"
 )
 
-// FileCategoryLocal is file.category for a blob stored on the configured
-// storage. The meanings are documented as a COMMENT ON COLUMN in
-// 20250105164925_create_tables.sql: 0=unspecified, 1=metadata, 2=local, 3=remote.
+// FileCategoryLocal is file.category for a blob on the configured storage.
 const FileCategoryLocal int32 = 2
 
-// GetOrCreateFileByHash returns the id of the file row for a content hash,
-// inserting it when it is new. Identical bytes therefore get exactly one row
-// and one blob.
-//
-// inserted reports whether this call created the row, so the caller knows
-// whether it must also write the blob.
-//
-// The upsert targets uq_file_hash, a partial unique index scoped to
-// deleted = FALSE, so a soft-deleted file's hash does not block a fresh
-// upload from reusing it. DO UPDATE rather than DO NOTHING: DO NOTHING
-// returns no row on conflict, so RETURNING would yield nothing for a hash
-// that already exists. (xmax = 0) is the idiomatic way to tell an insert
-// apart from an update in the same RETURNING clause.
+// GetOrCreateFileByHash reports inserted so the caller knows whether it must
+// also write the blob. The upsert targets uq_file_hash, a partial index on
+// deleted = FALSE; DO UPDATE because DO NOTHING returns no row for RETURNING.
 func GetOrCreateFileByHash(
 	ctx context.Context,
 	hash string,
@@ -74,12 +62,8 @@ func GetFile(ctx context.Context, id string) (*model.File, error) {
 	return &file, nil
 }
 
-// ListOrphanFiles returns local file rows that no live trigger references and
-// that are older than olderThan, capped at limit.
-//
-// It backs the orphan-file sweep in cronjob.CollectOrphanFiles, which runs
-// hourly. olderThan is the grace period that keeps a blob written seconds before
-// its trigger row commits out of the sweep.
+// ListOrphanFiles returns local files no live trigger references. olderThan is a
+// grace period so a blob written just before its trigger commits is not swept.
 func ListOrphanFiles(ctx context.Context, olderThan time.Time, limit int64) ([]*model.File, error) {
 	rows, err := db().Query(ctx,
 		`SELECT `+model.FileColumns+`
@@ -116,7 +100,6 @@ func ListOrphanFiles(ctx context.Context, olderThan time.Time, limit int64) ([]*
 	return files, nil
 }
 
-// SoftDeleteFile marks a file row deleted.
 func SoftDeleteFile(ctx context.Context, id string) error {
 	tag, err := db().Exec(ctx,
 		`UPDATE file SET deleted = TRUE WHERE id = $1 AND deleted = FALSE`,
@@ -132,14 +115,9 @@ func SoftDeleteFile(ctx context.Context, id string) error {
 	return nil
 }
 
-// FileVisibleToCaller reports whether fileID is reachable by a caller: it is
-// referenced by a live trigger the caller created, or by a live trigger
-// scoped to instanceID.
-//
-// An empty userID or a zero instanceID simply never matches its side of the
-// OR (trigger.user_id = NULL and trigger_instance.instance_id = 0 are both
-// never true), so a caller with no origin instance still gets the ownership
-// check and vice versa, with no special-cased NULL handling needed here.
+// FileVisibleToCaller reports whether a live trigger the caller created, or one
+// scoped to instanceID, references fileID. An empty userID or a zero instanceID
+// never matches its side of the OR, so neither needs special-casing.
 func FileVisibleToCaller(ctx context.Context, fileID string, userID string, instanceID int64) (bool, error) {
 	var visible bool
 	err := db().QueryRow(ctx,

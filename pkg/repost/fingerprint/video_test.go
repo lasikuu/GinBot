@@ -10,16 +10,6 @@ import (
 	"time"
 )
 
-// This file covers acceptance criterion 17: ffmpeg absence must degrade video
-// to exact-hash-only rather than crashing ingest (docs/plans/wanha.md, the
-// "ffmpeg licensing (W12)" section, and ADR-0006).
-
-// ── LookupFFmpeg ──────────────────────────────────────────────────────────────
-
-// TestLookupFFmpegIsConsistentWithPATH: LookupFFmpeg must agree with
-// exec.LookPath, since that is the documented contract ("a path to an ffmpeg
-// binary, or "" when none is on PATH") and any other source of truth would let
-// the two disagree about whether the subprocess path is usable.
 func TestLookupFFmpegIsConsistentWithPATH(t *testing.T) {
 	got := LookupFFmpeg()
 
@@ -43,9 +33,6 @@ func TestLookupFFmpegIsConsistentWithPATH(t *testing.T) {
 	}
 }
 
-// TestLookupFFmpegIsDeterministic: repeated calls within the same process must
-// agree, since NewHasher is expected to be told the result once at startup
-// rather than re-resolving PATH on every hash.
 func TestLookupFFmpegIsDeterministic(t *testing.T) {
 	first := LookupFFmpeg()
 	second := LookupFFmpeg()
@@ -54,14 +41,8 @@ func TestLookupFFmpegIsDeterministic(t *testing.T) {
 	}
 }
 
-// ── Video degradation without ffmpeg ─────────────────────────────────────────
-
-// TestPerceptualHashVideoWithoutFFmpegReturnsErrNoDecoder is AC17's core claim:
-// an empty ffmpegPath must disable video frame extraction and degrade
-// gracefully to ErrNoDecoder, never a panic and never a hang. A short,
-// enforced context deadline is the hang guard: if PerceptualHash blocked
-// trying to invoke a nonexistent subprocess, this test would time out and fail
-// loudly rather than pass by accident.
+// TestPerceptualHashVideoWithoutFFmpegReturnsErrNoDecoder: the context
+// deadline is the hang guard, not incidental.
 func TestPerceptualHashVideoWithoutFFmpegReturnsErrNoDecoder(t *testing.T) {
 	hasher := NewHasher(DefaultGuards(), "")
 
@@ -76,11 +57,6 @@ func TestPerceptualHashVideoWithoutFFmpegReturnsErrNoDecoder(t *testing.T) {
 	}
 }
 
-// TestPerceptualHashVideoWithoutFFmpegDoesNotPanic runs the same case through
-// recover(), because a hasher that panics on malformed video content would
-// take down whichever goroutine ingests a posted attachment — the recovery
-// interceptor in pkg/grpc/server exists for exactly this kind of boundary, but
-// this pins the fingerprint package's own contract independently of it.
 func TestPerceptualHashVideoWithoutFFmpegDoesNotPanic(t *testing.T) {
 	hasher := NewHasher(DefaultGuards(), "")
 
@@ -93,14 +69,8 @@ func TestPerceptualHashVideoWithoutFFmpegDoesNotPanic(t *testing.T) {
 	_, _ = hasher.PerceptualHash(context.Background(), []byte{0x00, 0x01, 0x02}, "video/mp4")
 }
 
-// ── Video hashing WITH ffmpeg, when available ────────────────────────────────
-
-// generateTestVideo shells out to ffmpeg's own lavfi test source to produce a
-// short, genuinely decodable MP4 with no network access and no committed
-// binary fixture. It returns ("", false) for ANY failure — missing filter
-// support, a sandboxed environment without a working encoder, etc. — because
-// this helper backs an opportunistic test that must skip rather than fail when
-// the environment cannot support it.
+// generateTestVideo builds a decodable MP4 from ffmpeg's lavfi test source. It
+// reports false for any failure, so callers skip rather than fail.
 func generateTestVideo(t *testing.T, ffmpegPath string) ([]byte, bool) {
 	t.Helper()
 
@@ -127,12 +97,6 @@ func generateTestVideo(t *testing.T, ffmpegPath string) ([]byte, bool) {
 	return content, true
 }
 
-// TestPerceptualHashVideoWithFFmpegHashesTheFirstFrame is the positive control
-// for AC17: when a real ffmpeg binary IS available, video content must
-// actually be hashed rather than always falling back to ErrNoDecoder. It skips
-// itself, rather than failing, in any environment where ffmpeg is absent or
-// cannot produce the synthetic fixture — this is deliberately not run on every
-// machine.
 func TestPerceptualHashVideoWithFFmpegHashesTheFirstFrame(t *testing.T) {
 	ffmpegPath := LookupFFmpeg()
 	if ffmpegPath == "" {

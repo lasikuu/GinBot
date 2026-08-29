@@ -1,13 +1,5 @@
 //go:build integration
 
-// Integration tests for the user surface, driven through the harness so
-// the real interceptor chain and a real database are both in the picture.
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration ./pkg/grpc/server/...
-//
-// Connection settings come from the same GINBOT_DB_* variables the server uses.
-
 package server
 
 import (
@@ -32,12 +24,8 @@ var (
 	databasePool *pgxpool.Pool
 )
 
-// requireDatabase brings up pkg/db's pool, plus a second pool of the test's own.
-//
-// TestMain already belongs to reverse_test.go and must stay database-free, so
-// the setup is lazy. The second pool exists because pkg/db keeps its own pool
-// unexported and these tests need raw SQL: to seed a clearance level, to read
-// back what actually landed in user_account, and to delete rows afterwards.
+// requireDatabase adds a second pool for raw SQL, lazily: TestMain belongs to
+// reverse_test.go and stays database-free.
 func requireDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -50,8 +38,7 @@ func requireDatabase(t *testing.T) *pgxpool.Pool {
 		db.InitDB()
 		db.EnsureLatestVersion()
 
-		// Built the same way pkg/db builds it, so a password with reserved
-		// characters is escaped rather than corrupting the URI.
+		// Built the same way pkg/db builds it, so a reserved character escapes rather than corrupting.
 		uri := url.URL{
 			Scheme: "postgres",
 			User:   url.UserPassword(config.Options.DB.Username, config.Options.DB.Password),
@@ -74,7 +61,6 @@ func requireDatabase(t *testing.T) *pgxpool.Pool {
 	return databasePool
 }
 
-// liveHarness is a server wired to the real caller resolver.
 func liveHarness(t *testing.T) (*harness, *pgxpool.Pool) {
 	t.Helper()
 
@@ -82,16 +68,11 @@ func liveHarness(t *testing.T) (*harness, *pgxpool.Pool) {
 	return newHarness(t, withResolver(db.GetUserByPlatformUID)), pool
 }
 
-// uniqueUID keeps identities from separate runs apart.
 func uniqueUID(prefix string) string {
 	return prefix + "-" + time.Now().Format("150405.000000")
 }
 
-// cleanupUser removes a user and its platform identities.
-//
-// platform_user.user_id has no ON DELETE CASCADE, so user_account has to go
-// second or the foreign key rejects the delete. The errors are asserted rather
-// than discarded: dropping them silently leaked rows on every run.
+// platform_user.user_id has no ON DELETE CASCADE, so user_account has to go second.
 func cleanupUser(t *testing.T, pool *pgxpool.Pool, userID string) {
 	t.Helper()
 
@@ -106,8 +87,6 @@ func cleanupUser(t *testing.T, pool *pgxpool.Pool, userID string) {
 	})
 }
 
-// registerUser creates an account through the public Register RPC, the way a
-// platform client does, and schedules its removal.
 func registerUser(t *testing.T, h *harness, pool *pgxpool.Pool, platformUID string) string {
 	t.Helper()
 
@@ -131,9 +110,7 @@ func registerUser(t *testing.T, h *harness, pool *pgxpool.Pool, platformUID stri
 	return userID
 }
 
-// setClearance writes a clearance level straight into the row. Nothing exposes
-// a setter, and the tests that need an elevated caller are not about how
-// clearance comes to be granted.
+// Nothing exposes a clearance setter, and these tests are not about how it is granted.
 func setClearance(t *testing.T, pool *pgxpool.Pool, userID string, clearance pb.Clearance) {
 	t.Helper()
 
@@ -145,9 +122,7 @@ func setClearance(t *testing.T, pool *pgxpool.Pool, userID string, clearance pb.
 	}
 }
 
-// A second registration from the same platform identity is a user error — the
-// client tells them they already have an account — so it must not surface as
-// Internal, which is what an unmapped unique-constraint violation produces.
+// A second registration is a user error, not the Internal an unmapped constraint gives.
 func TestRegisterTwiceReturnsAlreadyExists(t *testing.T) {
 	h, pool := liveHarness(t)
 	platformUID := uniqueUID("dup")
@@ -163,7 +138,6 @@ func TestRegisterTwiceReturnsAlreadyExists(t *testing.T) {
 
 	requireCode(t, err, connect.CodeAlreadyExists)
 
-	// The failed attempt must not have left a second account behind.
 	var accounts int
 	if err := pool.QueryRow(context.Background(),
 		`SELECT COUNT(*) FROM platform_user WHERE platform_enum = $1 AND platform_uid = $2`,
@@ -176,10 +150,7 @@ func TestRegisterTwiceReturnsAlreadyExists(t *testing.T) {
 	}
 }
 
-// Registration has to grant CLEARANCE_REGISTERED. The column defaults to 0,
-// which is CLEARANCE_UNSPECIFIED, and a user sitting at 0 fails every guarded
-// method — so a freshly registered account would be unable to do anything at
-// all, including set its own locale.
+// The column defaults to CLEARANCE_UNSPECIFIED, which fails every guarded method.
 func TestRegisterGrantsRegisteredClearance(t *testing.T) {
 	h, pool := liveHarness(t)
 
@@ -198,9 +169,7 @@ func TestRegisterGrantsRegisteredClearance(t *testing.T) {
 	}
 }
 
-// Neither request carries a user id: the subject is the caller, taken from
-// metadata. This is the end-to-end proof that a sufficiently cleared caller
-// gets through the chain and that the write reaches the row.
+// Neither request carries a user id: the subject is the caller, taken from metadata.
 func TestLocaleAndTimezoneRoundTripThroughUserAccount(t *testing.T) {
 	h, pool := liveHarness(t)
 	platformUID := uniqueUID("prefs")
@@ -210,8 +179,7 @@ func TestLocaleAndTimezoneRoundTripThroughUserAccount(t *testing.T) {
 
 	ctx := callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID)
 
-	// Registered with "en", so setting "fi" also proves this updates rather
-	// than only ever inserting.
+	// Registered with "en", so setting "fi" also proves this updates rather than inserts.
 	locale := "fi"
 	if _, err := h.User.SetLocale(ctx, pb.SetLocaleReq_builder{Locale: &locale}.Build()); err != nil {
 		t.Fatalf("SetLocale: %v", err)
@@ -236,7 +204,6 @@ func TestLocaleAndTimezoneRoundTripThroughUserAccount(t *testing.T) {
 		t.Errorf("user_account.timezone = %v, want %q", storedTimezone, timezone)
 	}
 
-	// And the same values must come back out through the API.
 	resp, err := h.User.GetUser(ctx, pb.GetUserReq_builder{Id: &userID}.Build())
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
@@ -248,7 +215,6 @@ func TestLocaleAndTimezoneRoundTripThroughUserAccount(t *testing.T) {
 		t.Errorf("GetUser timezone = %q, want %q", got, timezone)
 	}
 
-	// A second change must stick too.
 	locale = "ja"
 	if _, err := h.User.SetLocale(ctx, pb.SetLocaleReq_builder{Locale: &locale}.Build()); err != nil {
 		t.Fatalf("SetLocale (second): %v", err)
@@ -263,8 +229,7 @@ func TestLocaleAndTimezoneRoundTripThroughUserAccount(t *testing.T) {
 	}
 }
 
-// A user row carries locale, timezone and birthday, so it is private. Only
-// moderation-level clearance has a reason to read someone else's.
+// A user row carries locale, timezone and birthday, so it is private.
 func TestGetUserRefusesAnotherUserBelowModerator(t *testing.T) {
 	h, pool := liveHarness(t)
 
@@ -286,7 +251,6 @@ func TestGetUserRefusesAnotherUserBelowModerator(t *testing.T) {
 		})
 	}
 
-	// Their own row stays readable at the lowest clearance.
 	t.Run("own row", func(t *testing.T) {
 		setClearance(t, pool, callerID, pb.Clearance_CLEARANCE_REGISTERED)
 
@@ -300,7 +264,6 @@ func TestGetUserRefusesAnotherUserBelowModerator(t *testing.T) {
 	})
 }
 
-// The other side of the same boundary.
 func TestGetUserAllowsAnotherUserAtModerator(t *testing.T) {
 	h, pool := liveHarness(t)
 
@@ -322,9 +285,7 @@ func TestGetUserAllowsAnotherUserAtModerator(t *testing.T) {
 	}
 }
 
-// With the real resolver behind it, an unknown platform identity must produce
-// the "you are not registered" code rather than an Internal from the failed
-// lookup.
+// Must be the "you are not registered" code, not an Internal from the failed lookup.
 func TestGuardedRPCRejectsAnUnknownIdentity(t *testing.T) {
 	h, _ := liveHarness(t)
 

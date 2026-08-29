@@ -9,7 +9,6 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// TestBuildPattern pins every row of spec §7.4's table.
 func TestBuildPattern(t *testing.T) {
 	tests := []struct {
 		name string
@@ -32,8 +31,6 @@ func TestBuildPattern(t *testing.T) {
 	}
 }
 
-// TestBuildPatternRegexModeIsVerbatim: regex mode returns the phrase unquoted,
-// with only a case-insensitivity flag prepended.
 func TestBuildPatternRegexModeIsVerbatim(t *testing.T) {
 	const phrase = `c\+\+|foo.*`
 	want := "(?i)" + phrase
@@ -43,9 +40,6 @@ func TestBuildPatternRegexModeIsVerbatim(t *testing.T) {
 	}
 }
 
-// TestExactModeQuotesMetacharacters: the defining behaviour of exact mode.
-// "a.b" must match only the literal text "a.b", never "axb" — if the dot were
-// left as regex metacharacter '.', it would match any character there.
 func TestExactModeQuotesMetacharacters(t *testing.T) {
 	re, err := Compile("a.b", pb.TriggerMode_TRIGGER_MODE_EXACT)
 	if err != nil {
@@ -60,10 +54,6 @@ func TestExactModeQuotesMetacharacters(t *testing.T) {
 	}
 }
 
-// TestAnyModeQuotesMetacharacters: an any-mode phrase of "c++" must match the
-// literal text "c++", not be interpreted as "one or more c's" (which "++"
-// would be an invalid quantifier for anyway, but the point is the phrase is
-// quoted, not compiled as regex).
 func TestAnyModeQuotesMetacharacters(t *testing.T) {
 	re, err := Compile("c++", pb.TriggerMode_TRIGGER_MODE_ANY)
 	if err != nil {
@@ -75,10 +65,6 @@ func TestAnyModeQuotesMetacharacters(t *testing.T) {
 	}
 }
 
-// TestAnyModeDropsUnsatisfiableWordBoundaries: \b only matches where a word
-// character abuts a non-word one, so anchoring it against a phrase edge that is
-// itself non-word produces a pattern that can never fire in ordinary prose.
-// Each side of the boundary is therefore emitted only when it is satisfiable.
 func TestAnyModeDropsUnsatisfiableWordBoundaries(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -101,9 +87,6 @@ func TestAnyModeDropsUnsatisfiableWordBoundaries(t *testing.T) {
 	}
 }
 
-// TestAnyModePunctuationPhrasesFireInProse is the behaviour the asymmetric
-// boundary exists to deliver: phrases edged with punctuation are exactly the
-// ones a chat trigger is most likely to use.
 func TestAnyModePunctuationPhrasesFireInProse(t *testing.T) {
 	tests := []struct {
 		phrase  string
@@ -132,7 +115,6 @@ func TestAnyModePunctuationPhrasesFireInProse(t *testing.T) {
 	}
 }
 
-// TestBuildPatternIsCaseInsensitive: the (?i) flag applies uniformly.
 func TestBuildPatternIsCaseInsensitive(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -161,9 +143,6 @@ func TestBuildPatternIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestAnyModeWordBoundary: any-mode "cat" fires inside "a cat here" (word
-// boundaries on both sides) but not inside "category" (no boundary on the
-// right).
 func TestAnyModeWordBoundary(t *testing.T) {
 	re, err := Compile("cat", pb.TriggerMode_TRIGGER_MODE_ANY)
 	if err != nil {
@@ -178,7 +157,6 @@ func TestAnyModeWordBoundary(t *testing.T) {
 	}
 }
 
-// TestCompileRejectsBlankOrWhitespacePhrase.
 func TestCompileRejectsBlankOrWhitespacePhrase(t *testing.T) {
 	for _, phrase := range []string{"", "   ", "\t\n"} {
 		t.Run("", func(t *testing.T) {
@@ -190,8 +168,6 @@ func TestCompileRejectsBlankOrWhitespacePhrase(t *testing.T) {
 	}
 }
 
-// TestCompileLengthBoundary: exactly MaxPatternLength bytes compiles, one byte
-// over is refused with ErrPatternTooLong.
 func TestCompileLengthBoundary(t *testing.T) {
 	atLimit := strings.Repeat("a", MaxPatternLength)
 	if _, err := Compile(atLimit, pb.TriggerMode_TRIGGER_MODE_ANY); err != nil {
@@ -205,7 +181,6 @@ func TestCompileLengthBoundary(t *testing.T) {
 	}
 }
 
-// TestCompileRejectsUncompilableRegex: "[" is an unterminated character class.
 func TestCompileRejectsUncompilableRegex(t *testing.T) {
 	_, err := Compile("[", pb.TriggerMode_TRIGGER_MODE_REGEX)
 	if err == nil {
@@ -216,7 +191,6 @@ func TestCompileRejectsUncompilableRegex(t *testing.T) {
 	}
 }
 
-// TestCompileAcceptsValidRegex.
 func TestCompileAcceptsValidRegex(t *testing.T) {
 	re, err := Compile(`^(foo|bar)\d+$`, pb.TriggerMode_TRIGGER_MODE_REGEX)
 	if err != nil {

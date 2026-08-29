@@ -12,24 +12,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// DefaultCertsDir is used when GINBOT_CERTS_PATH is unset. It is relative to the
-// working directory, so with the default the process must be launched from the repo root.
+// DefaultCertsDir is relative to the working directory.
 const DefaultCertsDir = "cert"
 
-// errNoCACertificates reports a CA file that parsed as a file but yielded no
-// usable certificate. x509.CertPool.AppendCertsFromPEM only reports this as a
-// false return with no error of its own, so the condition needs a sentinel of
-// its own to be distinguishable from a read failure.
+// AppendCertsFromPEM only returns false, so an empty pool needs a sentinel.
 var errNoCACertificates = errors.New("no ca certificates found in pem")
 
-// loadCredentials reads the CA pool and the key pair out of certsDir.
-//
-// The parameter order is (certsDir, caCertPEM, keyPEM, certPEM) — KEY BEFORE
-// CERT, which is the reverse of how tls.LoadX509KeyPair takes them. That is
-// deliberate and both call sites depend on it; do not silently reorder it.
+// Parameter order is key before cert, the reverse of tls.LoadX509KeyPair.
 func loadCredentials(certsDir, caCertPEM, keyPEM, certPEM string) (tls.Certificate, *x509.CertPool, error) {
-	// config.certsPath() already substitutes DefaultCertsDir, but this package is
-	// callable directly, so guard here too rather than joining onto "".
 	if certsDir == "" {
 		certsDir = DefaultCertsDir
 	}
@@ -55,12 +45,7 @@ func loadCredentials(certsDir, caCertPEM, keyPEM, certPEM string) (tls.Certifica
 	return cert, certPool, nil
 }
 
-// ServerTLSConfig builds the server's mutual TLS configuration from certsDir.
-//
-// NextProtos is deliberately left unset: http.Server.ServeTLS configures
-// HTTP/2 from http.Server.Protocols and appends "h2" itself, so the ALPN list
-// cmd/ginbot-server advertises comes from there. Hardcoding it here as well
-// would only create a second place that has to agree with the first.
+// NextProtos is left unset: ServeTLS appends "h2" itself from srv.Protocols.
 func ServerTLSConfig(certsDir string) (*tls.Config, error) {
 	tlsCert, certPool, err := loadCredentials(certsDir, "ca-cert.pem", "server-key.pem", "server-cert.pem")
 	if err != nil {
@@ -75,12 +60,7 @@ func ServerTLSConfig(certsDir string) (*tls.Config, error) {
 	}, nil
 }
 
-// ClientTLSConfig builds a client's mutual TLS configuration from certsDir.
-//
-// Stage 4 of the Connect port (pkg/grpc/client, pkg/discord, pkg/matrix) is
-// the intended caller: those packages need a *tls.Config to hand to
-// http2.Transport, not a credentials.TransportCredentials — that type was
-// grpc-go's, and has no Connect equivalent.
+// ServerName is left unset, so the peer is verified against the dialled host.
 func ClientTLSConfig(certsDir string) (*tls.Config, error) {
 	tlsCert, certPool, err := loadCredentials(certsDir, "ca-cert.pem", "client-key.pem", "client-cert.pem")
 	if err != nil {
@@ -94,13 +74,7 @@ func ClientTLSConfig(certsDir string) (*tls.Config, error) {
 	}, nil
 }
 
-// LoadServerTLSConfig loads the server's mutual TLS configuration from
-// certsDir.
-//
-// It is fatal on failure, on purpose: this runs during startup wiring, and a
-// server that came up without the mutual TLS it was configured for would be a
-// silent downgrade. The error-returning half lives in ServerTLSConfig so the
-// loading itself stays exercisable.
+// Fatal on failure: starting without the configured mTLS is a silent downgrade.
 func LoadServerTLSConfig(certsDir string) *tls.Config {
 	conf, err := ServerTLSConfig(certsDir)
 	if err != nil {

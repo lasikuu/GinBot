@@ -6,26 +6,7 @@ import (
 	"time"
 )
 
-// ── Assumed symbols from pkg/trigger (spec §7.7) ─────────────────────────────
-//
-//	const ForcedInterval = 60 * time.Second
-//
-//	type ForcedLimiter struct { /* unexported fields */ }
-//
-//	func NewForcedLimiter(now func() time.Time) *ForcedLimiter
-//	func (l *ForcedLimiter) Allow(authorID string) bool
-//	func (l *ForcedLimiter) Prune()
-//
-// The first Allow for an author succeeds; a second strictly before
-// ForcedInterval has elapsed is refused AND DOES NOT extend the window; Allow
-// at exactly ForcedInterval after the recorded fire succeeds; an empty
-// authorID is always refused; two authors do not interfere. Safe for
-// concurrent use. None of these exist yet; pkg/trigger does not exist as of
-// this writing.
-
-// fakeClock is a controllable time source for NewForcedLimiter, advanced only
-// by the test — never by wall-clock time, so the limiter's tests are
-// deterministic.
+// fakeClock is a controllable time source, advanced only by the test.
 type fakeClock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -47,7 +28,6 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// TestForcedLimiterFirstCallAllowed.
 func TestForcedLimiterFirstCallAllowed(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -57,7 +37,6 @@ func TestForcedLimiterFirstCallAllowed(t *testing.T) {
 	}
 }
 
-// TestForcedLimiterImmediateSecondCallRefused.
 func TestForcedLimiterImmediateSecondCallRefused(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -68,7 +47,6 @@ func TestForcedLimiterImmediateSecondCallRefused(t *testing.T) {
 	}
 }
 
-// TestForcedLimiterAllowsAtExactlyTheInterval.
 func TestForcedLimiterAllowsAtExactlyTheInterval(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -83,8 +61,6 @@ func TestForcedLimiterAllowsAtExactlyTheInterval(t *testing.T) {
 	}
 }
 
-// TestForcedLimiterJustBeforeTheIntervalIsRefused pins the other side of the
-// same boundary.
 func TestForcedLimiterJustBeforeTheIntervalIsRefused(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -96,10 +72,6 @@ func TestForcedLimiterJustBeforeTheIntervalIsRefused(t *testing.T) {
 	}
 }
 
-// TestForcedLimiterRefusalDoesNotExtendTheWindow: spamming Allow must not push
-// the next allowed fire further out than the FIRST recorded fire. t=0 allowed,
-// t=30s refused, t=60s allowed proves the window is anchored to t=0, not to the
-// refused attempt at t=30s (which would put the next allowed fire at t=90s).
 func TestForcedLimiterRefusalDoesNotExtendTheWindow(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -119,9 +91,6 @@ func TestForcedLimiterRefusalDoesNotExtendTheWindow(t *testing.T) {
 	}
 }
 
-// TestForcedLimiterEmptyAuthorIDAlwaysRefused: an unattributable forced fire
-// cannot be rate limited, so it is refused unconditionally rather than
-// treated as its own (shared) bucket.
 func TestForcedLimiterEmptyAuthorIDAlwaysRefused(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -133,8 +102,6 @@ func TestForcedLimiterEmptyAuthorIDAlwaysRefused(t *testing.T) {
 	}
 }
 
-// TestForcedLimiterAuthorsDoNotInterfere: one author being rate limited must
-// not affect another's independent window.
 func TestForcedLimiterAuthorsDoNotInterfere(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -145,14 +112,11 @@ func TestForcedLimiterAuthorsDoNotInterfere(t *testing.T) {
 	if !limiter.Allow("author-b") {
 		t.Error("author-b first Allow = false, want true (must not be blocked by author-a)")
 	}
-	// author-a is now within its own window and must still be refused.
 	if limiter.Allow("author-a") {
 		t.Error("author-a second immediate Allow = true, want false")
 	}
 }
 
-// TestNewForcedLimiterNilUsesTimeNow: passing nil must not panic and must fall
-// back to a working clock (time.Now), per the doc comment on NewForcedLimiter.
 func TestNewForcedLimiterNilUsesTimeNow(t *testing.T) {
 	limiter := NewForcedLimiter(nil)
 
@@ -161,10 +125,6 @@ func TestNewForcedLimiterNilUsesTimeNow(t *testing.T) {
 	}
 }
 
-// TestForcedLimiterConcurrentAllowIsRaceFree runs Allow from many goroutines so
-// `go test -race` exercises the limiter's shared state. It asserts something
-// concrete rather than merely "did not crash": across N authors called
-// concurrently exactly once each, every first call must succeed.
 func TestForcedLimiterConcurrentAllowIsRaceFree(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -190,9 +150,6 @@ func TestForcedLimiterConcurrentAllowIsRaceFree(t *testing.T) {
 	}
 }
 
-// TestForcedLimiterConcurrentAllowForTheSameAuthorAllowsExactlyOnce: many
-// goroutines racing Allow for the SAME author, all at the same instant, must
-// let exactly one through — the rate limiter's entire purpose.
 func TestForcedLimiterConcurrentAllowForTheSameAuthorAllowsExactlyOnce(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)
@@ -222,10 +179,6 @@ func TestForcedLimiterConcurrentAllowForTheSameAuthorAllowsExactlyOnce(t *testin
 	}
 }
 
-// TestForcedLimiterPruneDoesNotAffectAnAllowDecision: Prune bounds the map for
-// callers that run it periodically, but Allow's own decision must be
-// unaffected by whether Prune has run — Prune is a housekeeping call, not part
-// of the rate-limit contract itself for an author still within the window.
 func TestForcedLimiterPruneDoesNotAffectAnAllowDecision(t *testing.T) {
 	clock := newFakeClock(time.Unix(0, 0))
 	limiter := NewForcedLimiter(clock.Now)

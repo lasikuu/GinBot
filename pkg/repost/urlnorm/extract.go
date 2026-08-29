@@ -5,22 +5,13 @@ import (
 	"strings"
 )
 
-// urlPattern matches an absolute http or https URL. "|" is excluded from the
-// body so that Discord's ||spoiler|| wrapping does not get absorbed into the
-// match; "<" and ">" are excluded so that Discord's suppressed-embed
-// <https://...> form naturally stops the match at the closing bracket without
-// any special-casing (the opening bracket is never part of the match to begin
-// with, since it precedes the "https://" the pattern anchors on).
+// urlPattern matches an absolute http or https URL. The excluded characters
+// stop the match at Discord's ||spoiler|| bars and <suppressed-embed> brackets.
 var urlPattern = regexp.MustCompile(`(?i)https?://[^\s<>|]+`)
 
 // ExtractURLs returns every absolute http or https URL in text, in order of
-// appearance, deduplicated by exact string.
-//
-// This is deliberately not a naive greedy regexp applied verbatim: sentence
-// punctuation immediately after a URL — a period ending a sentence, a comma
-// before the next clause, a closing quote — is not part of the URL, and a
-// greedy character class would swallow it into the match, corrupting the
-// canonical form and any host/path extraction downstream.
+// appearance, deduplicated by exact string and stripped of trailing sentence
+// punctuation.
 func ExtractURLs(text string) []string {
 	matches := urlPattern.FindAllString(text, -1)
 	if len(matches) == 0 {
@@ -45,11 +36,7 @@ func ExtractURLs(text string) []string {
 }
 
 // trimTrailingPunctuation strips sentence punctuation trailing a matched URL.
-//
-// ')' and ']' are only stripped when UNBALANCED within the match — a
-// Wikipedia-style URL like ".../Foo_(bar)" legitimately ends with a
-// parenthesis, and stripping it unconditionally would corrupt exactly the
-// URLs most likely to contain one.
+// ')' and ']' only when unbalanced, since ".../Foo_(bar)" legitimately ends in one.
 func trimTrailingPunctuation(s string) string {
 	for s != "" {
 		last := s[len(s)-1]

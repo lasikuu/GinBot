@@ -1,18 +1,8 @@
-// Package urlnorm canonicalises URLs to a stable identity for WANHA repost
-// detection (W7). Everything here is a pure function: no network access, no
-// database, nothing that can fail for a reason other than the input itself.
-//
-// Two stages, matching docs/plans/wanha.md:
-//
-//  1. Generic normalisation — lowercase scheme and host, strip a leading
-//     www., drop the fragment and default port, strip tracking parameters,
-//     and sort what survives so ordering cannot defeat matching.
-//  2. A declarative per-host rule table that extracts a canonical source and
-//     id, e.g. youtube.com/watch?v=X and youtu.be/X both become
-//     "youtube:X". Anything not in the table — or that IS in the table but
-//     whose path does not match its extraction pattern — falls back to the
-//     fully normalised URL itself as its own identity, rather than guessing
-//     at an id and risking a false match.
+// Package urlnorm canonicalises URLs to a stable identity, in two pure stages:
+// generic normalisation (case, www., fragment, default port, tracking
+// parameters, query order), then a per-host rule table mapping e.g. both
+// youtube.com/watch?v=X and youtu.be/X to "youtube:X". Anything unmatched
+// falls back to the normalised URL as its own identity rather than guessing.
 package urlnorm
 
 import (
@@ -23,27 +13,22 @@ import (
 	"strings"
 )
 
-// ErrExcluded reports a URL that must never be indexed: the bot's own web
-// URL, or a platform message deep link. Quoting a message must never flag it
-// as a repost of itself.
+// ErrExcluded reports a URL that must never be indexed: an excluded host or a
+// platform message deep link.
 var ErrExcluded = errors.New("url is excluded from repost indexing")
 
-// ErrUnsupported reports input that is not an absolute http or https URL:
-// a relative reference, an unknown scheme, a missing host, or a URL carrying
-// userinfo (which is never legitimate on the platform CDNs or link
-// destinations this exists to canonicalise).
+// ErrUnsupported reports input that is not an absolute http or https URL, or
+// that carries userinfo.
 var ErrUnsupported = errors.New("url is not an absolute http or https url")
 
 // Result is a canonicalised URL.
 type Result struct {
-	// Source is the canonical source name, e.g. "youtube". "url" for the
-	// fallback, when no host rule matched or the matched rule's pattern did
-	// not fit the path.
+	// Source is the canonical source name, e.g. "youtube", or "url" for the
+	// fallback.
 	Source string
-	// ID is the extracted identifier. For the fallback source it is the
-	// fully normalised URL.
+	// ID is the extracted identifier, or the normalised URL for the fallback.
 	ID string
-	// SourceKey is Source + ":" + ID. This is the value that gets indexed.
+	// SourceKey is Source + ":" + ID, and is the value that gets indexed.
 	SourceKey string
 	// CanonicalURL is the fully normalised URL, kept for display.
 	CanonicalURL string
@@ -51,14 +36,13 @@ type Result struct {
 
 // Canonicaliser applies the normalisation rules.
 type Canonicaliser struct {
-	// excludedHosts is checked in addition to the platform message deep
-	// links that are always excluded. Matching is case-insensitive and also
-	// matches subdomains of each entry.
+	// excludedHosts is matched case-insensitively, and also matches
+	// subdomains of each entry.
 	excludedHosts map[string]struct{}
 }
 
-// New returns a Canonicaliser. extraExcludedHosts are additional hosts that
-// must never be indexed — the bot's own web URL, typically.
+// New returns a Canonicaliser excluding extraExcludedHosts on top of the
+// built-in platform deep links.
 func New(extraExcludedHosts []string) *Canonicaliser {
 	excluded := make(map[string]struct{}, len(extraExcludedHosts))
 	for _, host := range extraExcludedHosts {
@@ -73,9 +57,6 @@ func New(extraExcludedHosts []string) *Canonicaliser {
 	return &Canonicaliser{excludedHosts: excluded}
 }
 
-// defaultCanonicaliser backs the package-level Canonicalise, for callers that
-// have no extra exclusions of their own (tests, and anything not wired to
-// the server's configured web URL).
 var defaultCanonicaliser = New(nil)
 
 // Canonicalise normalises rawURL using only the built-in exclusions.
@@ -99,10 +80,8 @@ func (c *Canonicaliser) Canonicalise(rawURL string) (Result, error) {
 		return Result{}, ErrExcluded
 	}
 
-	// The host rule is resolved BEFORE the query is normalised, because which
-	// parameters count as tracking depends on whether this is a host we have a
-	// rule for (see isTrackingParam). canonicalizeGeneric therefore leaves
-	// RawQuery alone and it is set here.
+	// Order matters: which parameters count as tracking depends on whether a
+	// host rule matched, so canonicalizeGeneric leaves RawQuery alone.
 	hs, knownHost := matchHostSource(normalized)
 	normalized.RawQuery = normalizedQuery(normalized.RawQuery, knownHost)
 
@@ -117,11 +96,8 @@ func (c *Canonicaliser) Canonicalise(rawURL string) (Result, error) {
 				CanonicalURL: canonicalURL,
 			}, nil
 		}
-		// The host is one we know, but its path did not match the pattern we
-		// expect from it (a share link shape we have not seen, a bare
-		// homepage URL, and so on). Falling through to the generic "url"
-		// source rather than guessing at an id: a wrong id is a false
-		// positive, exactly what this whole redesign exists to avoid.
+		// Known host, unrecognised path shape: fall through to "url" rather
+		// than guess an id, since a wrong id is a false positive.
 	}
 
 	return Result{
@@ -132,8 +108,6 @@ func (c *Canonicaliser) Canonicalise(rawURL string) (Result, error) {
 	}, nil
 }
 
-// isExcluded reports whether normalized's host is, or is a subdomain of, an
-// entry in c.excludedHosts.
 func (c *Canonicaliser) isExcluded(normalized *url.URL) bool {
 	host := normalized.Hostname()
 	for excluded := range c.excludedHosts {
@@ -144,8 +118,8 @@ func (c *Canonicaliser) isExcluded(normalized *url.URL) bool {
 	return false
 }
 
-// discordDeepLinkHosts are Discord's own domains and its PTB/canary builds.
-// A message link on any of them has the shape /channels/<guild>/<channel>/<message>.
+// discordDeepLinkHosts serve message links shaped
+// /channels/<guild>/<channel>/<message>.
 var discordDeepLinkHosts = map[string]struct{}{
 	"discord.com":        {},
 	"discordapp.com":     {},
@@ -153,10 +127,8 @@ var discordDeepLinkHosts = map[string]struct{}{
 	"canary.discord.com": {},
 }
 
-// isPlatformDeepLink reports whether normalized points back into a chat
-// platform's own message-reference format, rather than at external content.
-// Quoting or linking a message must never make it look like a repost of
-// itself.
+// isPlatformDeepLink reports whether normalized points at a chat platform's own
+// message reference, which must never count as a repost of itself.
 func isPlatformDeepLink(normalized *url.URL) bool {
 	host := normalized.Hostname()
 
@@ -168,8 +140,7 @@ func isPlatformDeepLink(normalized *url.URL) bool {
 }
 
 // canonicalizeGeneric applies stage 1: scheme/host case, www-stripping,
-// fragment and default-port removal, trailing-slash and tracking-parameter
-// stripping, and query sorting.
+// fragment and default-port removal, and trailing-slash stripping.
 func canonicalizeGeneric(u *url.URL) (*url.URL, error) {
 	if !u.IsAbs() || u.Host == "" || u.User != nil {
 		return nil, ErrUnsupported
@@ -204,53 +175,34 @@ func canonicalizeGeneric(u *url.URL) (*url.URL, error) {
 		Scheme: scheme,
 		Host:   hostPort,
 		Path:   path,
-		// Left RAW on purpose: Canonicalise normalises it once the per-host
-		// rule is known, since that decides which parameters are tracking.
+		// Left raw: Canonicalise normalises it once the host rule is known.
 		RawQuery: u.RawQuery,
-		// Fragment deliberately omitted: it never carries identity for a
-		// canonicalised URL and two links differing only in fragment must
-		// compare equal.
+		// Fragment omitted: it never carries identity.
 	}, nil
 }
 
-// trackingParamAlways is stripped on every host. Each of these carries only
-// campaign or referrer attribution and never identity, so removing one can
-// never merge two distinct pages.
+// trackingParamAlways is stripped on every host: campaign or referrer
+// attribution only, so stripping one can never merge two distinct pages.
 var trackingParamAlways = map[string]struct{}{
 	"si":      {},
 	"igshid":  {},
 	"fbclid":  {},
 	"gclid":   {},
 	"ref_src": {},
-	// Acceptance criterion #5 names `ref` explicitly, and it is a referrer tag
-	// by near-universal convention. Two referral links to the same page SHOULD
-	// converge, so unlike `s` and `t` below this one carries no identity.
+	// A referrer tag by near-universal convention, so unlike `s` and `t` it
+	// carries no identity.
 	"ref": {},
-	// Discord CDN links carry a signed, EXPIRING triple. Two posts of the
-	// identical image get different signatures, so leaving these in means the
-	// URL never matches itself and the row is dead weight in the index. They
-	// are pure request authentication, never identity.
+	// Discord CDN's signed, expiring triple: request authentication, never
+	// identity, and different on every post of the same image.
 	"ex": {},
 	"is": {},
 	"hm": {},
 }
 
-// trackingParamKnownHost is stripped ONLY when a per-host rule matched.
-//
-// These names are ambiguous: they are tracking parameters on the big social
-// hosts and load-bearing identity anywhere else. `t` is a YouTube timestamp but
-// a phpBB topic id; `s` is a Twitter share tag but a WordPress search query.
-// Stripping them unconditionally collapses genuinely different pages onto one
-// source_key — viewtopic.php?t=100 and ?t=200 become the same key, as do
-// search?s=cats and search?s=dogs — which is a WANHA on unrelated content.
-// That is precisely the false-positive class this redesign exists to eliminate,
-// and it is why docs/plans/wanha.md W7 hedged the rule as "s, t (where
-// positional-time semantics do not apply)".
-//
-// On a host that DID match a rule the risk is absent, because the id comes
-// from the path or from a named parameter and the rest of the query is
-// discarded anyway — so stripping there costs nothing and keeps the canonical
-// URL tidy.
+// trackingParamKnownHost is stripped ONLY when a per-host rule matched: these
+// names are tracking on the big social hosts but identity elsewhere (`t` is a
+// phpBB topic id, `s` a WordPress search query), so a blanket strip would
+// collapse unrelated pages onto one source_key.
 var trackingParamKnownHost = map[string]struct{}{
 	"s":              {},
 	"t":              {},
@@ -260,13 +212,8 @@ var trackingParamKnownHost = map[string]struct{}{
 	"sender_device":  {},
 }
 
-// isTrackingParam reports whether key must be stripped. knownHost is true when
-// a per-host rule matched, which widens the set — see trackingParamKnownHost.
-//
-// Comparison is case-sensitive: query parameter names are, and treating
-// "UTM_source" as unrelated to "utm_source" is the safer failure — worst case
-// a tracking param survives, which cannot cause a false match on its own since
-// the underlying id is unaffected either way.
+// isTrackingParam reports whether key must be stripped; knownHost widens the
+// set. Comparison is case-sensitive, as query parameter names are.
 func isTrackingParam(key string, knownHost bool) bool {
 	if strings.HasPrefix(key, "utm_") {
 		return true
@@ -281,22 +228,15 @@ func isTrackingParam(key string, knownHost bool) bool {
 	return ok
 }
 
-// queryPair is one surviving key/value pair, kept as a pair rather than in a
-// url.Values map so it can be sorted by key THEN value — url.Values.Encode
-// only sorts by key.
+// queryPair is a pair rather than a url.Values entry so it can be sorted by
+// key then value; url.Values.Encode only sorts by key.
 type queryPair struct {
 	key   string
 	value string
 }
 
-// normalizedQuery strips tracking parameters from rawQuery and returns the
-// remainder sorted by key, then by value, so that two links differing only in
-// parameter order compare equal. knownHost widens which parameters count as
-// tracking — see isTrackingParam.
-//
-// A malformed query is not treated as an error: url.ParseQuery still returns
-// whatever it could decode, and best-effort canonicalisation of a slightly
-// malformed URL beats refusing to canonicalise it at all.
+// normalizedQuery strips tracking parameters and sorts the rest by key then
+// value. A malformed query is decoded best-effort rather than rejected.
 func normalizedQuery(rawQuery string, knownHost bool) string {
 	parsed, _ := url.ParseQuery(rawQuery)
 	if len(parsed) == 0 {

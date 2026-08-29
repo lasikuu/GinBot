@@ -1,9 +1,5 @@
 //go:build integration
 
-// Integration tests for pkg/db/file.go beyond the dedupe and orphan-listing
-// behaviour already covered by TestGetOrCreateFileByHashDedupesByHash and
-// TestListOrphanFilesExcludesFilesReferencedByALiveTrigger in
-// trigger_integration_test.go.
 package db
 
 import (
@@ -13,7 +9,6 @@ import (
 	"time"
 )
 
-// TestGetFileReturnsTheStoredRowAndErrNotFoundOnceDeleted.
 func TestGetFileReturnsTheStoredRowAndErrNotFoundOnceDeleted(t *testing.T) {
 	ctx := context.Background()
 	hash := "getfile-hash-" + time.Now().Format("150405.000000000")
@@ -57,7 +52,6 @@ func TestGetFileReturnsTheStoredRowAndErrNotFoundOnceDeleted(t *testing.T) {
 	}
 }
 
-// TestSoftDeleteFileOnAMissingRowReturnsErrNotFound.
 func TestSoftDeleteFileOnAMissingRowReturnsErrNotFound(t *testing.T) {
 	err := SoftDeleteFile(context.Background(), "018f0000-0000-7000-8000-0000000000ff")
 	if !errors.Is(err, ErrNotFound) {
@@ -65,10 +59,6 @@ func TestSoftDeleteFileOnAMissingRowReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// TestFileVisibleToCallerScopesByOwnerOrInstance: a file is visible when the
-// caller created the referencing trigger, OR when the caller's origin
-// instance is one the referencing trigger is scoped to — and invisible to
-// neither.
 func TestFileVisibleToCallerScopesByOwnerOrInstance(t *testing.T) {
 	owner := newTriggerFixture(t, "visible-owner")
 	stranger := newTriggerFixture(t, "visible-stranger")
@@ -87,7 +77,6 @@ func TestFileVisibleToCallerScopesByOwnerOrInstance(t *testing.T) {
 
 	owner.createTriggerWithFile(t, "visible-trigger-"+owner.suffix, fileID)
 
-	// The creator can see it, from anywhere (instanceID 0 = no origin instance).
 	visibleToOwner, err := FileVisibleToCaller(ctx, fileID, owner.userID, 0)
 	if err != nil {
 		t.Fatalf("FileVisibleToCaller(owner): %v", err)
@@ -96,7 +85,6 @@ func TestFileVisibleToCallerScopesByOwnerOrInstance(t *testing.T) {
 		t.Error("file not visible to its creator")
 	}
 
-	// A caller on the SAME instance, even if they didn't create it, can see it.
 	visibleOnInstance, err := FileVisibleToCaller(ctx, fileID, stranger.userID, owner.instanceID)
 	if err != nil {
 		t.Fatalf("FileVisibleToCaller(stranger, owner's instance): %v", err)
@@ -105,7 +93,6 @@ func TestFileVisibleToCallerScopesByOwnerOrInstance(t *testing.T) {
 		t.Error("file not visible to a caller on the instance the trigger is scoped to")
 	}
 
-	// Neither the creator nor scoped to the trigger's instance: invisible.
 	visibleToStranger, err := FileVisibleToCaller(ctx, fileID, stranger.userID, stranger.instanceID)
 	if err != nil {
 		t.Fatalf("FileVisibleToCaller(stranger, stranger's own instance): %v", err)

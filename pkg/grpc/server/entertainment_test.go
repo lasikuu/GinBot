@@ -11,14 +11,8 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// GetRandomNumber is exercised by calling the handler directly rather than
-// through the harness, because its own tests are about the random number
-// generator's boundary behaviour, not about clearance or origin (it is
-// public). connect.NewRequest/resp.Msg replace the raw pb.GetRandomNumberReq
-// in/out shape the grpc-go handler used to have, and connect.CodeOf replaces
-// status.Code — a *connect.Error has no GRPCStatus() method, so
-// google.golang.org/grpc/status.Code silently reports codes.Unknown for every
-// case below instead of the real code.
+// Called directly rather than through the harness: GetRandomNumber is public, so its
+// tests are about the generator's boundaries.
 
 func doublesReq(digits int32) *pb.GetRandomNumberReq {
 	reqType := pb.GetRandomNumberReq_DOUBLES
@@ -106,10 +100,7 @@ func TestGetRandomNumberInterval(t *testing.T) {
 	}
 }
 
-// Regression test for the panic that took down the whole server process.
-// rand.Int64N panics on n <= 0. The original guard compared bounds after
-// converting to int and computed upper-lower, which wraps negative when the
-// bounds straddle zero widely enough — so the guard passed and the panic fired.
+// rand.Int64N panics on n <= 0, and upper-lower wraps negative across a wide span.
 func TestGetRandomNumberIntervalRejectsUnusableRanges(t *testing.T) {
 	s := NewEntertainmentServer()
 

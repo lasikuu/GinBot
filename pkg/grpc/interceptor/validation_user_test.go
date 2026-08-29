@@ -8,22 +8,6 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// This file talks to the invoke helper in validate_test.go, not to
-// protovalidate directly, unlike its siblings (validation_rules_test.go,
-// validation_trigger_test.go, validation_instance_test.go,
-// validation_enum_test.go). Porting invoke from the deleted hand-rolled
-// gRPC-style interceptor to connectrpc.com/validate changed the error type
-// invoke returns from a gRPC status error to a *connect.Error, which
-// google.golang.org/grpc/status.Code does not recognise — it has no
-// GRPCStatus() method, so status.Code(err) silently reports codes.Unknown for
-// every rejection below instead of the real code. The two call sites are
-// therefore updated to connect.CodeOf, matching validate_test.go; nothing
-// else in this file changes.
-
-// These exercise the buf.validate constraints on SetLocaleReq and
-// SetTimezoneReq through the validation interceptor. They reuse the invoke
-// helper from validate_test.go.
-
 func setLocale(locale string) *pb.SetLocaleReq {
 	return pb.SetLocaleReq_builder{Locale: &locale}.Build()
 }
@@ -59,8 +43,7 @@ func TestSetLocaleRejectsEverythingElse(t *testing.T) {
 		{"empty", ""},
 		{"leading space", " en"},
 		{"trailing space", "en "},
-		// The pattern is anchored; RE2 anchors bind to the end of the text and
-		// not to the end of a line, so a trailing newline must not slip through.
+		// RE2 anchors bind to the end of the text, not of a line.
 		{"trailing newline", "en\n"},
 		{"two locales concatenated", "enfi"},
 		{"prefix of a supported locale", "e"},
@@ -84,8 +67,7 @@ func TestSetLocaleRejectsEverythingElse(t *testing.T) {
 	}
 }
 
-// The field carries no `required` rule, so an unset locale passes validation
-// and the handler is the one that has to decide what an absent locale means.
+// The field carries no `required` rule, so an unset locale reaches the handler.
 func TestSetLocaleUnsetPassesValidation(t *testing.T) {
 	req := pb.SetLocaleReq_builder{}.Build()
 
@@ -101,10 +83,8 @@ func TestSetLocaleUnsetPassesValidation(t *testing.T) {
 	}
 }
 
-// SetTimezoneReq declares only min_len = 1. This test pins that gap so it is a
-// recorded decision rather than an assumption: every timezone string that is
-// not empty reaches the handler, and resolving it against the IANA database is
-// the handler's job.
+// SetTimezoneReq declares only min_len = 1; resolving against the IANA database
+// is the handler's job.
 func TestSetTimezoneValidationOnlyRejectsEmpty(t *testing.T) {
 	tests := []struct {
 		name         string

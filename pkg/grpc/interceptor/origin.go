@@ -14,28 +14,15 @@ import (
 )
 
 // OriginResolver creates the instance and destination rows for a platform
-// origin when they do not exist yet, returning the destination id.
-//
-// It is injected, and its signature is that of db.GetOrCreateDestinationByMeta,
-// which does both inserts in one transaction with ON CONFLICT. A read-then-
-// insert here would race: two members typing in the same new guild at once
-// would both miss the read and both insert.
+// origin when they do not exist yet, returning the destination id. It must
+// upsert in one transaction: concurrent first calls from one guild race.
 type OriginResolver func(ctx context.Context, destination *pb.ReminderDestination) (int64, error)
 
 // originCacheMaxEntries bounds the set of origins already bootstrapped.
-// Without a bound the set grows with every channel the bot is ever addressed in.
 const originCacheMaxEntries = 4096
 
-// originCacheEvictDivisor sets how much of the set is dropped on overflow: one
-// entry in this many.
-//
-// Dropping the whole set instead would make the cache useless above the bound —
-// a busy deployment would refill it, hit the limit, and start over, so most
-// requests would pay a transaction. Evicting a fraction keeps the bulk of the
-// working set and amortises the scan over the entries it frees. The victims are
-// arbitrary rather than least-recently-used, which is fine: the only cost of
-// forgetting an origin is one redundant upsert, and that does not warrant
-// carrying an LRU.
+// originCacheEvictDivisor drops one entry in this many on overflow; dropping
+// the whole set would make the cache useless above the bound.
 const originCacheEvictDivisor = 4
 
 // originCache remembers which origins have already been written, so that the
@@ -57,8 +44,7 @@ func (c *originCache) known(key string) bool {
 	return ok
 }
 
-// remember records a successful bootstrap. Only success is recorded, so a
-// failed one is retried on the next call from the same origin.
+// remember records only successful bootstraps, so a failure is retried.
 func (c *originCache) remember(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -69,8 +55,7 @@ func (c *originCache) remember(key string) {
 	c.seen[key] = struct{}{}
 }
 
-// evictLocked frees room by dropping a fraction of the set. Go randomises map
-// iteration order, so which origins go is arbitrary.
+// evictLocked drops a fraction of the set; map order makes the victims arbitrary.
 func (c *originCache) evictLocked() {
 	remaining := len(c.seen) / originCacheEvictDivisor
 	if remaining == 0 {
@@ -86,94 +71,49 @@ func (c *originCache) evictLocked() {
 	}
 }
 
-// originContextKey holds the Origin a call itself came from, stashed by
-// OriginInterceptor whenever request headers carried one. Handlers that only
-// need to know a call's own origin (trigger scoping, WANHA's repost scope)
-// read it via OriginFromContext instead of re-parsing headers, which they no
-// longer have direct access to once they are several calls deep in a shared
-// helper.
 type originContextKey struct{}
 
 // OriginInterceptor creates the instance and destination rows for a guild or
-// channel the bot has not seen before, and makes the call's own origin
-// available to handlers via OriginFromContext.
-//
-// It only ever bootstraps for a call whose caller ClearanceInterceptor already
-// resolved, so it must be chained after that one.
-//
-// Bootstrap is best effort. A guild that cannot be recorded must not stop
-// someone rolling dice, so a failure is logged and the call proceeds.
+// channel the bot has not seen before, and exposes the call's own origin via
+// OriginFromContext. Must be chained after ClearanceInterceptor; best effort.
 type OriginInterceptor struct {
 	resolve OriginResolver
 	cache   *originCache
 }
 
-// NewOriginInterceptor builds an OriginInterceptor.
 func NewOriginInterceptor(resolve OriginResolver) *OriginInterceptor {
 	return &OriginInterceptor{resolve: resolve, cache: newOriginCache()}
 }
 
-// WrapUnary implements connect.Interceptor.
 func (i *OriginInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		return next(i.bootstrap(ctx, req.Header()), req)
 	}
 }
 
-// WrapStreamingClient is a no-op. Origin bootstrap is a server-side concern
-// here: wrapping the client half would apply it to outgoing calls this
-// process makes, and this server makes none through its own interceptor
-// chain.
+// WrapStreamingClient is a no-op: origin bootstrap is server-side only.
 func (i *OriginInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return next
 }
 
-// WrapStreamingHandler runs the same bootstrap the unary path does. It was a
-// no-op until TriggerService.GetFile became server-streaming: GetFile's
-// visibility check calls callerOriginInstanceID, which reads
-// OriginFromContext, so had this stayed a no-op a file visible only through
-// the caller's origin instance rather than through ownership would have
-// started returning NotFound — a silent authorisation-shaped regression, not a
-// missing feature.
-//
-// For OpenClientActionStream this does nothing, but the reason is a property
-// of THIS REPOSITORY'S CLIENTS, not of the interceptor: RunClientActionStream
-// attaches caller identity and no origin (pkg/grpc/client/reverse.go), because
-// a platform client's stream serves every guild and room that platform is in
-// for the life of the connection rather than one instance or channel it was
-// "opened from". With no origin headers, callermeta.OriginFromHeader reports
-// ok == false and bootstrap returns the context untouched.
-//
-// A registered caller that set the origin headers on a reverse stream by hand
-// WOULD bootstrap a row. That is deliberately not special-cased: it is exactly
-// what the same caller can already do on any unary call, originCache bounds
-// the repeat inserts identically, and the write requires a caller
-// ClearanceInterceptor has already resolved (see bootstrap). Excluding one
-// procedure by name here would buy nothing and add a second place where the
-// interceptor has to know which RPC it is running on.
+// WrapStreamingHandler runs the same bootstrap the unary path does; streaming
+// GetFile's visibility check reads OriginFromContext.
 func (i *OriginInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		return next(i.bootstrap(ctx, conn.RequestHeader()), conn)
 	}
 }
 
-// bootstrap is the unary implementation: it stashes the call's own origin into
-// the returned context whenever the request headers carried one, and — best
-// effort — writes the instance and destination rows for it the first time this
-// process sees it.
 func (i *OriginInterceptor) bootstrap(ctx context.Context, header http.Header) context.Context {
-	// Writing a row is tied to a caller who is authorised and registered.
-	// Public methods resolve nobody, so without this an unregistered user
-	// typing ??number or /ping in a channel the bot has not seen would insert
-	// a destination row — and Discord counts every thread as a channel, so
-	// anyone able to create threads could grow that table without limit.
+	// Writing a row requires a resolved caller: otherwise anyone able to create
+	// a Discord thread could grow the destination table without limit.
 	if _, resolved := CallerFromContext(ctx); !resolved {
 		return ctx
 	}
 
 	origin, ok := callermeta.OriginFromHeader(header)
 	if !ok {
-		// Also the normal path for a direct message, which belongs to no guild.
+		// The normal path for a direct message, which belongs to no guild.
 		return ctx
 	}
 	ctx = context.WithValue(ctx, originContextKey{}, origin)
@@ -182,16 +122,13 @@ func (i *OriginInterceptor) bootstrap(ctx context.Context, header http.Header) c
 		return ctx
 	}
 
-	// A destination is half of what is being created, so an origin without
-	// one is not worth a row.
 	if origin.DestinationUID == "" {
 		return ctx
 	}
 
 	meta, ok := MetaFromContext(ctx)
 	if !ok {
-		// An origin without a platform cannot be stored. The handler decides
-		// whether the missing metadata is fatal for it.
+		// An origin without a platform cannot be stored.
 		return ctx
 	}
 
@@ -203,14 +140,12 @@ func (i *OriginInterceptor) bootstrap(ctx context.Context, header http.Header) c
 	return ctx
 }
 
-// originKey identifies one origin on one platform. NUL separates the parts
-// because it cannot occur in a platform enum name or a platform identifier, so
-// two different origins cannot collide by running together.
+// originKey joins on NUL, which cannot occur in any part, so two different
+// origins cannot collide by running together.
 func originKey(platform pb.Platform, origin callermeta.Origin) string {
 	return strings.Join([]string{platform.String(), origin.InstanceUID, origin.DestinationUID}, "\x00")
 }
 
-// bootstrapOrigin writes the instance and destination rows, reporting success.
 func bootstrapOrigin(ctx context.Context, resolve OriginResolver, platform pb.Platform, origin callermeta.Origin) bool {
 	destination := pb.ReminderDestination_builder{
 		PlatformEnum:    platform.Enum(),
@@ -238,12 +173,8 @@ func bootstrapOrigin(ctx context.Context, resolve OriginResolver, platform pb.Pl
 	return true
 }
 
-// OriginFromContext returns the origin a call itself came from, stashed by
-// OriginInterceptor.
-//
-// ok is false when the call carried none — normal for a direct message — or
-// when no origin interceptor ran, which does not happen on the unary path once
-// OriginInterceptor is installed in the chain.
+// OriginFromContext returns ok false when the call carried no origin, which is
+// normal for a direct message.
 func OriginFromContext(ctx context.Context) (callermeta.Origin, bool) {
 	origin, ok := ctx.Value(originContextKey{}).(callermeta.Origin)
 	return origin, ok

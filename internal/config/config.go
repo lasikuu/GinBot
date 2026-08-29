@@ -22,10 +22,9 @@ type OptionsModel struct {
 var AppEnvironment enum.Environment
 var LogLevel zapcore.Level
 
-// Options stores the global configuration for the server
+// Options is nil until SetEnv runs.
 var Options *OptionsModel
 
-// LoadEnv loads the environment variables.
 func LoadEnv() {
 	var err = godotenv.Load()
 	if err != nil {
@@ -36,13 +35,8 @@ func LoadEnv() {
 	loadLogLevel()
 }
 
-// SetEnv sets the environment variables into Options and Credentials
 func SetEnv() {
-	// GINBOT_WEB_URL is deliberately NOT carried on OptionsModel. Nothing reads
-	// the raw URL; the only thing derived from it is the repost exclusion
-	// below, and an exported field that is written and never read is invisible
-	// to `unused` and outlives the reason it was added. Add it back when
-	// something needs the URL itself.
+	// Not on OptionsModel: only the repost exclusion below derives from it.
 	web := webURL()
 
 	Options = &OptionsModel{
@@ -90,11 +84,7 @@ func SetEnv() {
 	}
 }
 
-// webURL returns the bot's own public web address, raw and unnormalised.
-//
-// It stays raw on purpose: hostOf normalises it at the point of use, and
-// trimming or lowercasing here as well would give the two layers different
-// ideas of what was configured. Empty means the bot has no web presence.
+// webURL is unnormalised; hostOf normalises it at the point of use.
 func webURL() string {
 	return os.Getenv("GINBOT_WEB_URL")
 }

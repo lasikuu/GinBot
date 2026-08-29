@@ -1,20 +1,7 @@
 //go:build integration
 
-// Integration coverage for the reminder producer. Requires a live Postgres, the
-// same one every other integration suite in this repository uses:
-//
-//	docker compose -f docker-compose.dev.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/cron/cronjob/...
-//
-// TestMain is declared in orphan_test.go in this same package and is reused, not
-// redeclared; requireDatabase below is lazy for that reason.
-//
-// SCOPE: Remind's PRODUCER seam — the mapping from a claimed reminder row to the
-// ReminderDelivery pushed over the reverse stream. Nothing here re-tests
-// ClaimDueReminders' SQL (pkg/db) or the routing the Discord client does with the
-// payload once it arrives (pkg/discord). What is only testable here is the join
-// between them, and it is only testable here because Remind reads a package-level
-// pool and writes to a package-level server: there is no seam to inject.
+// Integration coverage for Remind's producer seam. Needs a live Postgres, and
+// reuses TestMain from orphan_test.go, hence the lazy setup below.
 
 package cronjob
 
@@ -45,8 +32,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// fixtureReminderCap is high enough never to be reached, so a test that is not
-// about the per-owner cap cannot trip over it.
 const fixtureReminderCap = 1000
 
 var (
@@ -54,9 +39,7 @@ var (
 	databasePool *pgxpool.Pool
 )
 
-// requireDatabase brings up pkg/db's pool, plus a second pool of this file's
-// own for the raw DELETEs cleanup needs — pkg/db keeps its pool unexported and
-// exposes no way to hard-delete a reminder.
+// requireDatabase adds a second pool: pkg/db exposes no hard delete.
 func requireDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -68,8 +51,8 @@ func requireDatabase(t *testing.T) *pgxpool.Pool {
 		db.InitDB()
 		db.EnsureLatestVersion()
 
-		// Built the same way pkg/db builds it, so a password with reserved
-		// characters is escaped rather than corrupting the URI.
+		// Built as pkg/db builds it, so a reserved character in the password is
+		// escaped rather than corrupting the URI.
 		uri := url.URL{
 			Scheme: "postgres",
 			User:   url.UserPassword(config.Options.DB.Username, config.Options.DB.Password),
@@ -92,36 +75,16 @@ func requireDatabase(t *testing.T) *pgxpool.Pool {
 	return databasePool
 }
 
-// ── A real client on the other end of the reverse stream ─────────────────────
-
-// pushedActions is a live platform client: a real gRPC stream against the
-// ReverseServer that Remind pushes into.
-//
-// A fake is not an option here. Remind writes to service.ReverseServer, a
-// package-level singleton, and ReverseServer's registry and sender goroutine are
-// unexported — so the only way to observe what it pushed is to be a client.
+// pushedActions is a real client stream, since ReverseServer's registry and
+// sender goroutine are unexported.
 type pushedActions struct {
-	// notifications carries every SEND_NOTIFICATION the server pushed.
 	notifications chan *pb.OpenClientActionStreamResp
-	// registered closes once a probe action has made the full round trip, which
-	// is the only positive proof the server has admitted this client. Pushing
-	// before that point fans out to an empty registry and is silently dropped.
+	// registered closes once a probe round-trips; an earlier push is dropped.
 	registered chan struct{}
 }
 
-// remindProducerCallerUID is the platform uid the reverse stream in this file
-// opens as. Its value is arbitrary: remindProducerResolver admits it
-// unconditionally, because this suite is about Remind's producer seam and not
-// about authorization — the clearance interceptor covering this stream is
-// pkg/grpc/server's to prove.
 const remindProducerCallerUID = "remind-producer-caller"
 
-// remindProducerResolver is an interceptor.CallerResolver that admits
-// remindProducerCallerUID at CLEARANCE_REGISTERED — the floor
-// OpenClientActionStream enforces (interceptor.DefaultRequirements) since
-// ClearanceInterceptor started covering the streaming path too. Any other
-// identity is unknown, matching db.ErrNotFound's contract, though nothing in
-// this file drives one.
 func remindProducerResolver(_ context.Context, _ pb.Platform, platformUID string) (*model.User, error) {
 	if platformUID != remindProducerCallerUID {
 		return nil, db.ErrNotFound
@@ -133,9 +96,7 @@ func remindProducerResolver(_ context.Context, _ pb.Platform, platformUID string
 	}, nil
 }
 
-// startPlatformClient stands up a ReverseServer, installs it as the one Remind
-// pushes to, and connects a client that has demonstrably registered by the time
-// this returns.
+// startPlatformClient returns only once a client has demonstrably registered.
 func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 	t.Helper()
 
@@ -145,13 +106,8 @@ func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 	service.ReverseServer = reverse
 	t.Cleanup(func() { service.ReverseServer = previous })
 
-	// ClearanceInterceptor is installed now, where it was not before: the
-	// reverse handler reads the caller's platform from context metadata
-	// ClearanceInterceptor stashes (see pkg/grpc/server/reverse.go's
-	// getMetadata call), rather than from the message body, since stage 5 of
-	// the Connect port. Without it, OpenClientActionStream fails closed with
-	// Internal before ever reaching the registry — there is no longer a
-	// message-only path around it, unlike before this stage.
+	// Required: the reverse handler reads the platform from the metadata this
+	// interceptor stashes, not from the message body.
 	handlerOpts := []connect.HandlerOption{
 		connect.WithInterceptors(interceptor.NewClearanceInterceptor(interceptor.DefaultRequirements(), remindProducerResolver)),
 	}
@@ -159,47 +115,34 @@ func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 	mux := http.NewServeMux()
 	mux.Handle(ginbotv1connect.NewReverseServiceHandler(reverse, handlerOpts...))
 
-	// EnableHTTP2 + StartTLS, matching pkg/grpc/server's harness: a bidi stream
-	// needs a real HTTP/2 connection and HTTP/1.1 cannot carry one at all.
+	// A bidi stream needs real HTTP/2; HTTP/1.1 cannot carry one at all.
 	srv := httptest.NewUnstartedServer(mux)
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 
 	httpClient := srv.Client()
 	ctx, cancel := context.WithCancel(context.Background())
-	// Attached so callermeta.NewClientInterceptor (installed on the client
-	// below) stamps the ginbot-platform-enum / ginbot-user-id headers
-	// ClearanceInterceptor now resolves the caller from.
 	ctx = callermeta.NewOutgoingContext(ctx, platform, remindProducerCallerUID)
 
 	t.Cleanup(func() {
 		cancel()
-		// Shutdown BEFORE the server closes, which is cmd/ginbot-server's
-		// ordering: http.Server.Shutdown waits for handlers to return without
-		// cancelling their contexts, and a reverse-stream handler waiting for a
-		// client message never returns on its own.
+		// Before srv.Close: a parked stream handler never returns on its own.
 		reverse.Shutdown()
-		// Cancelling the stream's context does not close the pooled HTTP/2
-		// connection it rode on, and srv.Close waits for every connection to go
-		// inactive — so without this the cleanup hangs rather than finishing.
+		// Cancelling the stream context does not close the pooled connection,
+		// and srv.Close waits for every connection to go inactive.
 		httpClient.CloseIdleConnections()
 		srv.Close()
 	})
 
 	client := ginbotv1connect.NewReverseServiceClient(httpClient, srv.URL, connect.WithInterceptors(callermeta.NewClientInterceptor()))
 	stream := client.OpenClientActionStream(ctx)
-	// A hello, not a registration: OpenClientActionStreamReq carries no
-	// fields since stage 5 of the Connect port. Connect issues the underlying
-	// HTTP request lazily on the first Send, so this still has to happen —
-	// see pkg/grpc/client/reverse.go's runOnce for the production equivalent.
+	// Connect issues the HTTP request lazily, so this hello opens the stream.
 	if err := stream.Send(pb.OpenClientActionStreamReq_builder{}.Build()); err != nil {
 		t.Fatalf("send hello: %v", err)
 	}
 
 	pushed := &pushedActions{
-		// Buffered well past the two reminders this file creates, because the
-		// claim is global: leftover due rows from another suite are pushed to
-		// this client too, and a full channel would park the receive loop.
+		// The claim is global, and a full channel parks the receive loop.
 		notifications: make(chan *pb.OpenClientActionStreamResp, 256),
 		registered:    make(chan struct{}),
 	}
@@ -211,8 +154,7 @@ func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 			if err != nil {
 				return
 			}
-			// The heartbeat is the registration probe below and never a
-			// reminder, so it is consumed here rather than collected.
+			// The heartbeat is the registration probe, never a reminder.
 			if in.GetClientAction() == pb.ClientAction_CLIENT_ACTION_SEND_TEST {
 				closeOnce.Do(func() { close(pushed.registered) })
 				continue
@@ -226,12 +168,8 @@ func startPlatformClient(t *testing.T, platform pb.Platform) *pushedActions {
 	return pushed
 }
 
-// waitForRegistration pushes heartbeats until one comes back.
-//
-// Registration has no positive signal on the wire and SendAction is a silent
-// drop for a platform with no clients, so a test that simply slept would race:
-// too short and Remind's push lands in an empty registry, and the test fails
-// claiming the producer sent nothing. A round-tripped probe is proof.
+// waitForRegistration probes until one round-trips: registration has no wire
+// signal, and SendAction silently drops with no clients.
 func waitForRegistration(t *testing.T, reverse *server.ReverseServer, platform pb.Platform, pushed *pushedActions) {
 	t.Helper()
 
@@ -256,11 +194,8 @@ func waitForRegistration(t *testing.T, reverse *server.ReverseServer, platform p
 	t.Fatal("the client action stream never registered; nothing would receive a reminder push")
 }
 
-// awaitDelivery waits for the notification carrying reminderID.
-//
-// Filtered by id rather than taking the first arrival, because ClaimDueReminders
-// claims every due row in the database: another suite's leftover reminder is
-// pushed to this same client and would otherwise be asserted against.
+// awaitDelivery filters by id rather than taking the first arrival, because
+// ClaimDueReminders claims every due row in the database.
 func (p *pushedActions) awaitDelivery(t *testing.T, reminderID string) *pb.OpenClientActionStreamResp {
 	t.Helper()
 
@@ -278,25 +213,12 @@ func (p *pushedActions) awaitDelivery(t *testing.T, reminderID string) *pb.OpenC
 	}
 }
 
-// ── Fixtures ─────────────────────────────────────────────────────────────────
-
-// uniqueSuffix keeps identities from separate runs, and from the two fixtures in
-// one run, apart.
 func uniqueSuffix(label string) string {
 	return label + "-" + time.Now().Format("150405.000000000")
 }
 
-// dueReminder inserts an owner, a destination and one reminder already past its
-// fire time, and registers cleanup for all of it.
-//
-// ownerPlatform is separable from destinationPlatform because ClaimDueReminders
-// resolves the owner's platform id by joining platform_user on the DESTINATION's
-// platform. An owner who never linked that platform yields a NULL
-// OwnerPlatformUID — the nullable column the producer has to flatten.
-//
-// destinationMeta is passed in rather than derived so a fixture can supply a
-// shape with no destination_uid key at all, which is what makes
-// destination_meta->>'destination_uid' NULL.
+// dueReminder takes ownerPlatform apart from destinationPlatform to produce a
+// NULL OwnerPlatformUID; destinationMeta may omit destination_uid entirely.
 func dueReminder(
 	t *testing.T,
 	pool *pgxpool.Pool,
@@ -316,8 +238,7 @@ func dueReminder(
 		t.Fatalf("CreateUser: %v", err)
 	}
 	t.Cleanup(func() {
-		// platform_user.user_id has no ON DELETE CASCADE, so user_account has to
-		// go second or the foreign key rejects the delete.
+		// No ON DELETE CASCADE, so user_account must go second.
 		if _, err := pool.Exec(ctx, `DELETE FROM platform_user WHERE user_id = $1`, userID); err != nil {
 			t.Errorf("cleanup platform_user for %s: %v", userID, err)
 		}
@@ -349,10 +270,8 @@ func dueReminder(
 		}
 	})
 
-	// Already due, so the very next claim picks it up. The gt_now constraint on
-	// CreateReminderReq.datetime is a protovalidate rule enforced by the RPC
-	// interceptor; db.CreateReminder is below that layer and inserts what it is
-	// given, which is what lets a producer test exist without a scheduler.
+	// Already due: datetime's gt_now rule lives in the RPC interceptor, above
+	// db.CreateReminder.
 	timezone := "UTC"
 	req := pb.CreateReminderReq_builder{
 		Datetime: timestamppb.New(time.Now().Add(-time.Minute)),
@@ -373,31 +292,7 @@ func dueReminder(
 	return reminderID, ownerUID
 }
 
-// ── The producer ─────────────────────────────────────────────────────────────
-
-// TestRemindPushesEveryClaimedValueAsATypedDelivery.
-//
-// The claimed row has four values the client needs and three of them are
-// nullable. Before the typed payload, each was written into a Struct under a
-// string key that only a shared constant tied to the reader; a rename or an
-// omission on either side produced an empty string on the other and nothing
-// failed. The oneof removes that failure mode at compile time — but not the one
-// this test covers, which is the producer reading the WRONG COLUMN into the right
-// field, or dropping one altogether.
-//
-// Two reminders, claimed by a single Remind call, cover the two ends of the
-// nullability:
-//
-//   - "full" has a message, a resolvable channel and an owner registered on the
-//     destination's platform.
-//   - "sparse" has none of the three. Its message column is NULL (db.CreateReminder
-//     maps an empty string to NULL), its destination_meta carries no
-//     destination_uid key so the extraction yields NULL, and its owner is
-//     registered on Matrix while the destination is Discord, so the platform_user
-//     LEFT JOIN misses. All three must arrive as empty strings that are SET, not
-//     as an omitted or unset field: "" and absent mean the same thing to the
-//     client, and flattening them here is what lets it read every field
-//     unconditionally.
+// "full" has all three nullable values, "sparse" has none of them.
 func TestRemindPushesEveryClaimedValueAsATypedDelivery(t *testing.T) {
 	pool := requireDatabase(t)
 	pushed := startPlatformClient(t, pb.Platform_PLATFORM_DISCORD)
@@ -408,10 +303,8 @@ func TestRemindPushesEveryClaimedValueAsATypedDelivery(t *testing.T) {
 		pb.Platform_PLATFORM_DISCORD, pb.Platform_PLATFORM_DISCORD,
 		fullOrigin.DestinationMeta(), fullMessage)
 
-	// No destination_uid key at all. A destination_meta of {} would collide with
-	// every other keyless destination on the unique index, so the shape carries
-	// an unrelated key instead — which is exactly what a platform that has not
-	// been taught to write destination_uid would produce.
+	// No destination_uid; an unrelated key keeps {} from colliding with every
+	// other keyless destination on the unique index.
 	sparseMeta := &structpb.Struct{Fields: map[string]*structpb.Value{
 		"unrelated": structpb.NewStringValue(uniqueSuffix("sparse")),
 	}}
@@ -431,9 +324,7 @@ func TestRemindPushesEveryClaimedValueAsATypedDelivery(t *testing.T) {
 		if in.GetClientAction() != pb.ClientAction_CLIENT_ACTION_SEND_NOTIFICATION {
 			t.Errorf("client action = %v, want SEND_NOTIFICATION", in.GetClientAction())
 		}
-		// Checked before the fields, because every accessor below returns the
-		// zero value for the wrong arm and would report four confusing
-		// mismatches instead of one accurate line.
+		// Checked first: a wrong arm zeroes every accessor below.
 		if in.WhichPayload() != pb.OpenClientActionStreamResp_ReminderDelivery_case {
 			t.Fatalf("payload arm = %v, want reminder_delivery", in.WhichPayload())
 		}
@@ -487,9 +378,6 @@ func TestRemindPushesEveryClaimedValueAsATypedDelivery(t *testing.T) {
 			}
 		}
 
-		// The id is never legitimately empty, and it is the whole reason the
-		// other three may be: without it the client drops the delivery instead
-		// of posting a reminder it could never confirm.
 		if !delivery.HasReminderId() || delivery.GetReminderId() == "" {
 			t.Error("reminder_id is empty; the client would drop this delivery rather than post it")
 		}

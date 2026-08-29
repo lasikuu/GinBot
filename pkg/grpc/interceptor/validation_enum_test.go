@@ -9,41 +9,13 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// The three-rule enum contract, applied to every enum field that carries it.
-//
-// The rules are `required`, `enum.defined_only` and `enum.not_in = 0`, and the
-// reason all three are needed is not the intuitive one. Established
-// empirically against the real validator. This was first documented on
-// OpenClientActionStreamReq.platform_enum in reverse.proto, before that RPC
-// moved identity onto the ginbot-platform-enum header and the field — along
-// with every protovalidate rule on it — was deleted; the reasoning below is
-// restated because the fields that still carry it need it as much as that
-// one did:
-//
-//   - `required` is a PRESENCE check. Every field here has explicit presence,
-//     so a client that explicitly sets the enum's zero value SATISFIES it.
-//     Only an absent field fails it.
-//   - `enum.defined_only` rejects a number the enum does not declare, e.g. 99.
-//     It does NOT reject 0, because 0 is declared — it is the _UNSPECIFIED
-//     member.
-//   - `enum.not_in = 0` is therefore the only rule that actually refuses
-//     _UNSPECIFIED.
-//
-// So each rule catches something neither of the others does, and a test that
-// exercised only one input could not tell you which rule was doing the work: a
-// suite that only sent 99 would still pass with `required` and `not_in`
-// deleted. Every field below is therefore driven with THREE distinct inputs
-// plus a valid one, and each is asserted to produce exactly one violation,
-// naming exactly one rule.
-//
-// ReminderDestination.platform_enum and RepostCandidate.kind previously carried
-// a bare `required`, which meant an explicit PLATFORM_UNSPECIFIED or
-// REPOST_KIND_UNSPECIFIED sailed through into a handler that had to defend
-// itself. They are brought up to the same standard here.
+// All three of `required`, `enum.defined_only` and `enum.not_in = 0` are needed:
+// `required` is a presence check that an explicit zero satisfies,
+// `enum.defined_only` accepts 0 because _UNSPECIFIED is declared, and only
+// `not_in` refuses it. Each input below isolates one rule.
 
-// undefinedPlatform is a number Platform does not declare. Far outside the
-// declared range (0..6) rather than one past the end, so adding a platform
-// cannot quietly make these tests stop testing anything.
+// undefinedPlatform is far outside the declared range (0..6), so adding a
+// platform cannot quietly make these tests stop testing anything.
 const undefinedPlatform = pb.Platform(99)
 
 // undefinedRepostKind is the same idea for RepostKind (declared range 0..4).
@@ -63,14 +35,12 @@ type enumContract struct {
 	unspecifiedInput func() proto.Message
 }
 
-// futureTimestamp satisfies CreateReminderReq.datetime's timestamp.gt_now.
-// Rebuilt per call: a shared value goes stale as a test binary runs.
+// futureTimestamp is rebuilt per call: a shared value goes stale as a test runs.
 func futureTimestamp() *timestamppb.Timestamp {
 	return timestamppb.New(time.Now().Add(time.Hour))
 }
 
-// reminderWith wraps a destination in an otherwise-valid CreateReminderReq, so
-// the only thing a violation can be about is the destination's platform.
+// reminderWith wraps a destination in an otherwise-valid CreateReminderReq.
 func reminderWith(destination *pb.ReminderDestination) *pb.CreateReminderReq {
 	timezone := "UTC"
 	message := "enum contract"
@@ -83,8 +53,7 @@ func reminderWith(destination *pb.ReminderDestination) *pb.CreateReminderReq {
 	}.Build()
 }
 
-// destinationBuilder is ReminderDestination minus its platform, which each case
-// supplies (or does not).
+// destinationBuilder is ReminderDestination minus its platform.
 func destinationBuilder() pb.ReminderDestination_builder {
 	return pb.ReminderDestination_builder{
 		InstanceMeta:    mustStruct(map[string]any{"instance_uid": "guild-1"}),
@@ -131,10 +100,8 @@ func enumContracts() []enumContract {
 	return []enumContract{
 		{
 			name: "TriggerInstance.platform_enum",
-			// Exercised through TryTriggerReq. The rules live on
-			// TriggerInstance itself, so every RPC that carries one — TryTrigger,
-			// ExecTrigger, GetTriggerStats, and the instances lists on
-			// Create/Update/ListTriggers — inherits them from here.
+			// The rules live on TriggerInstance, so every RPC carrying one
+			// inherits them from here.
 			path: "instance.platform_enum",
 			validInput: func() proto.Message {
 				b := instanceBuilder()
@@ -224,8 +191,7 @@ func enumContracts() []enumContract {
 	}
 }
 
-// A well-formed enum must still be accepted. Without this, rules that refused
-// everything would satisfy all three rejection tests below.
+// Without this, rules that refused everything would satisfy all three tests below.
 func TestEnumContractAcceptsADefinedValue(t *testing.T) {
 	for _, contract := range enumContracts() {
 		t.Run(contract.name, func(t *testing.T) {
@@ -234,9 +200,6 @@ func TestEnumContractAcceptsADefinedValue(t *testing.T) {
 	}
 }
 
-// Isolates `required`, and nothing else. An absent field is trivially
-// expressible in Go and is the default in several other languages' builders,
-// so this is a real input, not a synthetic one.
 func TestEnumContractRejectsAnAbsentValue(t *testing.T) {
 	for _, contract := range enumContracts() {
 		t.Run(contract.name, func(t *testing.T) {
@@ -245,12 +208,7 @@ func TestEnumContractRejectsAnAbsentValue(t *testing.T) {
 	}
 }
 
-// Isolates `enum.defined_only`, and nothing else.
-//
-// Protobuf enums are open: a number the enum does not declare round-trips
-// through the generated code without complaint and arrives at the handler as
-// pb.Platform(99). No handler check catches it either — they test for
-// _UNSPECIFIED, and 99 is not that.
+// Protobuf enums are open: an undeclared number reaches the handler intact.
 func TestEnumContractRejectsAnUndefinedNumber(t *testing.T) {
 	for _, contract := range enumContracts() {
 		t.Run(contract.name, func(t *testing.T) {
@@ -259,12 +217,7 @@ func TestEnumContractRejectsAnUndefinedNumber(t *testing.T) {
 	}
 }
 
-// Isolates `enum.not_in = 0`, and nothing else.
-//
-// This is the case that `required` and `enum.defined_only` between them do NOT
-// catch, which is the entire reason the third rule exists. A field carrying
-// only the first two accepts an explicit _UNSPECIFIED cleanly — verified
-// against the real validator, not assumed.
+// The case `required` and `enum.defined_only` between them do not catch.
 func TestEnumContractRejectsAnUnspecifiedValue(t *testing.T) {
 	for _, contract := range enumContracts() {
 		t.Run(contract.name, func(t *testing.T) {

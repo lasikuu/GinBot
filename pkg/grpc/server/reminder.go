@@ -16,12 +16,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// maxActiveRemindersPerUser caps how many pending reminders one user may hold.
-//
-// The limit is FailedPrecondition rather than ResourceExhausted: the caller can
-// fix it themselves (delete a reminder) and the errorMessage mapping surfaces
-// FailedPrecondition verbatim, so the user is told the actual limit instead of a
-// generic "resource exhausted".
 const maxActiveRemindersPerUser = 100
 
 type ReminderServer struct {
@@ -54,8 +48,7 @@ func (s *ReminderServer) GetReminder(ctx context.Context, connReq *connect.Reque
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get reminder"))
 	}
 
-	// Reminders are private to their creator. NotFound rather than
-	// PermissionDenied so the response does not confirm that the id exists.
+	// NotFound rather than PermissionDenied, so it cannot confirm the id exists.
 	if reminderRow.UserID == nil || *reminderRow.UserID != caller.ID {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
@@ -71,10 +64,7 @@ func (s *ReminderServer) GetReminder(ctx context.Context, connReq *connect.Reque
 	}.Build()), nil
 }
 
-// ListReminders is caller-scoped: only the caller's own reminders are returned.
-// The optional filters (limit, offset, status, period, message search) narrow
-// within that scope, and the request has no field that could widen it to another
-// user.
+// ListReminders is caller-scoped; no request field can widen it to another user.
 func (s *ReminderServer) ListReminders(ctx context.Context, connReq *connect.Request[pb.ListRemindersReq]) (*connect.Response[pb.ListRemindersResp], error) {
 	req := connReq.Msg
 
@@ -110,8 +100,6 @@ func (s *ReminderServer) ListReminders(ctx context.Context, connReq *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list reminders"))
 	}
 
-	// The destinations arrive with the rows: ListRemindersByUser joins them, so a
-	// listing is one query rather than one plus a destination lookup per row.
 	out := make([]*pb.Reminder, 0, len(reminders))
 	for _, listed := range reminders {
 		out = append(out, listed.Reminder.ToProto(listed.Destination))
@@ -130,9 +118,6 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, connReq *connect.Re
 		return nil, err
 	}
 
-	// The validation interceptor covers these too, but it is wired only in
-	// cmd/ginbot-server, and AGENTS.md requires handlers to check required
-	// fields themselves.
 	if !req.HasDatetime() || !req.HasTimezone() {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("datetime and timezone are required"))
 	}
@@ -144,9 +129,7 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("destination is required"))
 	}
 
-	// Validate the repeat schedule semantically. The proto's regex only checks
-	// the string's shape, so "99 99 99 99 99" reaches here; reject it, and reject
-	// a repeat more frequent than the floor for its destination.
+	// The proto regex only checks shape, so "99 99 99 99 99" reaches here.
 	if req.HasRepeatCron() {
 		if err := reminder.ValidateRepeatInterval(req.GetRepeatCron(), isDMDestination(req.GetDestination())); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s", err.Error()))
@@ -159,9 +142,7 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve destination"))
 	}
 
-	// The per-user cap is enforced inside the insert's transaction, not by a
-	// count here: a check-then-insert lets two concurrent creates at the limit
-	// both pass the check and both write.
+	// The cap is enforced inside the insert's transaction; check-then-insert would race.
 	reminderID, err := db.CreateReminder(ctx, req, caller.ID, destinationID, maxActiveRemindersPerUser)
 	if errors.Is(err, db.ErrReminderCapReached) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("you already have the maximum of %d active reminders", maxActiveRemindersPerUser))
@@ -171,8 +152,6 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create reminder"))
 	}
 
-	// Analytics: record the creation. A failure here must not fail the create —
-	// the reminder exists and will fire — so it is logged, not returned.
 	if err := db.CreateActionRecord(ctx, pb.ActionType_ACTION_TYPE_REMINDER_CREATED, caller.ID, nil); err != nil {
 		log.Z.Error("failed to record reminder creation", zap.Error(err))
 	}
@@ -194,8 +173,7 @@ func (s *ReminderServer) DeleteReminder(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	// Caller-scoped soft delete. ErrNotFound covers another user's reminder, so
-	// a caller cannot delete or probe one that is not theirs.
+	// ErrNotFound covers another user's reminder, so it cannot be probed.
 	err = db.SoftDeleteReminderByUser(ctx, req.GetId(), caller.ID)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
@@ -229,20 +207,11 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("destination is required"))
 	}
 
-	// A reminder can only be moved into the future.
 	if !req.GetDatetime().AsTime().After(time.Now()) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("datetime must be in the future"))
 	}
 
-	// repeat_cron is the one patch-shaped field on this request: absent means
-	// "leave the stored schedule alone", so an edit that only changes the message
-	// no longer destroys an existing repeat. An explicitly EMPTY value is the
-	// documented sentinel for clearing it.
-	//
-	// A supplied schedule gets exactly the checks create applies — the same
-	// semantic cron parse and the same minimum-interval floor for the
-	// destination — because an update could otherwise install a schedule create
-	// would have refused.
+	// repeat_cron is patch-shaped: absent keeps the schedule, empty clears it.
 	updateRepeat := req.HasRepeatCron()
 	repeatCron := req.GetRepeatCron()
 	if updateRepeat && repeatCron != "" {
@@ -257,8 +226,6 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve destination"))
 	}
 
-	// Caller-scoped update; ErrNotFound covers another user's reminder, matching
-	// GetReminder's privacy pattern.
 	err = db.UpdateReminderByUser(ctx, db.ReminderUpdate{
 		ID:            req.GetId(),
 		UserID:        caller.ID,
@@ -280,21 +247,8 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, connReq *connect.Re
 	return connect.NewResponse(pb.UpdateReminderResp_builder{}.Build()), nil
 }
 
-// ConfirmDelivery records the outcome of a pushed notification.
-//
-// It is a client->server callback carrying the reminder owner's identity (the
-// client builds that metadata from the payload's user_id). Guarded at
-// CLEARANCE_REGISTERED like the other reminder RPCs, and — like every other
-// reminder RPC — scoped to the reminder's OWNER: a confirmation for someone
-// else's reminder is NotFound.
-//
-// Only a reminder currently in SENT is advanced, so a duplicate or retried
-// confirmation is a harmless no-op:
-//
-//   - delivered=false                 -> FAILED
-//   - delivered=true, one-shot        -> DELIVERED (kept, not deleted)
-//   - delivered=true, repeating       -> datetime advanced to the next
-//     occurrence in the reminder's timezone, status back to PENDING
+// ConfirmDelivery is scoped to the reminder's owner. Only a reminder in SENT
+// advances, so a retried confirmation is a no-op.
 func (s *ReminderServer) ConfirmDelivery(ctx context.Context, connReq *connect.Request[pb.ConfirmDeliveryReq]) (*connect.Response[pb.ConfirmDeliveryResp], error) {
 	req := connReq.Msg
 
@@ -316,15 +270,8 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, connReq *connect.R
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to confirm delivery"))
 	}
 
-	// Reminders are private to their creator, and this method MUTATES one. Same
-	// check and same code as GetReminder: NotFound rather than PermissionDenied,
-	// so the response does not confirm that the id exists.
-	//
-	// Without it, anyone at CLEARANCE_REGISTERED holding an id could — for the
-	// whole window a reminder sits in SENT — suppress it by confirming a failure,
-	// move a repeating reminder's next fire time, probe which ids exist, and have
-	// a forged REMINDER_DELIVERED recorded against its owner. The production
-	// client already sends the owner's identity, so this changes no real caller.
+	// Without this, any registered caller holding an id could suppress a pending
+	// delivery, move a repeat's fire time, or forge an analytics row.
 	if reminderRow.UserID == nil || *reminderRow.UserID != caller.ID {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
@@ -341,17 +288,13 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, connReq *connect.R
 		return connect.NewResponse(pb.ConfirmDeliveryResp_builder{}.Build()), nil
 	}
 
-	// A repeating reminder reschedules; a one-shot is marked delivered. The
-	// returned bool distinguishes a real transition from the guarded no-op, and
-	// the analytics write below depends on it.
+	// Distinguishes a real transition from the guarded no-op, which analytics needs.
 	var advanced bool
 	if reminderRow.RepeatCron != nil && *reminderRow.RepeatCron != "" {
 		loc := reminderLocation(reminderRow.Timezone)
 		next, nextErr := reminder.NextOccurrence(*reminderRow.RepeatCron, time.Now(), loc)
 		if nextErr != nil {
-			// The schedule was valid at create/update time; if it somehow no
-			// longer yields a next fire, close the reminder out rather than leave
-			// it stuck at SENT.
+			// Close the reminder out rather than leave it stuck at SENT.
 			log.Z.Warn("repeating reminder has no next occurrence, marking delivered",
 				zap.String("reminder_id", req.GetId()), zap.Error(nextErr))
 			advanced, err = db.AdvanceReminderStatusIfSent(ctx, req.GetId(), pb.ReminderStatus_REMINDER_STATUS_DELIVERED)
@@ -374,20 +317,13 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, connReq *connect.R
 		}
 	}
 
-	// Nothing moved: this confirmation is a duplicate or arrived after a reclaim
-	// re-claimed the reminder. That is not an error — the caller did its job — but
-	// it must NOT produce a second analytics row.
-	//
-	// It happens without an attacker: two ginbot-discord instances during a
-	// rolling restart both receive the fan-out, both post, and both confirm. An
-	// unconditional write made "reminders delivered" count confirmations rather
-	// than deliveries, unbounded per reminder.
+	// A duplicate confirmation must not produce a second analytics row.
 	if !advanced {
 		logConfirmNoOp(req.GetId())
 		return connect.NewResponse(pb.ConfirmDeliveryResp_builder{}.Build()), nil
 	}
 
-	// Analytics: record the delivery against the reminder's owner. Best-effort.
+	// Best-effort, and recorded against the owner rather than the caller.
 	if err := db.CreateActionRecord(ctx, pb.ActionType_ACTION_TYPE_REMINDER_DELIVERED, *reminderRow.UserID, nil); err != nil {
 		log.Z.Error("failed to record reminder delivery", zap.Error(err))
 	}
@@ -395,17 +331,12 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, connReq *connect.R
 	return connect.NewResponse(pb.ConfirmDeliveryResp_builder{}.Build()), nil
 }
 
-// logConfirmNoOp records a confirmation that changed nothing. Debug, not warn:
-// a duplicate confirm is expected during a rolling restart and is exactly what
-// the SENT-only guard exists to absorb.
 func logConfirmNoOp(reminderID string) {
 	log.Z.Debug("confirmation did not advance a reminder; it was not in SENT",
 		zap.String("reminder_id", reminderID))
 }
 
-// isDMDestination reports whether a reminder destination is a direct message
-// rather than a shared space. A DM carries no instance_uid; the lower repeat
-// floor (10m) applies to it, the higher (12h) to everything with an instance.
+// isDMDestination reports a destination carrying no instance_uid.
 func isDMDestination(destination *pb.ReminderDestination) bool {
 	instanceMeta := destination.GetInstanceMeta()
 	if instanceMeta == nil {
@@ -419,8 +350,7 @@ func isDMDestination(destination *pb.ReminderDestination) bool {
 	return value.GetStringValue() == ""
 }
 
-// reminderLocation resolves a reminder's stored IANA timezone, defaulting to UTC
-// when it is empty or unknown so a repeat can always be rescheduled.
+// reminderLocation defaults to UTC on an empty or unknown zone.
 func reminderLocation(timezone string) *time.Location {
 	if timezone == "" {
 		return time.UTC

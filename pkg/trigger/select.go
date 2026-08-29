@@ -6,11 +6,8 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// Roller returns a pseudo-random integer in [0,n). It is injected so that
-// selection and chance rolls are deterministic under test.
 type Roller func(n int) int
 
-// Candidate is one compiled trigger eligible for matching.
 type Candidate struct {
 	ID      string
 	Mode    pb.TriggerMode
@@ -18,12 +15,9 @@ type Candidate struct {
 	Pattern *regexp.Regexp
 }
 
-// Select picks the candidate a message resolves to, before any chance roll, or
-// nil when nothing matches.
-//
-// An exact match wins and discards every non-exact candidate, which is what
-// makes an exact phrase worth registering. Otherwise one of the matching
-// candidates is chosen at random.
+// Select picks the candidate a message resolves to before any chance roll, or
+// nil when nothing matches. Any exact match discards every non-exact one;
+// otherwise the pick is random.
 func Select(message string, candidates []Candidate, roll Roller) *Candidate {
 	normalised := StripSpoilers(message)
 	if normalised == "" {
@@ -61,13 +55,10 @@ func Select(message string, candidates []Candidate, roll Roller) *Candidate {
 		idx = 0
 	}
 
-	// Return a copy: never a pointer into the caller's slice, which the cache
-	// shares with every other reader.
 	picked := matched[idx]
 	return &picked
 }
 
-// Fires reports whether a selected candidate's chance roll succeeds.
 func Fires(c Candidate, roll Roller) bool {
 	return roll(int(MaxChance)) < int(EffectiveChance(c.Chance, c.Mode))
 }

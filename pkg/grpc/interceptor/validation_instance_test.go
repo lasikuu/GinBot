@@ -9,14 +9,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Boundary tests for the buf.validate rules on instance.proto. See
-// validation_rules_test.go for why these validate directly.
-
-// instance.id is a Postgres BIGSERIAL, so the smallest id that can exist is 1.
-// Without gt: 0 a caller could send 0 or a negative id, which is not a row that
-// can exist and only ever costs a pointless query — and the handlers cannot
-// tell "no id supplied" from "id zero" once it has arrived, because zero is
-// what an absent field would read as through GetId().
+// instance.id is a Postgres BIGSERIAL, so the smallest id that can exist is 1,
+// and GetId() cannot tell an absent field from an explicit zero.
 func TestInstanceIdsMustBePositive(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -69,8 +63,8 @@ func TestInstanceIdsMustBePositive(t *testing.T) {
 	}
 }
 
-// validCreateInstance is a CreateInstanceReq that must pass validation, so a
-// mutation below is the only thing wrong with it.
+// validCreateInstance must pass validation, so a mutation of it is the only
+// thing wrong with the result.
 func validCreateInstance() *pb.CreateInstanceReq {
 	channel := "general"
 
@@ -94,8 +88,7 @@ func validUpdateInstance() *pb.UpdateInstanceReq {
 	}.Build()
 }
 
-// default_channel is stored verbatim and echoed back to clients, so its length
-// is bounded. Exactly at the limit stays legal: Matrix room aliases are long.
+// Exactly at the limit stays legal: Matrix room aliases are long.
 func TestInstanceDefaultChannelLengthIsBounded(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -124,8 +117,6 @@ func TestInstanceDefaultChannelLengthIsBounded(t *testing.T) {
 }
 
 // ListInstancesReq.limit and .offset are clamped by pkg/db, not rejected here.
-// See TestTriggerListLimitAndOffsetAreNotRejected for the reasoning; this is
-// the same decision on the other listing RPC.
 func TestListInstancesLimitAndOffsetAreNotRejected(t *testing.T) {
 	tests := []struct {
 		name   string

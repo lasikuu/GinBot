@@ -15,12 +15,9 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// fakeOriginResolver is an OriginResolver that records what it was asked to
-// create. It stands in for db.GetOrCreateDestinationByMeta, whose only job is
-// the write these tests are asserting does or does not happen.
+// fakeOriginResolver records what it was asked to create.
 type fakeOriginResolver struct {
-	// err, when set, makes every call fail. Bootstrap is best effort, so this
-	// must not fail the RPC.
+	// err, when set, makes every call fail.
 	err error
 
 	mu           sync.Mutex
@@ -48,7 +45,6 @@ func (f *fakeOriginResolver) callCount() int {
 	return f.calls
 }
 
-// lastDestination returns what the resolver was most recently handed.
 func (f *fakeOriginResolver) lastDestination(t *testing.T) *pb.ReminderDestination {
 	t.Helper()
 
@@ -62,20 +58,13 @@ func (f *fakeOriginResolver) lastDestination(t *testing.T) *pb.ReminderDestinati
 	return f.destinations[len(f.destinations)-1]
 }
 
-// originResult is everything one trip through the origin interceptor produced.
 type originResult struct {
 	reached bool
 	err     error
 }
 
-// originTestCtx builds the context OriginInterceptor actually sees in
-// production: a resolved caller (stashed by ClearanceInterceptor) AND the
-// caller's raw asserted identity under metaContextKey (also stashed by
-// ClearanceInterceptor, for every call whose headers parsed — see
-// clearance.go). bootstrap() reads the platform through MetaFromContext, not
-// by re-parsing headers itself, so a standalone OriginInterceptor test has to
-// populate that key by hand rather than relying on ClearanceInterceptor
-// having run first, which none of these tests install it to do.
+// originTestCtx builds the context ClearanceInterceptor would have produced:
+// bootstrap reads the platform through MetaFromContext, not from the headers.
 func originTestCtx(header http.Header, caller *model.User) context.Context {
 	ctx := context.Background()
 	if caller != nil {
@@ -87,7 +76,6 @@ func originTestCtx(header http.Header, caller *model.User) context.Context {
 	return ctx
 }
 
-// callOrigin runs one request through the origin interceptor, carrying header.
 func callOrigin(header http.Header, resolve OriginResolver, caller *model.User) originResult {
 	var result originResult
 
@@ -105,9 +93,6 @@ func callOrigin(header http.Header, resolve OriginResolver, caller *model.User) 
 	return result
 }
 
-// originHeader builds the header a platform client produces: identity and
-// origin, both via callermeta so the test cannot disagree with the production
-// encoding.
 func originHeader(platform pb.Platform, platformUID string, origin callermeta.Origin) http.Header {
 	header := wellFormedHeader(platform, platformUID)
 	if origin.InstanceUID != "" {
@@ -119,23 +104,17 @@ func originHeader(platform pb.Platform, platformUID string, origin callermeta.Or
 	return header
 }
 
-// testOrigin is a Discord guild and channel.
 func testOrigin() callermeta.Origin {
 	return callermeta.Origin{InstanceUID: "guild-1", DestinationUID: "channel-1"}
 }
 
-// A call with no origin header has nothing to bootstrap. A direct message is
-// the normal case.
 func TestOriginIsNotBootstrappedWithoutOriginHeader(t *testing.T) {
 	tests := []struct {
 		name   string
 		origin callermeta.Origin
 	}{
 		{"no origin at all", callermeta.Origin{}},
-		// A real client drops an origin with no instance, so this never
-		// reaches the wire; a direct message produces exactly this.
 		{"destination but no instance", callermeta.Origin{DestinationUID: "dm-channel"}},
-		// Half an origin is not worth a row: destination is what would be created.
 		{"instance but no destination", callermeta.Origin{InstanceUID: "guild-1"}},
 	}
 
@@ -160,15 +139,12 @@ func TestOriginIsNotBootstrappedWithoutOriginHeader(t *testing.T) {
 	}
 }
 
-// The regression test for the finding: a public method resolves no caller, so
-// an unregistered stranger typing ??number or /ping in a channel the bot has
-// never seen must not cause a write. Discord counts every thread as a channel,
-// so this was unbounded growth driven by anyone who could create one.
+// An unresolved caller must not cause a write: Discord counts every thread as a
+// channel, so anyone able to create one could grow the table without limit.
 func TestOriginIsNotBootstrappedWithoutAResolvedCaller(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 
-	// Full, well-formed identity and origin headers — the only thing missing
-	// is the caller the clearance interceptor would have put in the context.
+	// Well-formed headers; only the resolved caller is missing.
 	header := originHeader(pb.Platform_PLATFORM_DISCORD, "stranger", testOrigin())
 
 	got := callOrigin(header, resolver.resolve, nil)
@@ -202,10 +178,7 @@ func TestOriginIsBootstrappedForAResolvedCaller(t *testing.T) {
 	}
 }
 
-// The row is written from what the resolver is handed, and the jsonb shapes are
-// matched by equality against rows already stored. A different shape here
-// creates a second instance for a guild the bot already knows, and nothing
-// reports the split.
+// The jsonb shapes are matched by equality against rows already stored.
 func TestBootstrapPassesTheCanonicalMetaShapes(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	origin := testOrigin()
@@ -251,13 +224,8 @@ func TestBootstrapPassesTheCanonicalMetaShapes(t *testing.T) {
 	}
 }
 
-// The upsert is meant to run on first contact, not on every request. Without
-// the cache every message in a busy channel would cost a transaction.
-//
-// One interceptor instance is reused across every call, not rebuilt through
-// callOrigin each time: the cache this test is about lives ON the
-// interceptor, and a fresh one per call would trivially pass regardless of
-// whether the cache works at all.
+// One interceptor instance across every call: the cache lives on it, so a fresh
+// one per call would pass regardless of whether the cache works.
 func TestBootstrapRunsOncePerOrigin(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
@@ -282,12 +250,6 @@ func TestBootstrapRunsOncePerOrigin(t *testing.T) {
 	}
 }
 
-// The cache key carries the platform and both identifiers, so origins that
-// differ in any of them are bootstrapped separately.
-//
-// Every request runs through the SAME interceptor instance rather than a
-// fresh one per call, because the cache the property depends on lives on the
-// interceptor.
 func TestBootstrapDistinguishesOrigins(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
@@ -302,11 +264,8 @@ func TestBootstrapDistinguishesOrigins(t *testing.T) {
 		origin   callermeta.Origin
 	}{
 		{pb.Platform_PLATFORM_DISCORD, callermeta.Origin{InstanceUID: "g1", DestinationUID: "c1"}},
-		// Same guild, different channel.
 		{pb.Platform_PLATFORM_DISCORD, callermeta.Origin{InstanceUID: "g1", DestinationUID: "c2"}},
-		// Different guild, same channel id.
 		{pb.Platform_PLATFORM_DISCORD, callermeta.Origin{InstanceUID: "g2", DestinationUID: "c1"}},
-		// Identical identifiers on another platform are a different place.
 		{pb.Platform_PLATFORM_MATRIX_PROTOCOL, callermeta.Origin{InstanceUID: "g1", DestinationUID: "c1"}},
 		// A repeat of the first, which must not add a call.
 		{pb.Platform_PLATFORM_DISCORD, callermeta.Origin{InstanceUID: "g1", DestinationUID: "c1"}},
@@ -327,8 +286,7 @@ func TestBootstrapDistinguishesOrigins(t *testing.T) {
 	}
 }
 
-// First contact is exactly when several members are likely to be talking at
-// once. Run under -race, this is the check that the cache is safe to share.
+// Under -race, this is the check that the cache is safe to share.
 func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
@@ -339,8 +297,7 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 	})
 
 	const concurrency = 32
-	// Requests are built up front: header construction is not what is under
-	// test here, and t.Fatal from a goroutine is not allowed.
+	// Built up front: t.Fatal from a goroutine is not allowed.
 	reqs := make([]*fakeRequest, concurrency)
 	ctxs := make([]context.Context, concurrency)
 	for i := range reqs {
@@ -372,11 +329,8 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 		}
 	}
 
-	// The cache is not held across the resolver call, so a simultaneous burst
-	// can legitimately produce more than one upsert — every goroutine may miss
-	// the read before any of them records a success. The upsert is idempotent,
-	// so that is acceptable, and pinning an exact count here would only make the
-	// test flaky.
+	// The cache is not held across the resolver call, so a burst can produce
+	// more than one upsert; the upsert is idempotent, so an exact count is flaky.
 	burst := resolver.callCount()
 	if burst < 1 {
 		t.Fatalf("resolver never ran for %d concurrent first-contact requests", concurrency)
@@ -385,18 +339,13 @@ func TestConcurrentFirstContactConvergesOnOneBootstrap(t *testing.T) {
 		t.Fatalf("resolver ran %d times for %d requests", burst, concurrency)
 	}
 
-	// Convergence is the property that matters and it is deterministic: once the
-	// burst is over the origin is known, so no later request bootstraps again.
+	// Once the burst is over the origin is known, so nothing bootstraps again.
 	for range concurrency {
 		req := newFakeRequest(publicMethod)
 		header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
 		maps.Copy(req.Header(), header)
-		// originTestCtx, not a bare callerContextKey: bootstrap reads the
-		// platform through MetaFromContext and returns before it ever consults
-		// the cache when that is absent. A context carrying only the caller
-		// makes the resolver unreachable for a reason that has nothing to do
-		// with the cache, so this loop would report convergence even with
-		// caching removed entirely.
+		// originTestCtx, not a bare callerContextKey: without the meta value
+		// bootstrap returns before consulting the cache and this passes vacuously.
 		ctx := originTestCtx(header, caller)
 		if _, err := intercept.WrapUnary(handler)(ctx, req); err != nil {
 			t.Fatalf("post-burst request failed: %v", err)
@@ -429,8 +378,7 @@ func TestFailedBootstrapIsRetriedAndDoesNotFailTheCall(t *testing.T) {
 
 	const attempts = 3
 	for i := range attempts {
-		// Bootstrap is best effort: a guild that cannot be recorded must not
-		// stop someone rolling dice.
+		// Bootstrap is best effort and must not fail the RPC.
 		if err := call(); err != nil {
 			t.Fatalf("attempt %d failed the RPC: %v", i, err)
 		}
@@ -440,7 +388,6 @@ func TestFailedBootstrapIsRetriedAndDoesNotFailTheCall(t *testing.T) {
 		t.Errorf("resolver ran %d times, want %d: a failure must not be cached", n, attempts)
 	}
 
-	// And once it succeeds, it is cached like any other success.
 	resolver.mu.Lock()
 	resolver.err = nil
 	resolver.mu.Unlock()
@@ -456,8 +403,7 @@ func TestFailedBootstrapIsRetriedAndDoesNotFailTheCall(t *testing.T) {
 	}
 }
 
-// A server built without an origin resolver must still serve. This is the
-// wiring guard: NewOriginInterceptor(nil) is a pass-through, not a panic.
+// NewOriginInterceptor(nil) must be a pass-through, not a panic.
 func TestNilResolverIsAPassThrough(t *testing.T) {
 	header := originHeader(pb.Platform_PLATFORM_DISCORD, "uid", testOrigin())
 	caller := callerAt(int32(pb.Clearance_CLEARANCE_REGISTERED))
@@ -472,13 +418,10 @@ func TestNilResolverIsAPassThrough(t *testing.T) {
 	}
 }
 
-// A caller in the context but no platform header cannot be stored: the
-// platform is half the instance key. It must not fail the call either.
+// The platform is half the instance key, so an origin without one is unstorable.
 func TestBootstrapIsSkippedWithoutPlatformHeader(t *testing.T) {
 	resolver := &fakeOriginResolver{}
 
-	// Origin headers with no platform_enum — something no real client sends,
-	// but the interceptor must not assume that.
 	origin := testOrigin()
 	header := make(http.Header)
 	header.Set(callermeta.HeaderInstanceUID, origin.InstanceUID)
@@ -498,8 +441,7 @@ func TestBootstrapIsSkippedWithoutPlatformHeader(t *testing.T) {
 	}
 }
 
-// originCacheMaxEntries is a bound, not a cliff: above it the cache must keep
-// most of its contents rather than emptying and starting over.
+// Above the bound the cache must keep most of its contents, not empty itself.
 func TestOriginCacheEvictsAFractionOnOverflow(t *testing.T) {
 	cache := newOriginCache()
 
@@ -510,10 +452,9 @@ func TestOriginCacheEvictsAFractionOnOverflow(t *testing.T) {
 		t.Fatalf("cache holds %d entries, want %d before overflow", got, originCacheMaxEntries)
 	}
 
-	// One more entry triggers eviction.
+	// One more entry triggers eviction; a whole-map flush would leave 1.
 	cache.remember(originKeyForTest(originCacheMaxEntries))
 
-	// A whole-map flush would leave 1. A bounded eviction leaves the rest.
 	want := originCacheMaxEntries - originCacheMaxEntries/originCacheEvictDivisor + 1
 	if got := len(cache.seen); got != want {
 		t.Errorf("cache holds %d entries after overflow, want %d", got, want)
@@ -523,8 +464,6 @@ func TestOriginCacheEvictsAFractionOnOverflow(t *testing.T) {
 	}
 }
 
-// originKeyForTest builds a distinct cache key. The real keys come from
-// originKey, which is exercised by TestBootstrapDistinguishesOrigins.
 func originKeyForTest(i int) string {
 	return originKey(pb.Platform_PLATFORM_DISCORD, callermeta.Origin{
 		InstanceUID:    "guild",

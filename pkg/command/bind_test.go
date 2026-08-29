@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// intCmd declares a single required integer argument named "n".
 func intCmd() Command {
 	return Command{
 		Name:    "number",
@@ -15,7 +14,6 @@ func intCmd() Command {
 	}
 }
 
-// boolCmd declares a single required boolean argument named "b".
 func boolCmd() Command {
 	return Command{
 		Name:    "toggle",
@@ -52,8 +50,6 @@ func TestBindRejectsMissingRequiredArgument(t *testing.T) {
 	}
 }
 
-// A Default is documented as ignored for a required argument, so it must not
-// silently paper over a missing value.
 func TestBindDefaultDoesNotSatisfyRequired(t *testing.T) {
 	cmd := Command{
 		Name:    "say",
@@ -66,8 +62,6 @@ func TestBindDefaultDoesNotSatisfyRequired(t *testing.T) {
 	}
 }
 
-// Integer parsing is assumed to be strconv.ParseInt(s, 10, 64): base ten, signed,
-// no floats and no silent truncation.
 func TestBindIntArguments(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -122,8 +116,6 @@ func TestBindIntArguments(t *testing.T) {
 	}
 }
 
-// Boolean parsing is assumed to be strconv.ParseBool, which accepts exactly the
-// forms below and nothing else — notably not "yes", "on" or mixed-case "TrUe".
 func TestBindBoolArguments(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -239,9 +231,6 @@ func TestBindAppliesDefaults(t *testing.T) {
 	})
 }
 
-// A Default whose Go type does not match the declared ArgType is a declaration
-// bug. Either Bind rejects it or the accessor degrades to the zero value, but it
-// must never panic and must never hand back a nonsense value.
 func TestBindDefaultOfWrongGoType(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -277,9 +266,6 @@ func TestBindDefaultOfWrongGoType(t *testing.T) {
 	}
 }
 
-// An int literal is the natural way to write an integer Default, but Int returns
-// int64, so an untyped-constant Default lands in the map as a plain int. Whether
-// that is normalised is unspecified; it must at least not panic or corrupt.
 func TestBindDefaultDeclaredAsPlainInt(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -298,16 +284,11 @@ func TestBindDefaultDeclaredAsPlainInt(t *testing.T) {
 		t.Fatalf("Bind rejected an int Default: %v", err)
 	}
 
-	// toInt64 handles int and int32 precisely so that an untyped literal
-	// default works, so this is specified behaviour, not an accident: accepting
-	// 0 here would let the int case be deleted without a test failing.
 	if got := inv.Int("n"); got != 5 {
 		t.Errorf("Int(\"n\") = %d, want 5", got)
 	}
 }
 
-// Bind's documented error cases are a missing required argument and a value that
-// does not parse. Surplus positional arguments are neither, so they are dropped.
 func TestBindIgnoresExtraPositionalArguments(t *testing.T) {
 	cmd := Command{
 		Name:    "say",
@@ -361,9 +342,6 @@ func TestBindWithoutDeclaredArgs(t *testing.T) {
 	}
 }
 
-// Declaring a required argument after an optional one is a footgun: positional
-// binding fills the optional first, so a single value leaves the required one
-// unset. Bind must say so rather than shuffling values around.
 func TestBindRequiredAfterOptional(t *testing.T) {
 	cmd := Command{
 		Name: "awkward",
@@ -390,8 +368,6 @@ func TestBindRequiredAfterOptional(t *testing.T) {
 	}
 }
 
-// ParseChat already resolved the quoting, so Bind must take the value as given
-// instead of splitting it again.
 func TestBindStringKeepsSpaces(t *testing.T) {
 	cmd := Command{
 		Name:    "say",
@@ -408,8 +384,6 @@ func TestBindStringKeepsSpaces(t *testing.T) {
 	}
 }
 
-// `?say ""` supplies an empty string. It was written deliberately, so presence is
-// positional rather than a question of emptiness.
 func TestBindEmptyStringSatisfiesRequired(t *testing.T) {
 	cmd := Command{
 		Name:    "say",
@@ -455,10 +429,6 @@ func TestBindMixedTypesInOrder(t *testing.T) {
 	}
 }
 
-// BindNamed is not part of the agreed interface, but it is the pure seam the
-// slash-command path binds through, so testing it here is what makes "a slash
-// command and a chat command produce the same result" checkable without a
-// discordgo session.
 func TestBindNamedMatchesBind(t *testing.T) {
 	cmd := Command{
 		Name: "doubles",
@@ -522,8 +492,6 @@ func TestBindNamedMatchesBind(t *testing.T) {
 	}
 }
 
-// BindNamed takes already-typed values, so a mismatch is a caller bug in the
-// platform layer and must not be coerced into a plausible-looking value.
 func TestBindNamedRejectsMismatchedTypes(t *testing.T) {
 	cmd := Command{
 		Name: "mixed",
@@ -569,8 +537,6 @@ func TestBindNamedRequiredAndUnknown(t *testing.T) {
 		t.Error("BindNamed succeeded with a nil map and a required argument")
 	}
 
-	// An option the command does not declare is ignored rather than fatal: the
-	// platform may deliver more than the registry knows about.
 	inv, err := BindNamed(cmd, map[string]any{"message": "hi", "surplus": int64(1)})
 	if err != nil {
 		t.Fatalf("BindNamed: %v", err)
@@ -583,8 +549,6 @@ func TestBindNamedRequiredAndUnknown(t *testing.T) {
 	}
 }
 
-// An ArgType outside the declared set is a programming error. Binding must
-// refuse it rather than treat the value as a string and carry on.
 func TestBindRejectsUnknownArgType(t *testing.T) {
 	cmd := Command{
 		Name:    "broken",
@@ -600,8 +564,6 @@ func TestBindRejectsUnknownArgType(t *testing.T) {
 	}
 }
 
-// A value that fails to parse must be reported even when it sits behind valid
-// ones, rather than being dropped and defaulted.
 func TestBindReportsLaterTypeErrors(t *testing.T) {
 	cmd := Command{
 		Name: "mixed",

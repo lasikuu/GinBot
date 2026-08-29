@@ -4,9 +4,7 @@ import (
 	"testing"
 )
 
-// equalArgs treats nil and an empty slice as the same result: a command with no
-// arguments has nothing to distinguish, and the contract does not say which of
-// the two ParseChat returns.
+// equalArgs treats nil and an empty slice as the same result.
 func equalArgs(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
@@ -82,8 +80,6 @@ func TestParseChat(t *testing.T) {
 			wantArgs: []string{"a", "b c"},
 		},
 		{
-			// Quoting is the only way to pass an empty argument, so the empty
-			// pair must survive as an argument rather than vanish.
 			name:     "empty quoted string is an argument",
 			content:  `?say ""`,
 			prefixes: []string{"?"},
@@ -111,8 +107,6 @@ func TestParseChat(t *testing.T) {
 			wantName: "ping",
 		},
 		{
-			// Consistent with a prefix followed by nothing but whitespace being
-			// rejected: the prefix is stripped and the remainder is split.
 			name:     "whitespace between the prefix and the command name",
 			content:  "?   ping",
 			prefixes: []string{"?"},
@@ -152,8 +146,6 @@ func TestParseChat(t *testing.T) {
 			wantName: "ping",
 		},
 		{
-			// The same expectation with the slice reversed: the order in which
-			// prefixes are configured must not change the result.
 			name:     "longest prefix wins regardless of slice order",
 			content:  "??ping",
 			prefixes: []string{"??", "?"},
@@ -172,16 +164,12 @@ func TestParseChat(t *testing.T) {
 			wantName: "ping",
 		},
 		{
-			// Only one prefix is stripped. With "??" unconfigured the second "?"
-			// is part of the command name, which then simply fails to resolve.
 			name:     "unmatched extra prefix character stays in the name",
 			content:  "??ping",
 			prefixes: []string{"?"},
 			wantName: "?ping",
 		},
 		{
-			// Case folding belongs to Registry.Lookup, so the name comes back
-			// exactly as it was typed.
 			name:     "command name keeps its case",
 			content:  "?PiNg",
 			prefixes: []string{"?"},
@@ -215,8 +203,6 @@ func TestParseChat(t *testing.T) {
 			wantArgs: []string{"?ping"},
 		},
 		{
-			// An empty entry must be ignored rather than matching everything,
-			// otherwise every message becomes a command.
 			name:     "empty prefix entry is ignored while a real one still works",
 			content:  "?ping",
 			prefixes: []string{"", "?"},
@@ -272,7 +258,6 @@ func TestParseChatRejects(t *testing.T) {
 			prefixes: nil,
 		},
 		{
-			// An empty prefix would otherwise turn every message into a command.
 			name:     "only an empty prefix is configured",
 			content:  "ping",
 			prefixes: []string{""},
@@ -303,8 +288,6 @@ func TestParseChatRejects(t *testing.T) {
 			prefixes: []string{"?"},
 		},
 		{
-			// The contract is "starts with a prefix", so an indented message is
-			// ordinary chat, not a command.
 			name:     "leading whitespace before the prefix",
 			content:  "  ?ping",
 			prefixes: []string{"?"},
@@ -338,9 +321,6 @@ func TestParseChatRejects(t *testing.T) {
 	}
 }
 
-// Where case folding happens is an implementation detail of ParseChat and
-// Lookup together; what must hold is that a differently cased chat command
-// still reaches its handler.
 func TestParseChatThenLookupIsCaseInsensitive(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(Command{Name: "ping", Aliases: []string{"pong"}, Handler: noopHandler}); err != nil {
@@ -365,12 +345,6 @@ func TestParseChatThenLookupIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// HasPrefix answers a WIDER question than ParseChat: "was this message addressed
-// to a bot", not "is this a dispatchable command". The gap between the two is
-// the whole reason it exists — a bare "??" carries a prefix but no command name,
-// so ParseChat reports no match while HasPrefix reports one. A caller that has
-// to decide whether to treat a message as ordinary chat needs the wider answer,
-// and it must come from the same matcher so the two cannot drift.
 func TestHasPrefix(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -437,9 +411,6 @@ func TestHasPrefix(t *testing.T) {
 	}
 }
 
-// HasPrefix must agree with ParseChat wherever ParseChat commits to an answer:
-// anything ParseChat dispatches necessarily carried a prefix. It is only allowed
-// to be wider, never to disagree.
 func TestHasPrefixAgreesWithParseChatWhereverParseChatMatches(t *testing.T) {
 	prefixes := []string{"?", "??", "!"}
 

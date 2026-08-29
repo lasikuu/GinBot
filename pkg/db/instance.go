@@ -11,7 +11,6 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// CreateInstance inserts an instance and returns its id.
 func CreateInstance(
 	ctx context.Context,
 	platformEnum pb.Platform,

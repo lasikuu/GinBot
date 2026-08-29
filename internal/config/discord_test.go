@@ -10,9 +10,7 @@ import (
 
 const envCommandPrefixes = "DISCORD_COMMAND_PREFIXES"
 
-// setCommandPrefixesEnv sets the variable, or genuinely removes it when set is
-// false. t.Setenv has no unset counterpart, but it does snapshot the previous
-// value and restore it during cleanup, which keeps the test order-independent.
+// Genuinely removes the variable when set is false; t.Setenv cannot.
 func setCommandPrefixesEnv(t *testing.T, value string, set bool) {
 	t.Helper()
 	t.Setenv(envCommandPrefixes, value)
@@ -23,18 +21,14 @@ func setCommandPrefixesEnv(t *testing.T, value string, set bool) {
 	}
 }
 
-// accepts reports whether the configured prefixes make content a chat command,
-// asked of the tokeniser that actually dispatches rather than of a second,
-// subtly different oracle. This is what makes the table below a regression test
-// for the real defect: the old regex rejected "??ping" outright.
+// accepts asks the tokeniser that actually dispatches, not a second oracle.
 func accepts(p CommandPrefixes, content string) bool {
 	_, _, ok := command.ParseChat(content, p.Prefixes)
 
 	return ok
 }
 
-// samePrefixSet compares as a set: nothing depends on the order in which the
-// prefixes are stored, because matching is longest-first regardless.
+// samePrefixSet compares as a set: matching is longest-first regardless.
 func samePrefixSet(got, want []string) bool {
 	gotSorted := slices.Clone(got)
 	wantSorted := slices.Clone(want)
@@ -43,18 +37,13 @@ func samePrefixSet(got, want []string) bool {
 	return slices.Equal(gotSorted, wantSorted)
 }
 
-// The original implementation applied regexp.QuoteMeta to the already-joined
-// string, so the "|" separating the alternatives was escaped into a literal:
-// "??,!" compiled to `^(\?\?\|!).+$`, which rejected "??ping" and accepted the
-// literal "??|!ping". With the variable unset it compiled to `^().+$`, which
-// matched every message in every channel.
 func TestCommandPrefixes(t *testing.T) {
 	tests := []struct {
 		name         string
 		value        string
 		set          bool
 		wantPrefixes []string
-		// accepted maps a chat message to whether it must dispatch as a command.
+		// accepted maps a chat message to whether it must dispatch.
 		accepted map[string]bool
 	}{
 		{
@@ -126,8 +115,7 @@ func TestCommandPrefixes(t *testing.T) {
 			},
 		},
 		{
-			// QuoteMeta has to be applied per element. An unescaped "." would
-			// make every single character a valid prefix.
+			// An unescaped "." would make every character a valid prefix.
 			name:         "regex metacharacters stay literal",
 			value:        ".,$,+",
 			set:          true,
@@ -152,8 +140,7 @@ func TestCommandPrefixes(t *testing.T) {
 			},
 		},
 		{
-			// "?, !" is the natural way to write a list, so the surrounding
-			// whitespace must not become part of the prefix.
+			// Surrounding whitespace must not become part of the prefix.
 			name:         "whitespace around a prefix is trimmed",
 			value:        " ? , ! ",
 			set:          true,
@@ -197,10 +184,7 @@ func TestCommandPrefixes(t *testing.T) {
 	}
 }
 
-// TestDiscordPassthroughAccessorsAreVerbatim: three of the Discord accessors
-// do nothing but read the variable. Pinned so that a later "helpful" default
-// — a placeholder owner id, say — cannot be introduced silently, and because
-// an empty value here means "unset" to every caller downstream.
+// An empty value means "unset" downstream, so no accessor may grow a default.
 func TestDiscordPassthroughAccessorsAreVerbatim(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -227,15 +211,7 @@ func TestDiscordPassthroughAccessorsAreVerbatim(t *testing.T) {
 	}
 }
 
-// TestBotTokenAppliesTheBotPrefixExactlyOnce is the accessor worth the most
-// attention in this package: it is the only one that TRANSFORMS its value, and
-// AGENTS.md calls it out by name because operators keep writing "Bot xyz" into
-// .env themselves. Discord rejects "Bot Bot xyz" with a 401 at gateway
-// connect, which surfaces nowhere near the configuration that caused it.
-//
-// The unset case is pinned deliberately too: it yields the bare prefix "Bot ",
-// NOT the empty string, so a caller cannot test the token for emptiness to
-// decide whether Discord is configured.
+// Discord rejects "Bot Bot xyz" with a 401. Unset yields "Bot ", not "".
 func TestBotTokenAppliesTheBotPrefixExactlyOnce(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -264,13 +240,7 @@ func TestBotTokenAppliesTheBotPrefixExactlyOnce(t *testing.T) {
 	}
 }
 
-// TestDiscordBooleanGatesRequireTheExactLiteralTrue: both are `== "true"`, so
-// every other spelling leaves the feature OFF. That is the safe direction for
-// DISCORD_REMOVE_COMMANDS, which deletes every registered slash command, and
-// the load-bearing one for DISCORD_MESSAGE_CONTENT, which opts into a
-// privileged intent — Discord closes the gateway with 4014 if the bot requests
-// it without approval, so "MESSAGE_CONTENT=True quietly did nothing" is a much
-// better failure than "the bot will not start".
+// `== "true"` leaves every other spelling off, the safe direction for both.
 func TestDiscordBooleanGatesRequireTheExactLiteralTrue(t *testing.T) {
 	gates := []struct {
 		name string

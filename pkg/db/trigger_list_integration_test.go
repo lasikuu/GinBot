@@ -1,15 +1,5 @@
 //go:build integration
 
-// Integration tests for ListTriggers and ListTriggerInstanceIDs. These
-// require a live Postgres:
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/db/...
-//
-// TestMain, meta, cleanupUser and cleanupInstanceByMeta are declared in
-// db_integration_test.go; newTriggerFixture, triggerFixture.create and
-// triggerFixture.createOn are declared in trigger_integration_test.go. All are
-// in this same package and are reused here, not redeclared.
 package db
 
 import (
@@ -24,8 +14,7 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// createWithReply is createOn plus an explicit reply, for tests that need to
-// search on reply text rather than the fixture's fixed "auto-reply-<suffix>".
+// createWithReply is createOn with an explicit reply, for reply-text searches.
 func (f *triggerFixture) createWithReply(t *testing.T, phrase, reply string, mode pb.TriggerMode, instanceIDs []int64) string {
 	t.Helper()
 	ctx := context.Background()
@@ -63,9 +52,6 @@ func containsTriggerID(triggers []*model.Trigger, id string) bool {
 	return false
 }
 
-// TestListTriggersFiltersByUserID: only the given creator's triggers come
-// back; another user's trigger, even one that would otherwise match, is
-// excluded.
 func TestListTriggersFiltersByUserID(t *testing.T) {
 	owner := newTriggerFixture(t, "list-user-owner")
 	other := newTriggerFixture(t, "list-user-other")
@@ -86,8 +72,6 @@ func TestListTriggersFiltersByUserID(t *testing.T) {
 	}
 }
 
-// TestListTriggersFiltersByInstanceID: only triggers scoped to the given
-// instance come back. Two instances prove the negative.
 func TestListTriggersFiltersByInstanceID(t *testing.T) {
 	f := newTriggerFixture(t, "list-instance")
 	ctx := context.Background()
@@ -114,9 +98,6 @@ func TestListTriggersFiltersByInstanceID(t *testing.T) {
 	}
 }
 
-// TestListTriggersPhraseSearchIsPartialAndCaseInsensitive: PhraseSearch
-// matches a substring regardless of case, and excludes a phrase that does not
-// contain it.
 func TestListTriggersPhraseSearchIsPartialAndCaseInsensitive(t *testing.T) {
 	f := newTriggerFixture(t, "list-phrase")
 	ctx := context.Background()
@@ -125,8 +106,7 @@ func TestListTriggersPhraseSearchIsPartialAndCaseInsensitive(t *testing.T) {
 	matchID := f.create(t, "prefix-"+needle+"-suffix", pb.TriggerMode_TRIGGER_MODE_ANY, 10)
 	nonMatchID := f.create(t, "unrelated-"+f.suffix, pb.TriggerMode_TRIGGER_MODE_ANY, 10)
 
-	// Search with a lowercased substring of the mixed-case phrase: this only
-	// matches if the ILIKE comparison is case-insensitive.
+	// A lowercased substring of a mixed-case phrase only matches under ILIKE.
 	results, err := ListTriggers(ctx, ListTriggersFilter{
 		UserID:       f.userID,
 		PhraseSearch: strings.ToLower(needle),
@@ -142,8 +122,6 @@ func TestListTriggersPhraseSearchIsPartialAndCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestListTriggersReplySearchIsPartialAndCaseInsensitive: same as the phrase
-// case, against the reply column.
 func TestListTriggersReplySearchIsPartialAndCaseInsensitive(t *testing.T) {
 	f := newTriggerFixture(t, "list-reply")
 	ctx := context.Background()
@@ -169,8 +147,6 @@ func TestListTriggersReplySearchIsPartialAndCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestListTriggersFiltersByMode: filtering to one TriggerMode excludes the
-// others.
 func TestListTriggersFiltersByMode(t *testing.T) {
 	f := newTriggerFixture(t, "list-mode")
 	ctx := context.Background()
@@ -191,9 +167,6 @@ func TestListTriggersFiltersByMode(t *testing.T) {
 	}
 }
 
-// TestListTriggersFiltersByCreatedAtPeriod: a trigger backdated outside the
-// [PeriodStart, PeriodEnd] window is excluded; one left at its natural
-// creation time (now) is included.
 func TestListTriggersFiltersByCreatedAtPeriod(t *testing.T) {
 	f := newTriggerFixture(t, "list-period")
 	ctx := context.Background()
@@ -224,11 +197,6 @@ func TestListTriggersFiltersByCreatedAtPeriod(t *testing.T) {
 	}
 }
 
-// TestListTriggersLimitDefaultsAndClamps is AC7: Limit=0 falls back to
-// defaultTriggerListLimit, and a Limit above maxTriggerListLimit is clamped to
-// it. Both are observed directly by creating more rows than the max limit and
-// counting what comes back, via one bulk INSERT rather than
-// maxTriggerListLimit+1 sequential CreateTrigger calls.
 func TestListTriggersLimitDefaultsAndClamps(t *testing.T) {
 	f := newTriggerFixture(t, "list-limit")
 	ctx := context.Background()
@@ -283,10 +251,8 @@ func TestListTriggersLimitDefaultsAndClamps(t *testing.T) {
 	}
 }
 
-// TestListTriggersNegativeOffsetIsTreatedAsZero: a negative Offset must not
-// reach Postgres, which rejects a negative OFFSET outright. If the clamp in
-// ListTriggers were removed, this call would return a non-nil error instead
-// of the same rows Offset=0 returns.
+// Postgres rejects a negative OFFSET outright, so without the clamp in
+// ListTriggers this call errors instead of returning rows.
 func TestListTriggersNegativeOffsetIsTreatedAsZero(t *testing.T) {
 	f := newTriggerFixture(t, "list-offset")
 	ctx := context.Background()
@@ -316,12 +282,8 @@ func TestListTriggersNegativeOffsetIsTreatedAsZero(t *testing.T) {
 	}
 }
 
-// TestListTriggersCombinedFiltersUsePlaceholdersCorrectly is the
-// placeholder-numbering regression case: UserID, InstanceID, PhraseSearch and
-// Mode are combined, and four "near miss" rows are created that each violate
-// exactly one of the four predicates. If any bound parameter were numbered
-// against the wrong condition, at least one near miss would incorrectly match
-// or the true match would incorrectly be excluded.
+// Placeholder-numbering regression: four near-miss rows each violate exactly one
+// of the four combined predicates, so a misnumbered parameter changes the result.
 func TestListTriggersCombinedFiltersUsePlaceholdersCorrectly(t *testing.T) {
 	f := newTriggerFixture(t, "combo")
 	otherUser := newTriggerFixture(t, "combo-other-user")
@@ -337,20 +299,14 @@ func TestListTriggersCombinedFiltersUsePlaceholdersCorrectly(t *testing.T) {
 	needle := "combotarget"
 	matchingPhrase := "Combo-" + strings.ToUpper(needle) + "-" + f.suffix // contains "COMBOTARGET", matches needle case-insensitively
 
-	// The one row that satisfies every predicate.
 	matchID := f.create(t, matchingPhrase, pb.TriggerMode_TRIGGER_MODE_ANY, 10)
 
-	// Wrong user: correct instance, phrase and mode, owned by someone else.
 	wrongUserID := otherUser.createOn(t, matchingPhrase, pb.TriggerMode_TRIGGER_MODE_ANY, 10, []int64{f.instanceID})
 
-	// Wrong instance: correct user, phrase and mode, scoped elsewhere.
 	wrongInstanceID := f.createOn(t, matchingPhrase, pb.TriggerMode_TRIGGER_MODE_ANY, 10, []int64{instanceB})
 
-	// Wrong phrase: correct user, instance and mode, phrase does not contain
-	// the needle.
 	wrongPhraseID := f.create(t, "unrelated-"+f.suffix, pb.TriggerMode_TRIGGER_MODE_ANY, 10)
 
-	// Wrong mode: correct user, instance and phrase, different mode.
 	wrongModeID := f.create(t, matchingPhrase, pb.TriggerMode_TRIGGER_MODE_REGEX, 10)
 
 	wantMode := int32(pb.TriggerMode_TRIGGER_MODE_ANY.Number())
@@ -382,9 +338,6 @@ func TestListTriggersCombinedFiltersUsePlaceholdersCorrectly(t *testing.T) {
 	}
 }
 
-// TestListTriggerInstanceIDsReturnsEveryScopedInstance: ListTriggerInstanceIDs
-// returns every instance a trigger is scoped to, and an empty result for one
-// scoped to none.
 func TestListTriggerInstanceIDsReturnsEveryScopedInstance(t *testing.T) {
 	f := newTriggerFixture(t, "instance-ids")
 	ctx := context.Background()
@@ -409,8 +362,7 @@ func TestListTriggerInstanceIDsReturnsEveryScopedInstance(t *testing.T) {
 		t.Errorf("instance ids = %v, want both %d and %d", ids, f.instanceID, instanceB)
 	}
 
-	// A trigger scoped to nothing: CreateTrigger refuses an empty
-	// InstanceIDs list, so this is inserted directly, bypassing it.
+	// CreateTrigger refuses an empty InstanceIDs list, so insert directly.
 	unscopedUUID, err := uuid.NewV7()
 	if err != nil {
 		t.Fatalf("generate uuid: %v", err)

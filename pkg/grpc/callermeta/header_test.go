@@ -9,15 +9,8 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// FromHeader and OriginFromHeader parse Connect request headers: a Connect
-// handler only ever sees identity on the request or connection object itself,
-// never folded into ctx the way gRPC metadata used to be. This file pins the
-// decode side; callermeta_test.go pins the encode side
-// (NewOutgoingContext/NewOutgoingOrigin/WriteHeader) and the two are tied
-// together by TestEncodeThenDecodeAgreesWithWhatWasAttached below.
-
-// TestFromHeaderRoundTrip exercises FromHeader directly against hand-built
-// headers, independent of the encode side.
+// TestFromHeaderRoundTrip exercises FromHeader against hand-built headers,
+// independent of the encode side.
 func TestFromHeaderRoundTrip(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -27,9 +20,7 @@ func TestFromHeaderRoundTrip(t *testing.T) {
 	}{
 		{"discord with user", pb.Platform_PLATFORM_DISCORD, "123456789", true},
 		{"matrix with user", pb.Platform_PLATFORM_MATRIX_PROTOCOL, "@a:example.org", true},
-		// No user id: the caller is acting on its own behalf, which is normal
-		// for cron-driven and health traffic. The header must simply be
-		// absent, not present and empty.
+		// No user id: the header must be absent, not present and empty.
 		{"discord without user", pb.Platform_PLATFORM_DISCORD, "", false},
 	}
 
@@ -59,7 +50,6 @@ func TestFromHeaderRoundTrip(t *testing.T) {
 				t.Errorf("PlatformUID = %q, want nil", *caller.PlatformUID)
 			}
 
-			// No origin header was attached, and none must be reported.
 			if got, ok := OriginFromHeader(header); ok {
 				t.Errorf("origin = %+v on a call that carried none", got)
 			}
@@ -67,8 +57,7 @@ func TestFromHeaderRoundTrip(t *testing.T) {
 	}
 }
 
-// TestFromHeaderErrors: every malformed shape must produce
-// connect.CodeInvalidArgument, not an anonymous caller.
+// Every malformed shape must be InvalidArgument, not an anonymous caller.
 func TestFromHeaderErrors(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -100,8 +89,6 @@ func TestFromHeaderErrors(t *testing.T) {
 			}(),
 		},
 		{
-			// The pre-callermeta client/server mismatch: a numeric value is
-			// not a valid name.
 			name: "platform_enum sent as a number",
 			header: func() http.Header {
 				h := make(http.Header)
@@ -132,8 +119,6 @@ func TestFromHeaderErrors(t *testing.T) {
 	}
 }
 
-// TestOriginFromHeaderRoundTrip exercises OriginFromHeader directly against
-// hand-built headers, independent of the encode side.
 func TestOriginFromHeaderRoundTrip(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -156,8 +141,6 @@ func TestOriginFromHeaderRoundTrip(t *testing.T) {
 			wantOK:      true, wantInstance: "guild-1",
 		},
 		{
-			// A direct message belongs to no guild, so a client would never
-			// send an instance header at all.
 			name:   "no instance header at all",
 			wantOK: false,
 		},
@@ -190,25 +173,6 @@ func TestOriginFromHeaderRoundTrip(t *testing.T) {
 	}
 }
 
-// TestEncodeThenDecodeAgreesWithWhatWasAttached replaces
-// TestFromHeaderAndFromIncomingContextAgree.
-//
-// The old test drove two independent parsers — FromHeader and
-// FromIncomingContext — off one shared http.Header fixture and asserted they
-// agreed, because both existed side by side during the Connect port and a
-// producer/consumer disagreement between them would have been exactly the
-// class of bug callermeta exists to prevent (the original enum-name-vs-number
-// break). FromIncomingContext is now deleted: there is only one parser left,
-// so "two parsers agree" is no longer a meaningful property to pin.
-//
-// What replaced it is the genuine round trip: NewOutgoingContext and
-// NewOutgoingOrigin attach identity to an outgoing context, WriteHeader
-// materialises that context onto the http.Header a real Connect client would
-// send, and FromHeader/OriginFromHeader must decode back exactly what was
-// attached. This is the same property the old test was protecting — producer
-// and consumer must not silently diverge — pinned against the one code path
-// that now exists end to end instead of against two parsers that no longer
-// both exist.
 func TestEncodeThenDecodeAgreesWithWhatWasAttached(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -220,10 +184,8 @@ func TestEncodeThenDecodeAgreesWithWhatWasAttached(t *testing.T) {
 		{name: "well formed", attachIdentity: true, platform: pb.Platform_PLATFORM_DISCORD, uid: "123"},
 		{name: "no uid", attachIdentity: true, platform: pb.Platform_PLATFORM_DISCORD},
 		{
-			// NewOutgoingContext has no way to omit the platform — it is a
-			// required, typed parameter — so "missing platform" is
-			// represented the only way it can be reached through the encode
-			// side: a context nothing ever attached identity to at all.
+			// The platform is a required typed parameter, so the only way to
+			// reach "missing platform" from the encode side is no identity.
 			name:    "identity never attached",
 			wantErr: true,
 		},
@@ -272,8 +234,7 @@ func TestEncodeThenDecodeAgreesWithWhatWasAttached(t *testing.T) {
 				t.Errorf("PlatformUID: decoded %q, attached %q", *caller.PlatformUID, tt.uid)
 			}
 
-			// The origin was always attached in this fixture, so it must
-			// always come back, whatever happened to identity.
+			// The origin is always attached here, whatever happened to identity.
 			origin, ok := OriginFromHeader(header)
 			if !ok {
 				t.Fatal("origin was attached but did not decode")

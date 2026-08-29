@@ -7,43 +7,16 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
-// This file guards the wire-level half of the project-wide identity rule that
-// pkg/grpc/callermeta and every handler in this package implement: the caller
-// is named by gRPC metadata and never by a request field.
-//
-// It lives here, next to the handlers, because this package is where the rule
-// is enforced. It is driven by protobuf reflection rather than by a list of
-// generated accessors on purpose: a hand-written list only fails when somebody
-// remembers to extend it, whereas the descriptor walk below fails the moment a
-// forbidden field exists, including on a request message that does not exist
-// yet.
-//
-// The failure this protects against is specific. Eight request messages carried
-// a user_id or actor_id naming a SUBJECT in the request body. Their numbers and
-// names are now `reserved`, which stops the wire numbers being recycled — but
-// `reserved` says nothing about a field being re-added under the same name at a
-// NEW number, which would reintroduce the hole while looking like an ordinary
-// addition in review.
+// Wire-level guard for the identity rule: a request message must never name its
+// subject. Reflection-driven, so a message added later is covered automatically.
 
-// wirePackage is the only proto package this repository owns. Filtering to it
-// keeps the walk off google.protobuf and buf.validate descriptors, which are
-// registered in the same global registry and are not ours to police.
+// wirePackage keeps the walk off google.protobuf and buf.validate.
 const wirePackage protoreflect.FullName = "ginbot.v1"
 
-// subjectFieldNames are the field names that may never appear on a request
-// message. Both are legitimate on entity and response messages — Trigger.user_id
-// and ActionRecord.actor_id identify the row's owner, which is data rather than
-// an instruction — so the ban is scoped to requests, not to the names as such.
+// subjectFieldNames are banned on requests only; they are legitimate on entities.
 var subjectFieldNames = []protoreflect.Name{"user_id", "actor_id"}
 
-// rangeWireMessages calls fn for every message declared in wirePackage,
-// including nested ones.
-//
-// The descriptors come from protoregistry.GlobalFiles, which the generated
-// package populates from its init — reached here because this package's
-// production code imports it. That is an indirect dependency, so the walk
-// fatals rather than reporting success when it finds nothing: an empty registry
-// would otherwise satisfy every assertion in this file.
+// rangeWireMessages fatals on an empty registry, which would otherwise pass vacuously.
 func rangeWireMessages(t *testing.T, fn func(protoreflect.MessageDescriptor)) {
 	t.Helper()
 
@@ -70,15 +43,6 @@ func rangeWireMessages(t *testing.T, fn func(protoreflect.MessageDescriptor)) {
 	}
 }
 
-// TestNoRequestMessageCarriesASubjectField is the guard proper.
-//
-// A request that names its own subject is the pattern callermeta exists to
-// forbid: the server would be taking "who this is about" from the least
-// trustworthy part of the call. The eight fields that did this are gone, and
-// this fails if any of them — or a ninth, on a message added later — comes back.
-//
-// Scoped to messages whose name ends in Req because that is this repository's
-// request-message convention, and it is the request side that decides authority.
 func TestNoRequestMessageCarriesASubjectField(t *testing.T) {
 	rangeWireMessages(t, func(message protoreflect.MessageDescriptor) {
 		if !isRequestMessage(message) {
@@ -97,24 +61,14 @@ func TestNoRequestMessageCarriesASubjectField(t *testing.T) {
 	})
 }
 
-// isRequestMessage reports whether a descriptor is one of this wire's request
-// messages, by the Req/Resp naming convention every RPC in proto/ginbot/v1
-// follows.
+// isRequestMessage applies the Req/Resp naming convention proto/ginbot/v1 follows.
 func isRequestMessage(message protoreflect.MessageDescriptor) bool {
 	name := string(message.Name())
 	return len(name) > 3 && name[len(name)-3:] == "Req"
 }
 
-// TestTheFormerlyOffendingRequestMessagesStillExist keeps the test above
-// honest.
-//
-// TestNoRequestMessageCarriesASubjectField passes trivially for a message that
-// is not there at all, so renaming or deleting one of the eight would look like
-// a fix rather than a gap. These are the messages the reservations were written
-// for; if one of them is genuinely retired, this list is the place that has to
-// be updated deliberately.
+// The guard above passes trivially for a message that is not declared at all.
 func TestTheFormerlyOffendingRequestMessagesStillExist(t *testing.T) {
-	// The eight messages whose user_id / actor_id was deleted and reserved.
 	wanted := []protoreflect.Name{
 		"SetBirthdayReq",
 		"TryTriggerReq",
@@ -139,16 +93,7 @@ func TestTheFormerlyOffendingRequestMessagesStillExist(t *testing.T) {
 	}
 }
 
-// TestEntityMessagesKeepTheirOwnerFields is the other side of the boundary, and
-// the reason the guard above is scoped to requests rather than to the field
-// names.
-//
-// Deleting the request fields must not turn into deleting the columns they were
-// confused with. Trigger.user_id is the creator, ActionRecord.actor_id is who
-// acted, and both are read by pkg/discord's rendering and by the ownership
-// checks in this package. A well-meaning follow-up sweep for "identity fields
-// in protobuf" would break every one of those, silently, because nothing else
-// asserts they are present.
+// Nothing else asserts these owner fields exist, so a sweep would remove them silently.
 func TestEntityMessagesKeepTheirOwnerFields(t *testing.T) {
 	wanted := map[protoreflect.Name]protoreflect.Name{
 		"Trigger":         "user_id",

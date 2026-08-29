@@ -17,15 +17,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// triggerGroup nests the trigger commands under one Discord parent, so they
-// appear as /trigger add rather than as seven unrelated top-level commands.
-//
-// The flat Name of each member is unchanged, so the old bot's ??triggeradd keeps
-// working; ??trigger add reaches the same handler via Registry.ResolveChat.
 const triggerGroup = "trigger"
 
-// Sub names within triggerGroup. They are short because Discord shows them as
-// the second word of /trigger <sub>, where the group already says "trigger".
 const (
 	triggerSubAdd   = "add"
 	triggerSubDel   = "del"
@@ -36,12 +29,6 @@ const (
 	triggerSubExec  = "exec"
 )
 
-// Limits on how much of a list one reply renders. Both are clamped rather than
-// refused: someone typing 1000 means "as many as you can", not "fail".
-//
-// The list is capped lower than it could be because every trigger costs a line
-// and a message is capped at maxChatContent; a reply cut off mid-line is worse
-// than a reply that says less.
 const (
 	triggerListDefaultLimit int64 = 15
 	triggerListMaxLimit     int64 = 25
@@ -50,85 +37,39 @@ const (
 	triggerStatsMaxLimit     int64 = 25
 )
 
-// triggerFileTimeout bounds the GetFile call that pulls a fired trigger's bytes
-// back. A command handler's context is rooted at Background with no deadline of
-// its own, so without this an unresponsive server holds the handler open
-// indefinitely.
-//
-// It is deliberately shorter than triggerAttemptTimeout, which is the whole
-// budget on the message path: a nested deadline longer than the one enclosing it
-// never expires and so bounds nothing.
-//
-// GetFile is server-streaming now, so this bounds the WHOLE stream — meta
-// chunk plus every content chunk — not one round trip. 10s stays sensible:
-// the server caps a trigger file at storage.MaxFileBytes (8 MiB), which is a
-// few chunks at GetFileChunkBytes each, well inside 10s on anything but a
-// badly degraded link, and a link that slow is exactly the case this timeout
-// exists to cut off.
+// triggerFileTimeout bounds the WHOLE GetFile stream, not one round trip. It
+// must stay shorter than triggerAttemptTimeout, or nesting makes it a no-op.
 const triggerFileTimeout = 10 * time.Second
 
-// maxTriggerFileBytes bounds how much of a streamed GetFile this client will
-// accumulate before giving up. It mirrors pkg/storage.MaxFileBytes by VALUE,
-// deliberately, rather than by importing that package: pkg/storage carries
-// the server's URL-fetching machinery, and a platform client — which never
-// touches storage or the database — has no business linking it in just to
-// read one constant. The server already enforces the real cap on its own
-// side (see the running total in TriggerServer.GetFile); this is this
-// client's own defence against a misbehaving or compromised server sending
-// more than that.
+// maxTriggerFileBytes mirrors pkg/storage.MaxFileBytes by value; a platform
+// client must not link that package.
 const maxTriggerFileBytes = 8 << 20
 
-// triggerCallTimeout bounds every other outgoing trigger RPC.
-//
-// None of them inherits a deadline: commandContext roots the handler context at
-// context.Background. pkg/grpc/client's default-deadline interceptor would
-// eventually catch an unbounded call too, but at its own package-wide 30s
-// default — this is the tighter, command-specific budget that is meant to win.
-// confirmDelivery bounds its own call for the same reason.
+// triggerCallTimeout bounds every other trigger RPC; handler contexts have no
+// deadline of their own.
 const triggerCallTimeout = 20 * time.Second
 
-// unnamedTriggerFileName names an attachment whose file carries neither a
-// filename nor an id. The server always sends at least an id, so this is a
-// last resort that exists only because Discord rejects a blank filename.
+// unnamedTriggerFileName is a last resort: Discord rejects a blank filename.
 const unnamedTriggerFileName = "trigger"
 
-// regexClearanceRequirement names what a regex trigger needs, for the message
-// the server's PermissionDenied is rewritten into.
-//
-// Derived from the enum rather than written out, so it cannot drift from the
-// server's own regexClearanceFloor. The floor itself is not imported because
-// pkg/grpc/server pulls in the database and is not reachable from a platform
-// client; the server remains the sole authority on the decision, and this is
-// only the wording of its refusal.
+// Derived from the enum so it cannot drift from the server's clearance floor.
 var regexClearanceRequirement = strings.ToLower(strings.TrimPrefix(
 	pb.Clearance_CLEARANCE_MODERATOR.String(), "CLEARANCE_"))
 
-// fileArgDescription says what the file argument actually takes. It is a URL,
-// not an attachment: command.ArgType has no attachment kind, and the server
-// fetches the bytes itself from an allow-listed CDN host (ADR-0007).
+// A URL, not an attachment: the server fetches it from an allow-listed CDN
+// host (ADR-0007).
 const fileArgDescription = "Discord CDN link to reply with, e.g. copied from an existing attachment"
 
-// modeArgDescription documents the accepted mode words once, for both the create
-// and the modify command, and is derived from the same table the parser uses so
-// the two cannot drift.
 var modeArgDescription = "How the phrase is matched: " + triggerModeNames() + " (default any)"
 
-// chanceArgDescription documents the chance argument once, built from
-// trigger.MaxChance so the text cannot claim a bound the server does not
-// enforce. The sentinel is called out because a stored 0 meaning "the default"
-// is not discoverable otherwise (ADR-0021).
 var chanceArgDescription = fmt.Sprintf(
 	"Percent chance of firing, 0-%d. 0 means the default, which exact mode triples",
 	trigger.MaxChance,
 )
 
-// kindArgDescription documents the stats counter argument, derived from the same
-// table parseStatsKind uses.
 var kindArgDescription = "Which counter to rank by: " + statsKindNames()
 
-// triggerModeWords maps the mode words a user may type onto the enum, in the
-// order they are offered. A slice rather than a map: the accepted-values message
-// has to read in a stable order, and map iteration does not.
+// A slice, not a map: the accepted-values message needs a stable order.
 var triggerModeWords = []struct {
 	word string
 	mode pb.TriggerMode
@@ -138,10 +79,6 @@ var triggerModeWords = []struct {
 	{"regex", pb.TriggerMode_TRIGGER_MODE_REGEX},
 }
 
-// statsKindWords maps the counter words a user may type onto the ActionType the
-// leaderboard is built from, with the label the reply shows for each. The word
-// and the label are separate because "occurred" is the enum's vocabulary and
-// "random fires" is the user's.
 var statsKindWords = []struct {
 	word       string
 	label      string
@@ -151,37 +88,22 @@ var statsKindWords = []struct {
 	{"called", "forced fires", pb.ActionType_ACTION_TYPE_TRIGGER_CALLED},
 }
 
-// boundedCall derives the context every trigger RPC is made on, and the cancel
-// its caller must defer.
-//
-// A separate helper rather than an inline WithTimeout at each call site, so that
-// a new trigger command cannot quietly be the one that forgets.
 func boundedCall(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, triggerCallTimeout)
 }
 
-// logCallFailure logs a failed trigger RPC, at a level that matches whose fault
-// it is.
-//
-// NotFound is the server's deliberate answer for "not yours or does not exist"
-// — an ordinary outcome of a mistyped id, not an incident — so it stays at debug
-// rather than filling the log with errors that need no action. runInteraction and
-// dispatchChatCommand log the returned error again, so nothing is lost.
+// NotFound is the ordinary answer for a mistyped id, so it stays at debug.
 func logCallFailure(rpc string, err error) {
 	if connect.CodeOf(err) == connect.CodeNotFound {
 		log.Z.Debug("trigger rpc found nothing.", zap.String("rpc", rpc))
 		return
 	}
 
-	// Never the phrase, the reply or the id: a stored phrase must not reach a
-	// log line, and an InvalidArgument message here can quote the pattern.
+	// Never the phrase, reply or id: stored content must not reach a log line.
 	log.Z.Error("trigger rpc failed.", zap.String("rpc", rpc), zap.Error(err))
 }
 
-// parseTriggerMode maps a user-supplied mode word onto a TriggerMode.
-// An empty value yields TRIGGER_MODE_UNSPECIFIED with ok true, meaning "not
-// specified"; the caller then leaves the field unset and the server defaults it.
-// Matching is case-insensitive and surrounding space is trimmed.
+// An empty value yields UNSPECIFIED with ok true, for the server to default.
 func parseTriggerMode(value string) (pb.TriggerMode, bool) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -197,7 +119,6 @@ func parseTriggerMode(value string) (pb.TriggerMode, bool) {
 	return pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED, false
 }
 
-// triggerModeNames lists the accepted mode words for an error message.
 func triggerModeNames() string {
 	words := make([]string, 0, len(triggerModeWords))
 	for _, candidate := range triggerModeWords {
@@ -207,13 +128,10 @@ func triggerModeNames() string {
 	return strings.Join(words, ", ")
 }
 
-// triggerModeName turns TRIGGER_MODE_EXACT into "exact" for display.
 func triggerModeName(mode pb.TriggerMode) string {
 	return strings.ToLower(strings.TrimPrefix(mode.String(), "TRIGGER_MODE_"))
 }
 
-// parseStatsKind maps a user-supplied kind word onto the leaderboard's
-// ActionType. An empty value yields ACTION_TYPE_TRIGGER_OCCURRED.
 func parseStatsKind(value string) (pb.ActionType, bool) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -229,7 +147,6 @@ func parseStatsKind(value string) (pb.ActionType, bool) {
 	return pb.ActionType_ACTION_TYPE_TRIGGER_OCCURRED, false
 }
 
-// statsKindNames lists the accepted kind words for an error message.
 func statsKindNames() string {
 	words := make([]string, 0, len(statsKindWords))
 	for _, candidate := range statsKindWords {
@@ -239,7 +156,6 @@ func statsKindNames() string {
 	return strings.Join(words, ", ")
 }
 
-// statsKindLabel names a counter the way the leaderboard shows it.
 func statsKindLabel(kind pb.ActionType) string {
 	for _, candidate := range statsKindWords {
 		if candidate.actionType == kind {
@@ -252,11 +168,8 @@ func statsKindLabel(kind pb.ActionType) string {
 
 func triggerAddCommand() command.Command {
 	return command.Command{
-		Name: "triggeradd",
-		// triggercreate reads naturally for anyone who reached for it first.
-		Aliases: []string{"triggercreate"},
-		// No command name in the example: this text is shown both as the flat
-		// command's description and as the /trigger add subcommand's.
+		Name:        "triggeradd",
+		Aliases:     []string{"triggercreate"},
 		Description: "Create an auto-responder that fires when a phrase appears in chat",
 		Group:       triggerGroup,
 		Sub:         triggerSubAdd,
@@ -289,9 +202,7 @@ func triggerAddCommand() command.Command {
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
-		// The server fetches the file argument from a CDN before it answers,
-		// bounded at 30 seconds, which is ten times Discord's interaction
-		// deadline. Acknowledged first, answered afterwards.
+		// The server's CDN fetch outlasts Discord's 3s interaction deadline.
 		Slow:    true,
 		Handler: addTrigger,
 	}
@@ -302,18 +213,11 @@ func addTrigger(ctx context.Context, inv *command.Invocation) (*command.Response
 	reply := strings.TrimSpace(inv.String("reply"))
 	fileURL := strings.TrimSpace(inv.String("file"))
 
-	// Everything the client can judge is judged BEFORE the instance lookup and
-	// before the RPC. The server enforces all of it too, but a round trip that
-	// only tells the user something obvious is a bad trade.
 	if reply == "" && fileURL == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("a trigger needs either a reply or a file"))
 	}
-	// Refused rather than silently resolved. chk_reply_or_file permits both
-	// columns at once and the server fires the REPLY when both are set, so
-	// accepting this would store a file that can never play and bill the caller
-	// a CDN fetch for it. There is no way to express "both" in a single answer,
-	// so the caller has to choose.
+	// The server fires the reply when both are set, so the file could never play.
 	if reply != "" && fileURL != "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("a trigger answers with a reply or a file, not both"))
@@ -344,8 +248,6 @@ func addTrigger(ctx context.Context, inv *command.Invocation) (*command.Response
 	if fileURL != "" {
 		b.FileUrl = &fileURL
 	}
-	// UNSPECIFIED is what "the caller did not choose" looks like, so it is left
-	// unset and the server applies its own default.
 	if mode != pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED {
 		b.Mode = &mode
 	}
@@ -388,10 +290,8 @@ func triggerDelCommand() command.Command {
 	}
 }
 
-// deleteTrigger names no instance: the server scopes ownership from the call
-// origin, and another user's trigger comes back NotFound by design so that a
-// caller cannot probe for ids. That is left as "Not found." rather than dressed
-// up as a permission error.
+// No instance: the server scopes ownership itself and answers NotFound by
+// design, so a caller cannot probe for ids.
 func deleteTrigger(ctx context.Context, inv *command.Invocation) (*command.Response, error) {
 	id := inv.String("id")
 
@@ -451,19 +351,14 @@ func triggerModCommand() command.Command {
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
-		// Slow for the same reason addTrigger is: a new file argument makes the
-		// server fetch it before answering.
+		// Slow for addTrigger's reason: a new file argument is fetched first.
 		Slow:    true,
 		Handler: modifyTrigger,
 	}
 }
 
-// modifyTrigger sends only the fields the caller actually supplied.
-//
 // UpdateTriggerReq is patch-shaped: the server branches on HasX(), so an unset
-// field means "leave it alone". Sending a defaulted value instead would make
-// editing a trigger's reply silently reset its chance to 0, which is the class of
-// bug clearRepeatSentinel exists to avoid on the reminder side.
+// field means "leave it alone".
 func modifyTrigger(ctx context.Context, inv *command.Invocation) (*command.Response, error) {
 	id := inv.String("id")
 
@@ -479,17 +374,8 @@ func modifyTrigger(ctx context.Context, inv *command.Invocation) (*command.Respo
 
 	b := pb.UpdateTriggerReq_builder{Id: &id}
 
-	// Each field is sent only when it was supplied AND non-blank. Has() alone is
-	// not enough: chat arguments bind positionally, so changing only the mode
-	// means typing "" for everything before it, and a supplied-but-empty value
-	// is that placeholder rather than a request.
-	//
-	// It also closes two holes. An empty file_url passes HasFileUrl() but the
-	// server then skips the update, so the handler would report a change that
-	// did not happen. An empty reply is written as NULL, which on a trigger with
-	// no file violates chk_reply_or_file and surfaces as a bare
-	// "Something went wrong." — clearing a reply is not an operation this
-	// command offers, because a trigger with nothing to say cannot exist.
+	// Chat arguments bind positionally, so a blank is a placeholder for a later
+	// argument rather than a request to clear.
 	if phrase := strings.TrimSpace(inv.String("phrase")); inv.Has("phrase") && phrase != "" {
 		b.Phrase = &phrase
 	}
@@ -506,9 +392,7 @@ func modifyTrigger(ctx context.Context, inv *command.Invocation) (*command.Respo
 		b.Mode = &mode
 	}
 
-	// Refused here rather than sent: the server would accept an id-only update,
-	// do nothing and report success, which reads to the user as a change that
-	// did not stick.
+	// The server would accept an id-only update, do nothing and report success.
 	if b.Phrase == nil && b.Reply == nil && b.FileUrl == nil && b.Chance == nil && b.Mode == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("nothing to change: give at least one of phrase, reply, file, chance or mode"))
@@ -564,16 +448,12 @@ func listTriggers(ctx context.Context, inv *command.Invocation) (*command.Respon
 
 	req := pb.ListTriggersReq_builder{Limit: &limit}
 	if search != "" {
-		// Phrase only, not phrase AND reply: the server ANDs its filters, so
-		// setting both would demand the same text appear in each.
+		// Phrase only: the server ANDs its filters.
 		req.Phrase = &search
 	}
 
 	if mine := inv.Bool("mine"); mine {
-		// A flag rather than the caller's user id, which the client does not
-		// know: identity travels as a platform id in metadata, so asking for
-		// "mine" by id meant a GetUser round trip first, purely to tell the
-		// server something it resolves itself on every call.
+		// A flag, not a user id: caller identity travels in request headers.
 		req.Mine = &mine
 	}
 
@@ -718,8 +598,7 @@ func triggerExecCommand() command.Command {
 	}
 }
 
-// execTrigger is the one trigger command whose reply is NOT ephemeral: playing a
-// trigger back is only useful if the channel sees it.
+// The one trigger command whose reply is not ephemeral: the channel must see it.
 func execTrigger(ctx context.Context, inv *command.Invocation) (*command.Response, error) {
 	id := inv.String("id")
 
@@ -742,22 +621,13 @@ func execTrigger(ctx context.Context, inv *command.Invocation) (*command.Respons
 		return nil, err
 	}
 
-	// callCtx, not ctx: triggerPlaybackResponse derives its own GetFile
-	// deadline (triggerFileTimeout) from whatever it is handed, and that only
-	// bounds anything if the parent itself is bounded. ctx here is the raw
-	// handler context, rooted at context.Background with no deadline of its
-	// own — passing it would have made triggerFileTimeout a no-op nested
-	// inside an unbounded parent.
+	// callCtx, not ctx: ctx is unbounded, so triggerFileTimeout would be a no-op.
 	out, err := triggerPlaybackResponse(callCtx, resp.Msg)
 	if err != nil {
 		return nil, err
 	}
 	if out == nil {
-		// Should not happen: ExecTrigger answers NotFound for an id it cannot
-		// fire. A non-nil response regardless, because respondCommand logs an
-		// error and answers nothing for a nil one, which shows the caller "the
-		// application did not respond". Ephemeral, unlike a real playback: there
-		// is nothing for the channel to see.
+		// A nil response makes Discord show "the application did not respond".
 		return &command.Response{
 			Content:   "That trigger has nothing to play back.",
 			Ephemeral: true,
@@ -767,11 +637,7 @@ func execTrigger(ctx context.Context, inv *command.Invocation) (*command.Respons
 	return out, nil
 }
 
-// triggerPlaybackResponse renders a fired trigger, fetching the bytes when the
-// reply is a file rather than text.
-//
-// nil, nil means nothing fired, which every caller reports its own way: the
-// message path stays silent and execTrigger says so out loud.
+// A nil, nil return means nothing fired.
 func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*command.Response, error) {
 	switch {
 	case resp.HasReply():
@@ -783,11 +649,6 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 		fileID := file.GetFileId()
 		req := pb.GetFileReq_builder{FileId: &fileID}.Build()
 
-		// Bounded: GetFile streams a file's bytes back in chunks, and a stream
-		// over a wedged connection would otherwise hold this handler — and, on
-		// the message path, a goroutine per message — open indefinitely. The
-		// deadline covers the whole stream, not one round trip; see
-		// triggerFileTimeout's own comment.
 		fileCtx, cancel := context.WithTimeout(ctx, triggerFileTimeout)
 		defer cancel()
 
@@ -800,20 +661,14 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 			_ = stream.Close()
 		}()
 
-		// meta is nil unless the stream's first chunk carried one, which is
-		// the server's contract but not something this client trusts blindly
-		// — see the oneof handling below.
 		var meta *pb.TriggerFile
 		var content bytes.Buffer
 
 		for stream.Receive() {
 			chunk := stream.Msg()
 
-			// The oneof is handled the way the reverse stream's payload is:
-			// an unset arm, an arm this client does not recognise, or — here
-			// — a second meta chunk are ORDINARY INPUT from a server this
-			// client does not fully trust, not bugs. None of them aborts the
-			// whole playback.
+			// An unset, unrecognised or duplicate arm is ordinary input from an
+			// untrusted server, not a bug.
 			switch {
 			case chunk.HasMeta():
 				if meta == nil {
@@ -821,11 +676,6 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 				}
 			case chunk.HasContent():
 				if content.Len()+len(chunk.GetContent()) > maxTriggerFileBytes {
-					// Exceeding this client's own cap is not "nothing fired":
-					// the server enforces storage.MaxFileBytes on its own
-					// side, so a stream that gets here anyway means the two
-					// disagree, which is worth surfacing as a failure rather
-					// than swallowing quietly.
 					log.Z.Error("trigger file exceeds the client's own size cap; aborting playback.",
 						zap.String("file_id", fileID))
 					return nil, connect.NewError(connect.CodeInternal, errors.New("trigger file exceeds the maximum size"))
@@ -838,26 +688,14 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 			return nil, err
 		}
 
-		// An empty blob is treated as nothing fired. responseFiles drops a
-		// zero-byte attachment, and Content is empty here by design, so sending
-		// it would be a message with neither text nor a file — which Discord
-		// rejects outright, leaving only a log line behind.
+		// Discord rejects a message carrying neither text nor a file.
 		if content.Len() == 0 {
 			log.Z.Warn("a trigger file has no content.", zap.String("file_id", fileID))
 			return nil, nil
 		}
 
-		// A stream can end cleanly and still be short: the server reads the
-		// blob off disk, so a truncated or replaced file yields a normal EOF
-		// with stream.Err() nil, and without this the partial bytes would be
-		// posted to the channel as if they were the whole file. Checking the
-		// declared byte_size is the only thing that distinguishes the two, and
-		// it is what the meta chunk is carried for.
-		//
-		// Guarded on > 0 rather than on presence: byte_size is not optional in
-		// the schema, so a server that genuinely does not know the size sends
-		// zero, and refusing every file in that case would be worse than
-		// posting one.
+		// A truncated file yields a clean EOF with a nil stream.Err(), so the
+		// declared byte_size is the only way to catch a short stream.
 		if meta != nil && meta.GetByteSize() > 0 && int64(content.Len()) != meta.GetByteSize() {
 			log.Z.Error("trigger file stream ended short of its declared size.",
 				zap.String("file_id", fileID),
@@ -867,10 +705,6 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 			return nil, connect.NewError(connect.CodeInternal, errors.New("trigger file was incomplete"))
 		}
 
-		// The meta chunk's TriggerFile is preferred for the attachment name
-		// and MIME type when the server sent one; TryTriggerResp's own file
-		// is the fallback, which is what keeps this working against a server
-		// that (impossibly, per the current contract) sent no meta at all.
 		displayFile := file
 		if meta != nil {
 			displayFile = meta
@@ -882,16 +716,10 @@ func triggerPlaybackResponse(ctx context.Context, resp *pb.TryTriggerResp) (*com
 	return nil, nil
 }
 
-// triggerFileResponse builds a command.Response carrying a fired trigger's
-// file as an attachment.
-//
-// Content is empty on purpose: the file is the reply, and a caption the author
-// never wrote would be the bot talking over them.
+// Content is empty on purpose: the file is the reply.
 func triggerFileResponse(file *pb.TriggerFile, content []byte) *command.Response {
 	name := file.GetFilename()
 	if name == "" {
-		// The server derives a filename from the id and the sniffed type, so a
-		// blank one means an older or hand-built response.
 		name = file.GetFileId()
 	}
 	if name == "" {
@@ -907,38 +735,23 @@ func triggerFileResponse(file *pb.TriggerFile, content []byte) *command.Response
 	}
 }
 
-// formatTriggerInfo renders the detail view of one trigger.
-//
-// It is a pure function of the protobuf so it can be unit-tested without a
-// Discord session or a Connect client, and it is nil-safe throughout because
-// discordgo does not recover a panic raised in a handler.
+// Nil-safe throughout: discordgo does not recover a panic raised in a handler.
 func formatTriggerInfo(t *pb.Trigger) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "**Trigger** `%s`\n", t.GetId())
 	fmt.Fprintf(&b, "Phrase: %s\n", emptyDash(t.GetPhrase()))
 	fmt.Fprintf(&b, "Mode: %s\n", triggerModeName(t.GetMode()))
-	// The EFFECTIVE chance, never the stored one: a stored 0 means the default
-	// and exact mode triples whatever it resolves to, so printing the column
-	// would tell a user their trigger fires at 0% when it fires at 15%
-	// (ADR-0021).
+	// The effective chance, never the stored column: 0 means default (ADR-0021).
 	fmt.Fprintf(&b, "Chance: %d%%\n", trigger.EffectiveChance(t.GetChance(), t.GetMode()))
 	fmt.Fprintf(&b, "%s\n", triggerReplyLine(t))
-	// renderReminderStamp is shared rather than duplicated: an absent instant
-	// and a relative tag are the same problem here as on a reminder.
 	fmt.Fprintf(&b, "Created: %s\n", renderReminderStamp(t.HasCreatedAt(), t.GetCreatedAt().AsTime()))
 	fmt.Fprintf(&b, "Updated: %s", renderReminderStamp(t.HasUpdatedAt(), t.GetUpdatedAt().AsTime()))
 
 	return b.String()
 }
 
-// triggerAnswer describes what a trigger actually answers with.
-//
-// TEXT WINS over a file, and that order is not cosmetic. chk_reply_or_file is an
-// OR, not an exclusive one, so a row can hold both — and the server's
-// buildTryTriggerResp checks the reply FIRST, so such a trigger fires with text
-// and its file is never played. Showing the file here would tell a user their
-// trigger does the opposite of what it does.
+// Text wins over a file: the server checks the reply first when a row has both.
 func triggerAnswer(t *pb.Trigger) (label string, value string, isFile bool) {
 	if reply := t.GetReply(); reply != "" {
 		return "Reply", reply, false
@@ -950,14 +763,12 @@ func triggerAnswer(t *pb.Trigger) (label string, value string, isFile bool) {
 	return "Reply", emptyDash(""), false
 }
 
-// triggerReplyLine describes what a trigger answers with, for the detail view.
 func triggerReplyLine(t *pb.Trigger) string {
 	label, value, _ := triggerAnswer(t)
 
 	return label + ": " + value
 }
 
-// renderTriggerLine renders one trigger for the list.
 func renderTriggerLine(t *pb.Trigger) string {
 	_, answer, isFile := triggerAnswer(t)
 	if isFile {
@@ -973,10 +784,6 @@ func renderTriggerLine(t *pb.Trigger) string {
 	)
 }
 
-// formatTriggerStats renders the leaderboard.
-//
-// An empty slice gets a sentence rather than a bare title: a heading with
-// nothing under it reads like the reply was cut off.
 func formatTriggerStats(stats []*pb.TriggerStat, kind pb.ActionType) string {
 	label := statsKindLabel(kind)
 
@@ -998,19 +805,8 @@ func formatTriggerStats(stats []*pb.TriggerStat, kind pb.ActionType) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// currentTriggerInstance builds the pb.TriggerInstance for where the command
-// was typed, using the canonical jsonb shape from callermeta so the server
-// resolves the same instance row the interceptor would.
-//
-// FailedPrecondition, not Internal: a trigger command in a direct message has no
-// guild to scope to, which is a user mistake rather than a bug, and errorMessage
-// passes a FailedPrecondition message through to the caller verbatim.
-//
-// An EMPTY GuildID is refused as well as a missing origin, which currentDestination
-// does not do. It is load-bearing on two counts: callermeta.NewOutgoingOrigin
-// drops an origin with no instance uid, so the server would answer a DM with its
-// own generic refusal after a round trip; and this is also the message path's
-// gate, where that round trip would be paid once per direct message.
+// An empty GuildID is refused here so a DM costs no round trip;
+// FailedPrecondition is the one code errorMessage passes through verbatim.
 func currentTriggerInstance(ctx context.Context) (*pb.TriggerInstance, error) {
 	origin, ok := originFromContext(ctx)
 	if !ok || origin.GuildID == "" {
@@ -1027,12 +823,8 @@ func currentTriggerInstance(ctx context.Context) (*pb.TriggerInstance, error) {
 	}.Build(), nil
 }
 
-// triggerChance validates a supplied chance and returns it as a builder field,
-// or nil when the caller did not supply one.
-//
-// nil rather than 0 is the whole point: 0 is a stored sentinel meaning "the
-// default" (ADR-0021), so sending it for an omitted argument would overwrite a
-// tuned chance on every edit.
+// nil, not 0, for an omitted argument: 0 is the stored "default" sentinel and
+// would overwrite a tuned chance (ADR-0021).
 func triggerChance(inv *command.Invocation) (*int32, error) {
 	if !inv.Has("chance") {
 		return nil, nil
@@ -1049,8 +841,6 @@ func triggerChance(inv *command.Invocation) (*int32, error) {
 	return &chance, nil
 }
 
-// clampTriggerLimit resolves a caller-supplied limit. It clamps rather than
-// refuses, because someone typing a huge number means "as many as you can".
 func clampTriggerLimit(inv *command.Invocation, defaultLimit int64, maxLimit int64) int64 {
 	if !inv.Has("limit") {
 		return defaultLimit
@@ -1067,21 +857,11 @@ func clampTriggerLimit(inv *command.Invocation, defaultLimit int64, maxLimit int
 	return limit
 }
 
-// invalidModeError names the accepted mode words, so a typo is answered with the
-// list instead of a bare refusal.
 func invalidModeError() error {
 	return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("mode must be one of: %s", triggerModeNames()))
 }
 
-// explainRegexRefusal rewrites the server's PermissionDenied for a regex trigger
-// into a FailedPrecondition naming the requirement.
-//
-// errorMessage maps PermissionDenied to a flat "You are not allowed to do that.",
-// which for this one case hides a reason the user can act on, while it passes a
-// FailedPrecondition message through verbatim. It only applies when the caller
-// actually asked for regex mode: the server stays the sole authority on the
-// decision, and any other refusal keeps its generic wording rather than being
-// explained as something it may not be.
+// PermissionDenied is flattened by errorMessage; FailedPrecondition survives.
 func explainRegexRefusal(err error, mode pb.TriggerMode) error {
 	if mode != pb.TriggerMode_TRIGGER_MODE_REGEX || connect.CodeOf(err) != connect.CodePermissionDenied {
 		return err

@@ -1,29 +1,8 @@
 //go:build integration
 
-// Integration tests for the database layer. These require a live Postgres.
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/db/...
-//
-// Connection settings come from the same GINBOT_DB_* environment variables the
-// server uses.
-//
-// The whole suite runs against a THROWAWAY DATABASE created per run, not
-// against the configured one. That is not tidiness: ReclaimStaleReminders and
-// ClaimDueReminders issue table-global UPDATEs over the entire reminder table
-// by design — the cron sweep genuinely means "every stale reminder" — and
-// `go test ./...` runs packages CONCURRENTLY in separate processes against one
-// Postgres. Sharing a database therefore had this package reclaiming and
-// claiming pkg/grpc/server's fixtures and vice versa, which is what made
-// TestReclaimStaleRemindersCountsBothOutcomes fail roughly one run in five and
-// pass in isolation. Isolating the database is what lets the assertions in
-// this package be exact rather than lower bounds.
-//
-// repost_migration_integration_test.go already established this pattern for
-// its own destructive test and its migrationTestDSN helper is reused below.
-// It creates its own second-level throwaway through db(), which now points at
-// this one — CREATE DATABASE works fine from inside any database, it just
-// cannot run inside a transaction.
+// The suite runs against a throwaway database created per run: the claim and
+// reclaim sweeps are table-global, and `go test ./...` runs packages
+// concurrently against one Postgres.
 package db
 
 import (
@@ -50,32 +29,24 @@ func TestMain(m *testing.M) {
 	log.InitializeLogger(config.AppEnvironment, config.LogLevel)
 	config.SetEnv()
 
-	// The throwaway is created and later dropped through this pool, because
-	// CREATE DATABASE and DROP DATABASE cannot run from inside the database
-	// they name.
+	// CREATE DATABASE and DROP DATABASE cannot run from inside the database they
+	// name, so the throwaway is created and dropped through this pool.
 	InitDB()
 	sharedPool := dbpool
 
-	// A migrated-from-scratch database is the entire premise of this suite. If
-	// migrations are off, every test would fail against empty schema with a
-	// confusing "relation does not exist" instead of the real cause.
+	// Without migrations every test fails on empty schema with a misleading
+	// "relation does not exist".
 	if !config.Options.DB.Migrations {
 		fatalf("GINBOT_DB_MIGRATIONS is disabled, so the throwaway database cannot be migrated; " +
 			"unset it or set it to anything but the exact literal \"false\" to run the integration suite")
 	}
 
-	// Reclaim anything a previous run leaked before creating this run's own.
-	// The teardown below is careful, but it cannot cover every exit: a test
-	// that panics, or an EnsureLatestVersion that log.Z.Fatal's, takes the
-	// process out through os.Exit and skips it entirely. Without this sweep the
-	// orphan is invisible — the name carries a pid and a timestamp, so nobody
-	// finds it by guessing — and they accumulate one per crashed run until
-	// Postgres refuses connections.
+	// A panic or log.Z.Fatal leaves through os.Exit and skips the teardown below,
+	// so leaked databases accumulate until Postgres refuses connections.
 	dropLeakedSuiteDatabases(sharedPool)
 
-	// Lowercase and punctuation-free so it needs no quoting as an identifier.
-	// The pid is in the name as well as the timestamp because two `go test`
-	// invocations can start within the same nanosecond bucket on a fast clock.
+	// Lowercase and unpunctuated so it needs no quoting as an identifier; the pid
+	// separates two runs starting in the same nanosecond.
 	suiteDatabase := fmt.Sprintf("ginbot_suite_%d_%d", os.Getpid(), time.Now().UnixNano())
 
 	if _, err := sharedPool.Exec(context.Background(), `CREATE DATABASE `+suiteDatabase); err != nil {
@@ -87,26 +58,20 @@ func TestMain(m *testing.M) {
 		fatalf("open throwaway database %s: %v", suiteDatabase, err)
 	}
 
-	// Everything from here on — EnsureLatestVersion included, since it
-	// migrates whatever db() currently points at — acts on the throwaway.
+	// EnsureLatestVersion migrates whatever db() points at, so the swap comes
+	// first or the configured database is migrated instead.
 	dbpool = suitePool
 	EnsureLatestVersion()
 
-	// TestMain has no *testing.T and therefore no t.Cleanup, so the exit code
-	// is captured and teardown is run by hand. `defer CloseDB()` with a bare
-	// m.Run() would never drop the database at all: os.Exit skips defers, and
-	// without capturing the code there is nothing to exit WITH.
+	// os.Exit skips defers, so the code is captured and teardown run by hand.
 	code := m.Run()
 
-	// The pool on the throwaway has to close before it can be dropped: DROP
-	// DATABASE refuses while a session is connected, and FORCE covers a
-	// connection the pool has not yet released.
+	// DROP DATABASE refuses while a session is connected, so the throwaway's pool
+	// closes first; FORCE covers a connection it has not yet released.
 	dbpool = sharedPool
 	suitePool.Close()
 
 	if _, err := sharedPool.Exec(context.Background(), `DROP DATABASE IF EXISTS `+suiteDatabase+` WITH (FORCE)`); err != nil {
-		// Loud, and fatal to the run: a leaked database is silent otherwise
-		// and accumulates one per run until the server refuses connections.
 		log.Z.Error("failed to drop the throwaway database; it has been LEAKED and must be dropped by hand")
 		fmt.Fprintf(os.Stderr, "drop throwaway database %s: %v\n", suiteDatabase, err)
 		code = 1
@@ -117,24 +82,15 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// fatalf reports a setup failure TestMain cannot continue past. log.Z is
-// available by the time any caller runs, but the message goes to stderr too:
-// a `go test` failure that only exists in a structured log line is easy to
-// miss in CI output.
+// fatalf reports a setup failure to stderr, where CI output will show it.
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "pkg/db integration setup: "+format+"\n", args...)
 	os.Exit(1)
 }
 
-// dropLeakedSuiteDatabases removes throwaway databases left behind by a run
-// that died before its teardown.
-//
-// Best effort by design: it must never fail the suite. A database still in use
-// by a CONCURRENTLY running suite is skipped rather than forced — DROP without
-// FORCE errors while sessions are attached, which is exactly the protection
-// wanted here, so two developers running the suite at once do not knife each
-// other's fixtures. `ginbot_migtest_%` is swept too; repost_migration's own
-// per-test throwaway has the same failure mode.
+// dropLeakedSuiteDatabases is best effort and must never fail the suite. DROP
+// without FORCE errors while sessions are attached, which is what skips a
+// database a concurrently running suite is still using.
 func dropLeakedSuiteDatabases(pool *pgxpool.Pool) {
 	ctx := context.Background()
 
@@ -163,8 +119,8 @@ func dropLeakedSuiteDatabases(pool *pgxpool.Pool) {
 	}
 
 	for _, name := range leaked {
-		// Identifier interpolation is safe here: these names came from
-		// pg_database and matched the two literal prefixes above.
+		// Interpolation is safe: these names came from pg_database and matched the
+		// two literal prefixes above.
 		if _, err := pool.Exec(ctx, `DROP DATABASE IF EXISTS `+name); err != nil {
 			log.Z.Debug("left a throwaway database in place; it is most likely in use by a concurrent run",
 				zap.String("database", name), zap.Error(err))
@@ -174,7 +130,6 @@ func dropLeakedSuiteDatabases(pool *pgxpool.Pool) {
 	}
 }
 
-// meta builds a structpb.Struct from string key/values.
 func meta(t *testing.T, kv map[string]string) *structpb.Struct {
 	t.Helper()
 	fields := make(map[string]any, len(kv))
@@ -188,11 +143,8 @@ func meta(t *testing.T, kv map[string]string) *structpb.Struct {
 	return s
 }
 
-// cleanupUser removes a user and its platform identities.
-//
-// platform_user.user_id has no ON DELETE CASCADE, so deleting user_account
-// first always fails the foreign key. Errors are asserted rather than
-// discarded — silently ignoring them leaked rows on every run.
+// cleanupUser deletes platform_user first: user_id has no ON DELETE CASCADE, so
+// removing user_account first always fails the foreign key.
 func cleanupUser(t *testing.T, userID string) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -206,7 +158,6 @@ func cleanupUser(t *testing.T, userID string) {
 	})
 }
 
-// cleanupInstanceByMeta removes an instance and everything hanging off it.
 func cleanupInstanceByMeta(t *testing.T, instanceMeta *structpb.Struct) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -253,7 +204,6 @@ func TestCreateAndGetUser(t *testing.T) {
 		t.Error("created_at was not scanned")
 	}
 
-	// ToProto must not panic and must carry the id through.
 	if got := user.ToProto().GetId(); got != userID {
 		t.Errorf("ToProto id = %q, want %q", got, userID)
 	}
@@ -274,8 +224,6 @@ func TestGetUserNotFound(t *testing.T) {
 	}
 }
 
-// CreateUser must be atomic: a duplicate platform identity has to roll the
-// user_account insert back rather than leaving an orphan behind.
 func TestCreateUserIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	platformUID := "dup-uid-" + time.Now().Format("150405.000000")
@@ -334,7 +282,6 @@ func TestGetOrCreateDestinationIsIdempotent(t *testing.T) {
 		t.Errorf("not idempotent: got %d then %d", first, second)
 	}
 
-	// The instance must have been created exactly once, too.
 	var instances int
 	if err := db().QueryRow(ctx,
 		`SELECT COUNT(*) FROM instance WHERE instance_meta = $1`,
@@ -361,9 +308,6 @@ func TestCreateAndReadReminder(t *testing.T) {
 	}
 	cleanupUser(t, userID)
 
-	// The instance and destination metadata use the canonical shapes from
-	// callermeta, which is what production writes, so the jsonb this row is
-	// resolved through is the same jsonb the delivery path reads.
 	origin := callermeta.Origin{InstanceUID: "rg-" + suffix, DestinationUID: "rc-" + suffix}
 	destination := pb.ReminderDestination_builder{
 		PlatformEnum:    pb.Platform_PLATFORM_DISCORD.Enum(),
@@ -378,7 +322,6 @@ func TestCreateAndReadReminder(t *testing.T) {
 		t.Fatalf("destination: %v", err)
 	}
 
-	// Already in the past, so the delivery loop's claim would pick it up.
 	fireAt := time.Now().Add(-time.Minute).UTC()
 	message := "integration reminder"
 	timezone := "Europe/Helsinki"
@@ -414,7 +357,6 @@ func TestCreateAndReadReminder(t *testing.T) {
 	if reminder.UserID == nil || *reminder.UserID != userID {
 		t.Errorf("user_id = %v, want %q", reminder.UserID, userID)
 	}
-	// repeat_cron and parent_id were unset and must be NULL, not "".
 	if reminder.RepeatCron != nil {
 		t.Errorf("repeat_cron = %v, want nil", *reminder.RepeatCron)
 	}
@@ -430,12 +372,6 @@ func TestCreateAndReadReminder(t *testing.T) {
 		t.Errorf("ToProto id = %q, want %q", proto.GetId(), reminderID)
 	}
 
-	// The past-due reminder is picked up by the delivery loop's claim. It used to
-	// be checked through db.ExpiredReminders, which has been deleted: it returned
-	// every user's due reminders — message text and resolved destination — with no
-	// user_id predicate, and the cron loop uses ClaimDueReminders instead.
-	// ClaimDueReminders has its own dedicated tests in reminder_integration_test.go;
-	// this only confirms the freshly written row is visible to it.
 	claimed, err := ClaimDueReminders(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("ClaimDueReminders: %v", err)
@@ -461,16 +397,13 @@ func TestCreateAndReadReminder(t *testing.T) {
 	if updated.Status != int32(pb.ReminderStatus_REMINDER_STATUS_DELIVERED.Number()) {
 		t.Errorf("status = %d, want %d", updated.Status, pb.ReminderStatus_REMINDER_STATUS_DELIVERED.Number())
 	}
-	// The updated_at trigger added by the schema-defect migration must have fired.
 	if !updated.UpdatedAt.After(updated.CreatedAt) {
 		t.Error("updated_at did not advance on UPDATE; trigger missing")
 	}
 }
 
-// Regression test for the get-or-create race. Before the unique indexes and the
-// ON CONFLICT inserts, concurrent callers for the same channel all missed the
-// SELECT and each inserted, producing duplicate instance and destination rows
-// that later lookups would pick from arbitrarily.
+// The unique indexes plus ON CONFLICT are what stop concurrent callers all
+// missing the SELECT and each inserting a duplicate row.
 func TestGetOrCreateDestinationIsRaceSafe(t *testing.T) {
 	ctx := context.Background()
 	suffix := time.Now().Format("150405.000000")
@@ -509,7 +442,6 @@ func TestGetOrCreateDestinationIsRaceSafe(t *testing.T) {
 		}
 	}
 
-	// Every caller must observe the same destination.
 	for i, id := range ids {
 		if id != ids[0] {
 			t.Errorf("goroutine %d got destination %d, goroutine 0 got %d", i, id, ids[0])
@@ -537,10 +469,8 @@ func TestGetOrCreateDestinationIsRaceSafe(t *testing.T) {
 	}
 }
 
-// The uniqueness that makes the bootstrap idempotent is on
-// (platform_enum, instance_meta). A Discord guild id and a Matrix room id could
-// collide as strings, so the platform has to be part of the key or the two
-// would share one instance row.
+// Uniqueness is on (platform_enum, instance_meta): a Discord guild id and a
+// Matrix room id could collide as strings and share one instance row.
 func TestGetOrCreateDestinationIsScopedToPlatform(t *testing.T) {
 	ctx := context.Background()
 	suffix := time.Now().Format("150405.000000")
@@ -583,15 +513,9 @@ func TestGetOrCreateDestinationIsScopedToPlatform(t *testing.T) {
 	}
 }
 
-// TestPingReportsAReachablePool: Ping backs cmd/ginbot-server's three health
-// surfaces (UtilityService/HealthCheck, the gRPC health protocol and GET
-// /healthz), so it has to answer against a real pool rather than merely
-// compile. There is no live-database counterpart for the failure branch in
-// this suite: dbpool is package-private, so the only way to make Ping fail is
-// to close the very pool this whole suite depends on, which every other test
-// here shares. That branch is exercised instead by the injected HealthProbe
-// fakes in pkg/grpc/server and cmd/ginbot-server, which do not need Postgres
-// at all.
+// Ping backs all three health surfaces, so it must answer against a real pool.
+// The failure branch is covered by the HealthProbe fakes, since failing Ping here
+// would mean closing the pool the rest of the suite shares.
 func TestPingReportsAReachablePool(t *testing.T) {
 	if err := Ping(context.Background()); err != nil {
 		t.Errorf("Ping: %v", err)
@@ -621,7 +545,6 @@ func TestGetInstanceByMetaMatchesOnPlatformAndMeta(t *testing.T) {
 		t.Errorf("default_channel = %v, want general", got.DefaultChannel)
 	}
 
-	// Same meta under a different platform must not match.
 	if _, err := GetInstanceByMeta(ctx, pb.Platform_PLATFORM_MATRIX_PROTOCOL, instanceMeta); !errors.Is(err, ErrNotFound) {
 		t.Errorf("cross-platform lookup err = %v, want ErrNotFound", err)
 	}

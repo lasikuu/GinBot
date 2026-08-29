@@ -22,8 +22,7 @@ func NewEntertainmentServer() *EntertainmentServer {
 	return s
 }
 
-// maxDigits bounds the DOUBLES roll so that math.Pow10 stays within int range
-// on 64-bit platforms and the response remains a sane length.
+// maxDigits keeps math.Pow10 within int64 range.
 const maxDigits = 18
 
 func (s *EntertainmentServer) GetRandomNumber(_ context.Context, connReq *connect.Request[pb.GetRandomNumberReq]) (*connect.Response[pb.GetRandomNumberResp], error) {
@@ -47,16 +46,12 @@ func (s *EntertainmentServer) GetRandomNumber(_ context.Context, connReq *connec
 		lower := req.GetLower()
 		upper := req.GetUpper()
 
-		// rand.Int64N panics on n <= 0, which would take down the whole server.
-		// The range is inclusive of lower and exclusive of upper.
+		// rand.Int64N panics on n <= 0. The range excludes upper.
 		if upper <= lower {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("upper (%d) must be greater than lower (%d)", upper, lower))
 		}
 
-		// upper-lower overflows int64 when the bounds straddle zero widely enough,
-		// e.g. lower=-2^62, upper=2^62 wraps to a negative span and panics. All
-		// arithmetic stays in int64 so the wrap is detectable rather than hidden
-		// by a conversion to int.
+		// upper-lower wraps negative when the bounds straddle zero widely enough.
 		span := upper - lower
 		if span <= 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("range between %d and %d is too large", lower, upper))

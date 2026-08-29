@@ -6,17 +6,8 @@ import (
 	"connectrpc.com/connect"
 )
 
-// TestBindErrorsCarryConnectCodes pins the taxonomy Bind/BindNamed produce.
-//
-// parse.go moved its error construction from
-// google.golang.org/grpc/status.Errorf(codes.X, ...) to
-// connectrpc.com/connect.NewError(connect.CodeX, ...) as part of the Connect
-// port. Every other test in this file only asserts err == nil / err != nil,
-// which is silently satisfied by either transport's error type — so nothing
-// else in this package would catch a code regressing to the wrong one, or a
-// plain errors.New that carries no code at all (which connect.CodeOf reports
-// as CodeUnknown, not CodeInvalidArgument, and would reach a caller that
-// switches on the code as an unclassified failure).
+// TestBindErrorsCarryConnectCodes pins the error taxonomy; every other test in
+// this package only checks err != nil, which any error type satisfies.
 func TestBindErrorsCarryConnectCodes(t *testing.T) {
 	t.Run("missing required argument", func(t *testing.T) {
 		cmd := Command{
@@ -64,11 +55,8 @@ func TestBindErrorsCarryConnectCodes(t *testing.T) {
 		}
 	})
 
-	// An ArgType outside the declared set is a programming error (a bad
-	// command declaration), not a caller mistake, so it is reported as
-	// CodeInternal rather than CodeInvalidArgument — the distinction
-	// errorMessage in pkg/discord depends on to keep an internal defect from
-	// being shown to the caller as if they had typed something wrong.
+	// pkg/discord's errorMessage relies on Internal to avoid showing an
+	// internal defect to the caller as if they had mistyped.
 	t.Run("unknown ArgType is internal, not invalid argument", func(t *testing.T) {
 		cmd := Command{
 			Name:    "broken",

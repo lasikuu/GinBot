@@ -13,21 +13,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// confirmDeliveryTimeout bounds the outgoing ConfirmDelivery call.
-//
-// pkg/grpc/client.dispatch runs action handlers INLINE on the receive loop, and
-// no gRPC keepalive is configured, so a half-open connection would let this call
-// block forever — wedging every further action delivery to this client, not just
-// this one reminder. postNotification is already bounded by discordgo's HTTP
-// timeout; the gRPC call had no bound at all. Ten seconds is far longer than a
-// healthy confirm needs and short enough that a wedge unsticks itself.
+// Action handlers run inline on the receive loop, so an unbounded confirm
+// would wedge every later delivery to this client.
 const confirmDeliveryTimeout = 10 * time.Second
 
-// emptyReminderBody is posted for a reminder with no text, so the send is not
-// rejected for empty content. A reminder with no message still has to notify.
+// emptyReminderBody keeps a text-less reminder from being rejected as empty.
 const emptyReminderBody = "\u23f0 Reminder"
 
-// actionHandlers maps server-pushed actions to their Discord implementations.
 func actionHandlers() client.ActionHandlers {
 	return client.ActionHandlers{
 		pb.ClientAction_CLIENT_ACTION_SEND_TEST:                handleSendTest,
@@ -37,15 +29,8 @@ func actionHandlers() client.ActionHandlers {
 }
 
 // handleSendTest logs a development-only heartbeat pushed by cron.
-//
-// The emission time is logged rather than the whole message: the action itself
-// says nothing an operator does not already know, so the only information in a
-// heartbeat is how stale it is by the time it lands here.
 func handleSendTest(_ context.Context, in *pb.OpenClientActionStreamResp) {
 	if !in.HasTest() {
-		// Not a defect on either end: SEND_TEST carries no payload from a
-		// server built before TestAction existed, and the heartbeat is still a
-		// heartbeat without one.
 		log.Z.Debug("received test action with no test payload")
 		return
 	}
@@ -54,16 +39,8 @@ func handleSendTest(_ context.Context, in *pb.OpenClientActionStreamResp) {
 		zap.Time("emitted_at", in.GetTest().GetEmittedAt().AsTime()))
 }
 
-// reminderDelivery returns the ReminderDelivery the action carries, or nil when
-// it carries something else or nothing at all.
-//
-// The action and the payload arm are set by the same producer but the schema
-// cannot tie them together, so SEND_NOTIFICATION arriving with a different arm
-// — or with none — is an input this client has to handle, not an invariant it
-// may assume. Returning nil rather than panicking matters because
-// pkg/grpc/client.dispatch runs handlers inline on the receive loop: its
-// recover() downgrades a panic to one lost delivery, it does not make one
-// acceptable.
+// The schema cannot tie the action to its payload arm, so a mismatched or
+// absent arm is ordinary input rather than an invariant this client may assume.
 func reminderDelivery(in *pb.OpenClientActionStreamResp) *pb.ReminderDelivery {
 	switch in.WhichPayload() {
 	case pb.OpenClientActionStreamResp_ReminderDelivery_case:
@@ -72,12 +49,8 @@ func reminderDelivery(in *pb.OpenClientActionStreamResp) *pb.ReminderDelivery {
 		pb.OpenClientActionStreamResp_Payload_not_set_case:
 		return nil
 	default:
-		// An arm added to the schema after this switch was written. An arm this
-		// BUILD does not know about does not reach here — protobuf keeps an
-		// unrecognised field in unknownFields and WhichPayload reports not-set
-		// — so this branch is the guard against a future arm being silently
-		// treated as a reminder, and must stay even though it is unreachable
-		// against the schema this file is compiled with.
+		// Unreachable against this build's schema; guards a future arm from
+		// being silently treated as a reminder.
 		return nil
 	}
 }
@@ -86,9 +59,7 @@ func reminderDelivery(in *pb.OpenClientActionStreamResp) *pb.ReminderDelivery {
 type routeKind int
 
 const (
-	// routeChannel posts to the reminder's own channel.
 	routeChannel routeKind = iota
-	// routeDirectMessage opens a DM to the reminder's owner and posts there.
 	routeDirectMessage
 )
 
@@ -98,15 +69,8 @@ type deliveryRoute struct {
 	Target string
 }
 
-// deliveryPlan is the ordered list of routes to try for one notification.
-//
-// The channel comes first when the reminder has one. The owner's DM is both the
-// fallback for a channel that is gone or that the bot cannot post in, and the
-// only route for a reminder with no channel at all. An EMPTY plan means the
-// delivery cannot even be attempted (no channel and no owner), which is reported
-// as a failed delivery rather than retried forever.
-//
-// It is a pure function so the routing can be tested without a Discord session.
+// deliveryPlan orders the routes to try. An empty plan means the delivery
+// cannot be attempted at all, and is reported failed rather than retried.
 func deliveryPlan(channelID, ownerUID string) []deliveryRoute {
 	var plan []deliveryRoute
 	if channelID != "" {
@@ -119,12 +83,8 @@ func deliveryPlan(channelID, ownerUID string) []deliveryRoute {
 	return plan
 }
 
-// channelNotification renders the message posted to a shared channel.
-//
-// The owner is mentioned so that, in a channel other people can see, the
-// reminder pings the person who asked for it and says whose reminder it is.
-// Truncation is applied to the whole thing, mention included, so the prefix
-// cannot push the message over Discord's limit.
+// Truncation covers the mention prefix too, so it cannot push the message over
+// Discord's length limit.
 func channelNotification(message, ownerUID string) string {
 	body := message
 	if body == "" {
@@ -137,8 +97,6 @@ func channelNotification(message, ownerUID string) string {
 	return truncateContent(body)
 }
 
-// directMessageNotification renders the DM body. No mention prefix: a DM already
-// goes to exactly one person, and mentioning them inside it adds nothing.
 func directMessageNotification(message string) string {
 	if message == "" {
 		return emptyReminderBody
@@ -147,12 +105,8 @@ func directMessageNotification(message string) string {
 	return truncateContent(message)
 }
 
-// mentionOwnerOnly permits exactly one ping: the reminder's owner.
-//
-// Parse stays EMPTY on purpose. The reminder body is user-authored text, so an
-// @everyone or a role ping inside it must stay inert; listing the owner under
-// Users allows that single mention without re-enabling parsing of anything else.
-// An empty owner allows nothing at all, which is noMentions' behaviour.
+// mentionOwnerOnly permits exactly one ping. Parse stays empty on purpose: the
+// body is user-authored, so an @everyone or role ping inside it must stay inert.
 func mentionOwnerOnly(ownerUID string) *discordgo.MessageAllowedMentions {
 	if ownerUID == "" {
 		return noMentions()
@@ -164,21 +118,11 @@ func mentionOwnerOnly(ownerUID string) *discordgo.MessageAllowedMentions {
 	}
 }
 
-// handleSendNotification posts a reminder to its channel and confirms the
-// outcome back to the server.
-//
-// Delivery is best-effort with a DM fallback: if the channel post fails (channel
-// gone, or the bot lacks Send Messages there) it opens a direct message to the
-// reminder owner instead. A user who has blocked the bot makes both the DM open
-// and the send fail; that is treated as a non-fatal failed delivery
-// (delivered=false), not a crash and not a wedged receive loop.
+// handleSendNotification posts a reminder and confirms the outcome. Delivery is
+// best-effort with a DM fallback; a total failure is reported, never retried.
 func handleSendNotification(ctx context.Context, in *pb.OpenClientActionStreamResp) {
-	// GetReminderId is nil-safe, so an absent payload and a payload with an
-	// empty id fail the same check. Both are refused for the same reason:
-	// without an id the delivery cannot be confirmed, so posting it would
-	// notify the user and then loop forever on every reclaim. Dropping it
-	// unconfirmed lets the server's attempt limit fail the reminder out
-	// instead.
+	// Without an id the delivery cannot be confirmed, so posting it would
+	// notify the user and then repeat on every reclaim.
 	delivery := reminderDelivery(in)
 	if delivery.GetReminderId() == "" {
 		log.Z.Warn("notification action carried no reminder id; dropping it",
@@ -191,8 +135,6 @@ func handleSendNotification(ctx context.Context, in *pb.OpenClientActionStreamRe
 	confirmDelivery(ctx, delivery.GetReminderId(), delivery.GetOwnerUid(), delivered)
 }
 
-// postNotification walks the delivery plan and reports whether the reminder
-// reached the user by any route.
 func postNotification(d *pb.ReminderDelivery) bool {
 	ownerUID := d.GetOwnerUid()
 	message := d.GetMessage()
@@ -219,7 +161,6 @@ func postNotification(d *pb.ReminderDelivery) bool {
 	return false
 }
 
-// sendChannelMessage posts to a channel, reporting success.
 func sendChannelMessage(channelID, body string, allowed *discordgo.MessageAllowedMentions) bool {
 	_, err := discordSession.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
 		Content:         body,
@@ -234,9 +175,8 @@ func sendChannelMessage(channelID, body string, allowed *discordgo.MessageAllowe
 	return true
 }
 
-// sendDirectMessage opens a DM channel to the user and posts to it. A user who
-// has blocked the bot yields an error from UserChannelCreate or the send; both
-// are treated as a non-fatal failed delivery.
+// A user who has blocked the bot fails UserChannelCreate or the send; both are
+// non-fatal failed deliveries.
 func sendDirectMessage(userID string, body string) bool {
 	channel, err := discordSession.UserChannelCreate(userID)
 	if err != nil {
@@ -258,24 +198,14 @@ func sendDirectMessage(userID string, body string) bool {
 	return true
 }
 
-// confirmDelivery reports the outcome to the server. ConfirmDelivery is
-// clearance-gated, reads the caller from metadata and is scoped to the
-// reminder's owner, so the owner's platform identity is attached to the outgoing
-// context — the same identity the reminder was created under.
-//
-// A missing owner uid still confirms: an empty uid produces a call with no user
-// metadata, which the interceptor rejects. That is survivable rather than
-// correct — the server's reclaim eventually gives up on the reminder after
-// maxDeliveryAttempts instead of re-posting it forever — but it is logged so a
-// persistently uid-less reminder is visible.
+// The server scopes ConfirmDelivery to the reminder's owner, so the owner's
+// platform identity is attached to the outgoing context as a request header.
 func confirmDelivery(ctx context.Context, reminderID string, ownerUID string, delivered bool) {
 	if ownerUID == "" {
 		log.Z.Warn("confirming reminder delivery without an owner id; server will reject",
 			zap.String("reminder_id", reminderID))
 	}
 
-	// Bounded: this runs inline on the receive loop, so an unbounded call stalls
-	// every later action for this client.
 	callCtx, cancel := context.WithTimeout(ctx, confirmDeliveryTimeout)
 	defer cancel()
 

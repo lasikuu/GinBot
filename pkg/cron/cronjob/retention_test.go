@@ -12,20 +12,10 @@ import (
 	"github.com/lasikuu/GinBot/pkg/db"
 )
 
-// These tests drive the sweep through its injectable core rather than
-// SweepRepostEntries, exactly as orphan_test.go does for the orphan sweep: the
-// exported entry point binds package globals (db.ListRepostRetentions,
-// db.DeleteRepostEntriesBefore) and a real clock, neither of which a unit test
-// can substitute.
-
-// TestSweepRepostEntriesIsPinnedAtCompileTime mirrors orphan_test.go's
-// equivalent line: SweepRepostEntries reads the package-level pgx pool, which
-// does not exist in a unit test, so the actual behaviour lives in
-// sweepRepostEntries below and this only asserts the shape RunCronJobs calls.
+// SweepRepostEntries binds package globals; only its shape is pinned here.
 var _ func(context.Context) = SweepRepostEntries
 
-// retentionRecorder records every deleteBefore call, in order, so ordering and
-// argument assertions do not depend on map iteration order.
+// retentionRecorder keeps call order, which map iteration does not.
 type retentionRecorder struct {
 	mu    sync.Mutex
 	calls []retentionCall
@@ -49,15 +39,12 @@ func (r *retentionRecorder) snapshot() []retentionCall {
 	return slices.Clone(r.calls)
 }
 
-// retentionListing returns a repostRetentionLister over a fixed set.
 func retentionListing(rows ...db.RepostRetention) repostRetentionLister {
 	return func(context.Context) ([]db.RepostRetention, error) {
 		return rows, nil
 	}
 }
 
-// recordingRetentionDeleter returns a repostEntryDeleter that records every
-// call and returns a caller-controlled (count, error) per instance id.
 func recordingRetentionDeleter(recorder *retentionRecorder, results map[int64]retentionDeleteResult, after func()) repostEntryDeleter {
 	return func(_ context.Context, instanceID int64, before time.Time, limit int64) (int64, error) {
 		recorder.record(retentionCall{instanceID: instanceID, before: before, limit: limit})
@@ -79,11 +66,7 @@ type retentionDeleteResult struct {
 
 var errDeleteBefore = errors.New("delete repost entries before failed")
 
-// TestSweepRepostEntriesNeverSweepsAnInstanceWithNoConfiguredRetention: an
-// empty listing (which is what db.ListRepostRetentions returns for instances
-// with a NULL repost_retention_days, per its own doc comment) must mean
-// deleteBefore is never called at all. Retention defaults to forever (W1); the
-// sweep must not invent a default window on its own.
+// Retention defaults to forever, so the sweep must not invent a window.
 func TestSweepRepostEntriesNeverSweepsAnInstanceWithNoConfiguredRetention(t *testing.T) {
 	recorder := &retentionRecorder{}
 
@@ -102,10 +85,6 @@ func TestSweepRepostEntriesNeverSweepsAnInstanceWithNoConfiguredRetention(t *tes
 	}
 }
 
-// TestSweepRepostEntriesComputesTheCutoffFromTheInjectedNow: the cut-off passed
-// to deleteBefore must be now minus the instance's configured retention, using
-// the injected now rather than the wall clock — the same determinism
-// collectOrphanFiles's grace-period test relies on.
 func TestSweepRepostEntriesComputesTheCutoffFromTheInjectedNow(t *testing.T) {
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	const retentionDays = 30
@@ -133,11 +112,6 @@ func TestSweepRepostEntriesComputesTheCutoffFromTheInjectedNow(t *testing.T) {
 	}
 }
 
-// TestSweepRepostEntriesUsesTheSameBatchLimitForEveryInstance: whatever the
-// batch limit is, it must be a single fixed cap applied consistently across
-// every instance in one sweep tick — not something that varies per instance,
-// which would mean it was accidentally derived from per-instance data rather
-// than being the sweep's own bound on how much work one tick may do.
 func TestSweepRepostEntriesUsesTheSameBatchLimitForEveryInstance(t *testing.T) {
 	recorder := &retentionRecorder{}
 
@@ -163,9 +137,6 @@ func TestSweepRepostEntriesUsesTheSameBatchLimitForEveryInstance(t *testing.T) {
 	}
 }
 
-// TestSweepRepostEntriesCountsDeletedRowsAcrossInstances: the returned deleted
-// count is the sum of what deleteBefore actually reported, across every
-// instance swept.
 func TestSweepRepostEntriesCountsDeletedRowsAcrossInstances(t *testing.T) {
 	recorder := &retentionRecorder{}
 	results := map[int64]retentionDeleteResult{
@@ -191,10 +162,6 @@ func TestSweepRepostEntriesCountsDeletedRowsAcrossInstances(t *testing.T) {
 	}
 }
 
-// TestSweepRepostEntriesCountsAFailingInstanceAndContinues: one instance's
-// delete failing must be counted and logged, not abort the rest of the sweep —
-// the same "a partial failure is not the whole job's failure" property
-// collectOrphanFiles has for its per-file failures.
 func TestSweepRepostEntriesCountsAFailingInstanceAndContinues(t *testing.T) {
 	recorder := &retentionRecorder{}
 	results := map[int64]retentionDeleteResult{
@@ -225,9 +192,6 @@ func TestSweepRepostEntriesCountsAFailingInstanceAndContinues(t *testing.T) {
 	}
 }
 
-// TestSweepRepostEntriesStopsOnACancelledContextBetweenInstances: a
-// cancellation stops the sweep between instances, leaving consistent state —
-// the same contract collectOrphanFiles has between files.
 func TestSweepRepostEntriesStopsOnACancelledContextBetweenInstances(t *testing.T) {
 	t.Run("cancelled before the sweep starts", func(t *testing.T) {
 		recorder := &retentionRecorder{}
@@ -283,8 +247,6 @@ func TestSweepRepostEntriesStopsOnACancelledContextBetweenInstances(t *testing.T
 	})
 }
 
-// TestSweepRepostEntriesDeletesNothingWhenTheListFails: with no list of
-// retentions there is nothing to act on, and guessing is not an option.
 func TestSweepRepostEntriesDeletesNothingWhenTheListFails(t *testing.T) {
 	recorder := &retentionRecorder{}
 	list := func(context.Context) ([]db.RepostRetention, error) {
@@ -306,15 +268,7 @@ func TestSweepRepostEntriesDeletesNothingWhenTheListFails(t *testing.T) {
 	}
 }
 
-// TestSweepIgnoresANonPositiveRetention covers the guard that stands between an
-// operator's typo and an instance's entire history.
-//
-// db.ListRepostRetentions filters NULL out in SQL, so a row reaching the sweep
-// has *some* value — but nothing stops an operator writing 0 or a negative
-// number directly into instance.repost_retention_days. Read literally, 0 means
-// "delete everything posted before now", i.e. all of it. Retention defaults to
-// forever (W1), so the safe reading of a nonsensical value is to skip the
-// instance, not to act on it.
+// Read literally, a stored 0 means "delete everything posted before now".
 func TestSweepIgnoresANonPositiveRetention(t *testing.T) {
 	for _, days := range []int32{0, -1, -365} {
 		t.Run(fmt.Sprintf("retention_days=%d", days), func(t *testing.T) {

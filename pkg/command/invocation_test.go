@@ -27,8 +27,6 @@ func TestInvocationAccessorsReadSuppliedValues(t *testing.T) {
 	}
 }
 
-// Without a declaration to fall back on there is no default, so the accessors
-// must return the zero value of their own type.
 func TestInvocationAccessorsOnAbsentKeys(t *testing.T) {
 	tests := []struct {
 		name string
@@ -58,9 +56,6 @@ func TestInvocationAccessorsOnAbsentKeys(t *testing.T) {
 	}
 }
 
-// Args is a map[string]any, so a mismatched type is reachable — from a hand-built
-// Invocation in a test, or from a future caller that populates it directly.
-// Reading it must degrade rather than take the process down.
 func TestInvocationAccessorsIgnoreWrongGoTypes(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -95,9 +90,6 @@ func TestInvocationAccessorsIgnoreWrongGoTypes(t *testing.T) {
 	}
 }
 
-// Has answers "did the caller supply this?", which is the question a handler
-// needs when a zero value and an omitted argument mean different things. A key
-// present with a nil value was still supplied.
 func TestInvocationHasReportsSupplyNotValue(t *testing.T) {
 	inv := &Invocation{Args: map[string]any{
 		"emptyString": "",
@@ -116,8 +108,6 @@ func TestInvocationHasReportsSupplyNotValue(t *testing.T) {
 	}
 }
 
-// The defaults an accessor falls back on come from the command declaration, so
-// they are only observable through an Invocation that Bind produced.
 func TestInvocationDefaultsComeFromTheDeclaration(t *testing.T) {
 	cmd := Command{
 		Name: "declared",
@@ -156,21 +146,17 @@ func TestInvocationDefaultsComeFromTheDeclaration(t *testing.T) {
 		t.Error("Bool(\"boolNoDefault\") = true, want false")
 	}
 
-	// A default is not a supplied value, whatever it happens to be.
 	for _, arg := range cmd.Args {
 		if inv.Has(arg.Name) {
 			t.Errorf("Has(%q) = true; nothing was supplied", arg.Name)
 		}
 	}
 
-	// An argument that was never declared has no default to fall back on.
 	if got := inv.String("undeclared"); got != "" {
 		t.Errorf("String(\"undeclared\") = %q, want empty", got)
 	}
 }
 
-// Reading an argument under the wrong accessor is a handler bug, not a reason to
-// crash the bot: a string argument read as an integer degrades to the default.
 func TestInvocationAccessorMismatchFallsBackToDefault(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {

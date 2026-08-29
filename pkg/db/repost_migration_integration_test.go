@@ -1,25 +1,8 @@
 //go:build integration
 
-// Integration test for the repost migration's Down block specifically.
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/db/...
-//
-// Motivation: a migration Down block that only works against an EMPTY table is
-// a defect class that has already shipped in this repository once
-// (docs/plans/phases/phase-5-wanha.md, "Also verify the migration's Down block
-// works with rows present in both new tables").
-//
-// This test runs against a THROWAWAY DATABASE of its own, created and dropped
-// per run, rather than against the shared test database. That is not
-// fastidiousness: goose.Down drops repost_entry and repost_fingerprint, and
-// `go test ./...` runs packages CONCURRENTLY in separate processes against one
-// Postgres. Against the shared database this test pulled those tables out from
-// under pkg/grpc/server's repost integration tests mid-run, whose inserts are
-// deliberately best-effort and swallowed — so the damage surfaced as an
-// intermittent "0 matches" three packages away, with no error anywhere
-// pointing back here. Isolating the destructive operation is the only fix that
-// keeps the assertion intact.
+// This test uses a throwaway database of its own: goose.Down drops
+// repost_entry and repost_fingerprint, and `go test ./...` runs packages
+// concurrently against one Postgres.
 package db
 
 import (
@@ -37,11 +20,9 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-// repostMigrationVersion is the goose version of 20260823170000_repost.sql.
 const repostMigrationVersion int64 = 20260823170000
 
-// migrationTestDSN builds a connection string for dbName on the configured
-// server, mirroring how InitDB assembles its own URI.
+// migrationTestDSN mirrors how InitDB assembles its own URI.
 func migrationTestDSN(dbName string) string {
 	dsn := url.URL{
 		Scheme: "postgres",
@@ -52,24 +33,17 @@ func migrationTestDSN(dbName string) string {
 	return dsn.String()
 }
 
-// newMigrationTestDatabase creates an empty database, migrates it to the latest
-// version, and returns a handle on it. The database is dropped on cleanup.
+// newMigrationTestDatabase returns a freshly migrated database, dropped on
+// cleanup.
 func newMigrationTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 
-	// Lowercase and punctuation-free so it needs no quoting as an identifier.
+	// Lowercase and unpunctuated so it needs no quoting as an identifier.
 	name := fmt.Sprintf("ginbot_migtest_%d", time.Now().UnixNano())
 
 	// CREATE DATABASE cannot run inside a transaction, so it goes through the
-	// package pool's plain Exec. This is the ONLY thing this test does to the
-	// database that pool points at.
-	//
-	// Since TestMain gained its own per-run throwaway (db_integration_test.go)
-	// that is now this suite's database rather than the configured one — which
-	// changes nothing here: CREATE DATABASE and DROP DATABASE work from inside
-	// any database, they just cannot name the one issuing them, and this one
-	// never does.
+	// package pool's plain Exec.
 	if _, err := db().Exec(ctx, `CREATE DATABASE `+name); err != nil {
 		t.Fatalf("create throwaway database %s: %v", name, err)
 	}
@@ -80,8 +54,8 @@ func newMigrationTestDatabase(t *testing.T) *sql.DB {
 	}
 
 	t.Cleanup(func() {
-		// The handle has to go first: DROP DATABASE refuses while a session is
-		// connected. FORCE covers a connection the pool has not yet released.
+		// DROP DATABASE refuses while a session is connected, so the handle closes
+		// first; FORCE covers a connection it has not yet released.
 		if err := handle.Close(); err != nil {
 			t.Errorf("close throwaway database handle: %v", err)
 		}
@@ -90,8 +64,6 @@ func newMigrationTestDatabase(t *testing.T) *sql.DB {
 		}
 	})
 
-	// goose.SetBaseFS and goose.SetDialect are already configured by TestMain's
-	// call to EnsureLatestVersion in db_integration_test.go.
 	if err := goose.Up(handle, "migrations"); err != nil {
 		t.Fatalf("migrate throwaway database %s up: %v", name, err)
 	}
@@ -99,34 +71,19 @@ func newMigrationTestDatabase(t *testing.T) *sql.DB {
 	return handle
 }
 
-// TestRepostMigrationDownWorksWithRowsPresentInBothTables asserts that stepping
-// the repost migration down succeeds — and the schema comes back up cleanly
-// afterwards — even when repost_entry AND repost_fingerprint both hold rows at
-// the moment Down runs.
-//
-// goose.Down steps down exactly ONE version and cannot be pointed at a
-// migration by name, so the repost migration has to be the newest applied one
-// before it is stepped. This used to be asserted and left to the reader to fix:
-// the assertion did its job and failed the moment a later migration was added,
-// but it failed permanently, so the whole test stopped running. It now arranges
-// the precondition itself with DownTo, which is stable against any number of
-// migrations landing after the repost one.
+// goose.Down steps down exactly one version and cannot be pointed at a migration
+// by name, so DownTo first makes the repost migration the newest applied one.
 func TestRepostMigrationDownWorksWithRowsPresentInBothTables(t *testing.T) {
 	ctx := context.Background()
 	handle := newMigrationTestDatabase(t)
 
-	// DownTo reverts everything with a version ABOVE its target and leaves the
-	// target applied, so this makes the repost migration the newest one without
-	// touching it. Their Down blocks run here rather than under test; that is
-	// incidental, and any failure among them is still worth knowing about.
+	// DownTo reverts everything above its target and leaves the target applied.
 	if err := goose.DownTo(handle, "migrations", repostMigrationVersion); err != nil {
 		t.Fatalf("step down the migrations newer than the repost one (%d): %v", repostMigrationVersion, err)
 	}
 
-	// A postcondition now rather than an assumption. Kept because the single
-	// goose.Down below is only meaningful if it lands on the repost migration,
-	// and DownTo silently doing nothing would otherwise repoint this whole test
-	// at unrelated DDL while still passing green.
+	// The Down below is only meaningful if it lands on the repost migration; a
+	// DownTo that silently did nothing would still pass green.
 	version, err := goose.GetDBVersion(handle)
 	if err != nil {
 		t.Fatalf("read goose version: %v", err)
@@ -136,9 +93,8 @@ func TestRepostMigrationDownWorksWithRowsPresentInBothTables(t *testing.T) {
 			version, repostMigrationVersion)
 	}
 
-	// Seeded with raw SQL rather than through CreateRepostEntry, because that
-	// writes through the package-level pool, which points at the shared
-	// database rather than this one.
+	// Raw SQL rather than CreateRepostEntry, which writes through the package
+	// pool and so would target the wrong database.
 	var instanceID int64
 	if err := handle.QueryRowContext(ctx,
 		`INSERT INTO instance (platform_enum, instance_meta)
@@ -180,9 +136,8 @@ func TestRepostMigrationDownWorksWithRowsPresentInBothTables(t *testing.T) {
 		t.Fatalf("goose.Down with rows present in repost_entry and repost_fingerprint: %v", err)
 	}
 
-	// The tables must actually be GONE — this migration's Down block drops
-	// them. A row-count-only assertion would pass against a Down block that
-	// merely emptied them, which is not what the migration file says.
+	// The tables must be gone, not merely emptied: a row-count assertion would
+	// pass against a Down block that only deleted rows.
 	for _, table := range []string{"repost_entry", "repost_fingerprint"} {
 		var exists bool
 		if err := handle.QueryRowContext(ctx,
@@ -195,9 +150,8 @@ func TestRepostMigrationDownWorksWithRowsPresentInBothTables(t *testing.T) {
 		}
 	}
 
-	// The Down block also restores the legacy `linked` table it dropped on the
-	// way up. Asserting it comes back is what makes the Down a real inverse
-	// rather than a one-way demolition.
+	// The Down block restores the legacy `linked` table it dropped on the way up,
+	// which is what makes it an inverse rather than a demolition.
 	var linkedExists bool
 	if err := handle.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'linked')`,
@@ -212,8 +166,6 @@ func TestRepostMigrationDownWorksWithRowsPresentInBothTables(t *testing.T) {
 		t.Fatalf("goose.Up to restore the schema after Down: %v", err)
 	}
 
-	// The seeded row went with the dropped table; that is expected and not
-	// under test. What matters is that the table is back and queryable.
 	var afterUp int
 	if err := handle.QueryRowContext(ctx, `SELECT COUNT(*) FROM repost_entry`).Scan(&afterUp); err != nil {
 		t.Fatalf("repost_entry is not queryable after goose.Up restored it: %v", err)

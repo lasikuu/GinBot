@@ -7,9 +7,6 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// fixedRoller always returns n, clamped into [0, upperExclusive) by the
-// caller's own choice of n — it exists so a test can pick exactly which
-// candidate index (or exactly which chance-roll value) is drawn.
 func fixedRoller(n int) Roller {
 	return func(int) int { return n }
 }
@@ -23,8 +20,6 @@ func compilePattern(t *testing.T, phrase string, mode pb.TriggerMode) *regexp.Re
 	return re
 }
 
-// TestSelectExactWinsOverAny: an exact match discards every non-exact
-// candidate, even when an any-mode candidate also matches.
 func TestSelectExactWinsOverAny(t *testing.T) {
 	candidates := []Candidate{
 		{ID: "any-1", Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Pattern: compilePattern(t, "hello", pb.TriggerMode_TRIGGER_MODE_ANY)},
@@ -40,7 +35,6 @@ func TestSelectExactWinsOverAny(t *testing.T) {
 	}
 }
 
-// TestSelectNilWhenNothingMatches.
 func TestSelectNilWhenNothingMatches(t *testing.T) {
 	candidates := []Candidate{
 		{ID: "any-1", Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Pattern: compilePattern(t, "goodbye", pb.TriggerMode_TRIGGER_MODE_ANY)},
@@ -51,9 +45,6 @@ func TestSelectNilWhenNothingMatches(t *testing.T) {
 	}
 }
 
-// TestSelectNilForMessageEmptyAfterSpoilerStripping: a message that is nothing
-// but a spoiler span normalises to "", and an empty message cannot match
-// anything.
 func TestSelectNilForMessageEmptyAfterSpoilerStripping(t *testing.T) {
 	candidates := []Candidate{
 		{ID: "any-1", Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Pattern: compilePattern(t, "secret", pb.TriggerMode_TRIGGER_MODE_ANY)},
@@ -65,8 +56,6 @@ func TestSelectNilForMessageEmptyAfterSpoilerStripping(t *testing.T) {
 	}
 }
 
-// TestSelectSkipsNilPatternWithoutPanicking: a nil Pattern in the slice must be
-// skipped, never dereferenced.
 func TestSelectSkipsNilPatternWithoutPanicking(t *testing.T) {
 	candidates := []Candidate{
 		{ID: "broken", Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Pattern: nil},
@@ -88,8 +77,6 @@ func TestSelectSkipsNilPatternWithoutPanicking(t *testing.T) {
 	}
 }
 
-// TestSelectOnlyConsidersFirstMaxCandidates: a match beyond the MaxCandidates
-// cutoff must never be selected, however precisely it matches.
 func TestSelectOnlyConsidersFirstMaxCandidates(t *testing.T) {
 	candidates := make([]Candidate, MaxCandidates+1)
 	for i := range candidates {
@@ -99,7 +86,6 @@ func TestSelectOnlyConsidersFirstMaxCandidates(t *testing.T) {
 			Pattern: compilePattern(t, "filler-phrase-not-in-message", pb.TriggerMode_TRIGGER_MODE_ANY),
 		}
 	}
-	// Only the entry PAST the cutoff matches.
 	candidates[MaxCandidates] = Candidate{
 		ID:      "past-the-cutoff",
 		Mode:    pb.TriggerMode_TRIGGER_MODE_ANY,
@@ -112,8 +98,6 @@ func TestSelectOnlyConsidersFirstMaxCandidates(t *testing.T) {
 	}
 }
 
-// TestSelectRollOutOfRangeDoesNotPanic: a caller's bad Roller returning a value
-// outside [0, len(set)) must be treated as index 0, not panic the hot path.
 func TestSelectRollOutOfRangeDoesNotPanic(t *testing.T) {
 	candidates := []Candidate{
 		{ID: "only-match", Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Pattern: compilePattern(t, "hello", pb.TriggerMode_TRIGGER_MODE_ANY)},
@@ -138,9 +122,6 @@ func TestSelectRollOutOfRangeDoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestSelectReturnsACopyNotAPointerIntoTheSlice: mutating the returned pointer
-// must not mutate the caller's slice, because the cache shares that slice with
-// every concurrent caller.
 func TestSelectReturnsACopyNotAPointerIntoTheSlice(t *testing.T) {
 	candidates := []Candidate{
 		{ID: "original", Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Pattern: compilePattern(t, "hello", pb.TriggerMode_TRIGGER_MODE_ANY)},
@@ -158,8 +139,6 @@ func TestSelectReturnsACopyNotAPointerIntoTheSlice(t *testing.T) {
 	}
 }
 
-// TestFiresThreshold: the boundary is roll < EffectiveChance. Stored 10 in any
-// mode has EffectiveChance 10, so rolls 0..9 fire and 10..99 do not.
 func TestFiresThreshold(t *testing.T) {
 	c := Candidate{Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Chance: 10}
 
@@ -175,14 +154,11 @@ func TestFiresThreshold(t *testing.T) {
 	}
 }
 
-// TestFiresExactMultiplierShiftsTheBoundary: the same stored chance fires at a
-// higher roll in exact mode than in any mode, because of the 3x multiplier.
 func TestFiresExactMultiplierShiftsTheBoundary(t *testing.T) {
 	const stored = int32(10)
 	any := Candidate{Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Chance: stored}
 	exact := Candidate{Mode: pb.TriggerMode_TRIGGER_MODE_EXACT, Chance: stored}
 
-	// Roll 20 is >= any's effective chance (10) but < exact's (30).
 	if Fires(any, fixedRoller(20)) {
 		t.Error("any-mode Fires at roll=20 = true, want false (effective chance 10)")
 	}
@@ -191,8 +167,6 @@ func TestFiresExactMultiplierShiftsTheBoundary(t *testing.T) {
 	}
 }
 
-// TestFiresAtEffectiveChance100AlwaysFires: a stored 100 in any mode clamps to
-// exactly MaxChance, so every possible roll in [0, MaxChance) must fire.
 func TestFiresAtEffectiveChance100AlwaysFires(t *testing.T) {
 	c := Candidate{Mode: pb.TriggerMode_TRIGGER_MODE_ANY, Chance: 100}
 

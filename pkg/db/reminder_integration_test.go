@@ -1,22 +1,5 @@
 //go:build integration
 
-// Integration tests for the reminder database layer (Phase 3). These require a
-// live Postgres, same as db_integration_test.go:
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/db/...
-//
-// TestMain, meta, cleanupUser and cleanupInstanceByMeta are declared in
-// db_integration_test.go in this same package and are reused here, not
-// redeclared.
-//
-// SCOPE: this file tests the db helpers as helpers — their SQL, their guards and
-// their return values. It deliberately does NOT reimplement the server's
-// decisions (one-shot vs repeat, delivered vs failed). An earlier version did,
-// via a local confirmDelivery closure, which meant the "confirm" tests verified
-// the harness rather than ReminderServer.ConfirmDelivery and could not fail
-// against a broken server. Those acceptance criteria are now asserted against
-// the real RPC in pkg/grpc/server/reminder_integration_test.go.
 package db
 
 import (
@@ -30,23 +13,17 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// fixtureReminderCap is a cap high enough never to be reached by a fixture, so a
-// test that is not about the cap cannot trip over it.
+// fixtureReminderCap is high enough that a test not about the cap cannot trip it.
 const fixtureReminderCap = 1000
 
-// reminderFixture creates a user, a destination, and reminders, registering
-// cleanup for all of them. Cleanup errors are asserted, never discarded:
-// platform_user.user_id has no ON DELETE CASCADE and silently dropped cleanup
-// errors leaked rows on every run.
 type reminderFixture struct {
 	userID        string
 	destinationID int64
 	destination   *pb.ReminderDestination
-	// origin is the canonical instance/destination identity behind destination.
-	// Tests assert against origin.DestinationUID rather than re-spelling it.
+	// origin builds the metadata in the same jsonb shape production writes.
 	origin callermeta.Origin
 	suffix string
-	// platformUID is the owner's identity on the fixture's platform.
+	// platformUID is the owner's identity on the fixture's owner platform.
 	platformUID string
 }
 
@@ -55,18 +32,8 @@ func newReminderFixture(t *testing.T, label string) *reminderFixture {
 	return newReminderFixtureOn(t, label, pb.Platform_PLATFORM_DISCORD, pb.Platform_PLATFORM_DISCORD)
 }
 
-// newReminderFixtureOn builds a fixture whose owner is registered on
-// ownerPlatform and whose destination lives on destinationPlatform.
-//
-// The two are separable because ClaimDueReminders resolves the owner's platform
-// id by joining platform_user on the DESTINATION's platform: a reminder whose
-// owner never linked that platform must still claim, with a NULL
-// OwnerPlatformUID that disables only the DM fallback.
-//
-// The instance and destination metadata are built from callermeta.Origin, the
-// SAME shapes production writes ({"instance_uid": …} / {"destination_uid": …}).
-// Hand-spelled fixtures like {"guild_id": …} made destination_meta->>'…' yield
-// NULL in every claim test, so the payload extraction was never exercised at all.
+// newReminderFixtureOn separates the owner's platform from the destination's, so
+// the claim's LEFT JOIN on platform_user is exercised in both directions.
 func newReminderFixtureOn(
 	t *testing.T,
 	label string,
@@ -110,8 +77,6 @@ func newReminderFixtureOn(
 	}
 }
 
-// create inserts one reminder for the fixture's user at fireAt with an optional
-// repeat cron, and registers its row for cleanup.
 func (f *reminderFixture) create(t *testing.T, fireAt time.Time, repeatCron string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -140,12 +105,10 @@ func (f *reminderFixture) create(t *testing.T, fireAt time.Time, repeatCron stri
 
 func strPtr(s string) *string { return &s }
 
-// listOwn is the common listing: every reminder the user owns, default filters.
 func listOwn(ctx context.Context, userID string) ([]ListedReminder, error) {
 	return ListRemindersByUser(ctx, ListRemindersFilter{UserID: userID})
 }
 
-// claimedByID finds one reminder in a claim result.
 func claimedByID(rs []ClaimedReminder, id string) (ClaimedReminder, bool) {
 	for _, r := range rs {
 		if r.ID == id {
@@ -160,7 +123,6 @@ func containsID(rs []ClaimedReminder, id string) bool {
 	return ok
 }
 
-// readReminderClaim reads the two delivery-bookkeeping columns directly.
 func readReminderClaim(t *testing.T, id string) (claimedAt *time.Time, attempts int32) {
 	t.Helper()
 	if err := db().QueryRow(context.Background(),
@@ -171,7 +133,6 @@ func readReminderClaim(t *testing.T, id string) (claimedAt *time.Time, attempts 
 	return claimedAt, attempts
 }
 
-// readReminderStatus reads a reminder's status.
 func readReminderStatus(t *testing.T, id string) int32 {
 	t.Helper()
 	var status int32
@@ -183,10 +144,8 @@ func readReminderStatus(t *testing.T, id string) int32 {
 	return status
 }
 
-// statusOf is the int32 a pb.ReminderStatus is stored as.
 func statusOf(s pb.ReminderStatus) int32 { return int32(s.Number()) }
 
-// TestListRemindersScopesToOwner: a user sees only their own reminders.
 func TestListRemindersScopesToOwner(t *testing.T) {
 	ctx := context.Background()
 	owner := newReminderFixture(t, "owner")
@@ -217,9 +176,6 @@ func TestListRemindersScopesToOwner(t *testing.T) {
 	}
 }
 
-// TestListRemindersJoinsTheDestination: the listing resolves each reminder's
-// destination in the SAME query, so rendering a list does not cost one
-// destination round trip per row (up to 50 of them).
 func TestListRemindersJoinsTheDestination(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "list-join")
@@ -253,9 +209,6 @@ func TestListRemindersJoinsTheDestination(t *testing.T) {
 	}
 }
 
-// TestListRemindersOrdersSoonestFirst: with a limit, descending order hid the
-// reminders that matter — a user with more reminders than the client renders
-// could not see the ones about to fire.
 func TestListRemindersOrdersSoonestFirst(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "order")
@@ -284,7 +237,6 @@ func TestListRemindersOrdersSoonestFirst(t *testing.T) {
 		}
 	}
 
-	// And the fire times must be non-decreasing, which is the actual contract.
 	for i := 1; i < len(list); i++ {
 		if list[i].Reminder.Datetime.Before(list[i-1].Reminder.Datetime) {
 			t.Errorf("listing is not ascending: %v precedes %v",
@@ -293,9 +245,6 @@ func TestListRemindersOrdersSoonestFirst(t *testing.T) {
 	}
 }
 
-// TestUpdateReminderRefusesOtherUsersRow: updating a row you do not own reports
-// ErrNotFound, matching the GetReminder privacy pattern (never confirm the id
-// exists), and must not mutate the row.
 func TestUpdateReminderRefusesOtherUsersRow(t *testing.T) {
 	ctx := context.Background()
 	owner := newReminderFixture(t, "upd-owner")
@@ -325,13 +274,6 @@ func TestUpdateReminderRefusesOtherUsersRow(t *testing.T) {
 	}
 }
 
-// TestUpdateReminderLeavesAnUnsuppliedRepeatAlone is the patch-shaped-repeat
-// contract (AC6).
-//
-// The update used to be an unconditional full replace, so /remindermod — which
-// never sets a repeat — rewrote repeat_cron to NULL and silently converted a
-// repeating reminder into a one-shot. UpdateRepeat=false must leave the stored
-// schedule exactly as it was.
 func TestUpdateReminderLeavesAnUnsuppliedRepeatAlone(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "keep-repeat")
@@ -366,16 +308,12 @@ func TestUpdateReminderLeavesAnUnsuppliedRepeatAlone(t *testing.T) {
 	}
 }
 
-// TestUpdateReminderWritesAndClearsTheRepeat: an explicit repeat replaces the
-// stored one, and an explicit EMPTY repeat is the clear sentinel. Both need
-// UpdateRepeat, which is what distinguishes "clear it" from "not supplied".
 func TestUpdateReminderWritesAndClearsTheRepeat(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "set-repeat")
 
 	id := f.create(t, time.Now().Add(time.Hour), "0 9 * * *")
 
-	// Replace.
 	if err := UpdateReminderByUser(ctx, ReminderUpdate{
 		ID:            id,
 		UserID:        f.userID,
@@ -396,7 +334,6 @@ func TestUpdateReminderWritesAndClearsTheRepeat(t *testing.T) {
 		t.Fatalf("repeat_cron = %v, want @daily", got.RepeatCron)
 	}
 
-	// Clear.
 	if err := UpdateReminderByUser(ctx, ReminderUpdate{
 		ID:            id,
 		UserID:        f.userID,
@@ -413,19 +350,11 @@ func TestUpdateReminderWritesAndClearsTheRepeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetReminder: %v", err)
 	}
-	// Cleared means NULL, not the empty string: the claim and the confirm both
-	// test `repeat_cron IS NOT NULL`-shaped conditions.
 	if got.RepeatCron != nil {
 		t.Errorf("repeat_cron = %q, want NULL after the clear sentinel", *got.RepeatCron)
 	}
 }
 
-// TestUpdateReminderReArmsATerminalReminder: an edit has to put the reminder
-// back into PENDING.
-//
-// The claim only ever picks up PENDING rows, so a reminder already DELIVERED or
-// FAILED (a DM that failed because the user blocked the bot, say) could be moved
-// to a future time, be told "Reminder updated for …", and then never fire.
 func TestUpdateReminderReArmsATerminalReminder(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "rearm")
@@ -469,7 +398,6 @@ func TestUpdateReminderReArmsATerminalReminder(t *testing.T) {
 				t.Errorf("delivery_attempts = %d, want 0 after an edit", attempts)
 			}
 
-			// And it is genuinely claimable again.
 			if _, err := db().Exec(ctx,
 				`UPDATE reminder SET datetime = $1 WHERE id = $2`, time.Now().Add(-time.Minute).UTC(), id,
 			); err != nil {
@@ -486,8 +414,6 @@ func TestUpdateReminderReArmsATerminalReminder(t *testing.T) {
 	}
 }
 
-// TestDeleteReminderRefusesOtherUsersRow: deleting a row you do not own reports
-// ErrNotFound and leaves it intact.
 func TestDeleteReminderRefusesOtherUsersRow(t *testing.T) {
 	ctx := context.Background()
 	owner := newReminderFixture(t, "del-owner")
@@ -503,8 +429,6 @@ func TestDeleteReminderRefusesOtherUsersRow(t *testing.T) {
 	}
 }
 
-// TestDeleteReminderSoftDeletes: DeleteReminder sets deleted=TRUE; the row then
-// disappears from get and list but the physical row remains (soft delete).
 func TestDeleteReminderSoftDeletes(t *testing.T) {
 	ctx := context.Background()
 	owner := newReminderFixture(t, "soft")
@@ -528,7 +452,6 @@ func TestDeleteReminderSoftDeletes(t *testing.T) {
 		}
 	}
 
-	// Soft delete, not physical: the row must still exist with deleted=TRUE.
 	var deleted bool
 	if err := db().QueryRow(ctx, `SELECT deleted FROM reminder WHERE id = $1`, id).Scan(&deleted); err != nil {
 		t.Fatalf("row was physically removed, expected a soft delete: %v", err)
@@ -538,13 +461,6 @@ func TestDeleteReminderSoftDeletes(t *testing.T) {
 	}
 }
 
-// TestClaimDueRemindersIsAtomicUnderConcurrency is AC10 — the headline property.
-//
-// The claim query must flip PENDING->SENT atomically so that concurrent claimers
-// each obtain every due reminder AT MOST ONCE. This runs many claimers in
-// parallel over a set of due reminders and asserts every reminder is claimed
-// exactly once across all of them, and that none is claimed twice. Run under
-// -race.
 func TestClaimDueRemindersIsAtomicUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "claim")
@@ -587,18 +503,6 @@ func TestClaimDueRemindersIsAtomicUnderConcurrency(t *testing.T) {
 	start.Done()
 	done.Wait()
 
-	// Every due reminder in our fixture must have been claimed exactly once
-	// total across all claimers.
-	//
-	// There used to be a t.Skipf here for "another claimer is running against
-	// this database": ClaimDueReminders is global by design, so a ginbot-server
-	// pointed at the shared test database would claim these rows first with its
-	// one-second cron and they would arrive already SENT. That escape hatch is
-	// gone. This suite now runs against a throwaway database created for this
-	// process alone (TestMain in db_integration_test.go), which no foreign
-	// process knows the name of — so a row that moved without this test
-	// claiming it can only be the atomicity property failing, and skipping
-	// would hide exactly the defect the test exists to catch.
 	for id := range due {
 		if claimed[id] == 0 {
 			if status := readReminderStatus(t, id); status != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
@@ -614,13 +518,11 @@ func TestClaimDueRemindersIsAtomicUnderConcurrency(t *testing.T) {
 		case 0:
 			t.Errorf("due reminder %s was never claimed", id)
 		case 1:
-			// correct
 		default:
 			t.Errorf("reminder %s was claimed %d times; the claim is not atomic", id, claimed[id])
 		}
 	}
 
-	// And each claimed row must now be SENT, claimed exactly once.
 	for id := range due {
 		if got := readReminderStatus(t, id); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_SENT) {
 			t.Errorf("reminder %s status = %d, want SENT", id, got)
@@ -635,9 +537,6 @@ func TestClaimDueRemindersIsAtomicUnderConcurrency(t *testing.T) {
 	}
 }
 
-// TestClaimDueRemindersTwiceClaimsEachOnce: calling the claim query twice in
-// quick succession claims each due reminder on the first call only; the second
-// returns nothing for the same rows, because the first flipped them to SENT.
 func TestClaimDueRemindersTwiceClaimsEachOnce(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "claim2")
@@ -662,14 +561,6 @@ func TestClaimDueRemindersTwiceClaimsEachOnce(t *testing.T) {
 	}
 }
 
-// TestClaimDueRemindersResolvesTheDeliveryPayload is the extraction nothing used
-// to assert.
-//
-// The claim's whole purpose is to hand the push everything it needs in one
-// query: the platform to route to, the channel to post in
-// (destination_meta->>'destination_uid'), and the owner's platform id for the DM
-// fallback and the ConfirmDelivery metadata. A typo in either jsonb path yields
-// NULL and would have shipped silently.
 func TestClaimDueRemindersResolvesTheDeliveryPayload(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "payload")
@@ -707,12 +598,6 @@ func TestClaimDueRemindersResolvesTheDeliveryPayload(t *testing.T) {
 	}
 }
 
-// TestClaimDueRemindersLeavesOwnerUIDNullOnAnUnlinkedPlatform is the other half
-// of the LEFT JOIN.
-//
-// The owner is registered on Discord; the destination is a Matrix room. The
-// reminder must still claim and still carry its channel — only the DM fallback
-// is unavailable, which is what a NULL OwnerPlatformUID means.
 func TestClaimDueRemindersLeavesOwnerUIDNullOnAnUnlinkedPlatform(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixtureOn(t, "unlinked",
@@ -733,7 +618,6 @@ func TestClaimDueRemindersLeavesOwnerUIDNullOnAnUnlinkedPlatform(t *testing.T) {
 		t.Errorf("OwnerPlatformUID = %q, want NULL: the owner has no identity on this platform",
 			*got.OwnerPlatformUID)
 	}
-	// The channel still resolves, so the reminder can still be delivered.
 	if got.DestinationUID == nil || *got.DestinationUID != f.origin.DestinationUID {
 		t.Errorf("DestinationUID = %v, want %q", got.DestinationUID, f.origin.DestinationUID)
 	}
@@ -743,24 +627,14 @@ func TestClaimDueRemindersLeavesOwnerUIDNullOnAnUnlinkedPlatform(t *testing.T) {
 	}
 }
 
-// TestReclaimStaleRemindersUsesClaimedAtNotUpdatedAt is the MUST-FIX regression
-// test for the reclaim's clock.
-//
-// The reclaim used to compare reminder.updated_at — a `timestamp without time
-// zone` written by a trigger as NOW(), so through a session-TimeZone-dependent
-// cast — against a Go-computed UTC cutoff. Here claimed_at is backdated well
-// past the grace window while the trigger sets updated_at to NOW(), i.e. FRESH.
-// The old comparison would have found nothing to reclaim; the new one must
-// reclaim the row.
 func TestReclaimStaleRemindersUsesClaimedAtNotUpdatedAt(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "reclaim")
 
 	id := f.create(t, time.Now().Add(-time.Hour), "")
 
-	// Claim it the way the delivery loop does, then age only the claim stamp.
-	// The UPDATE fires trg_reminder_updated_at, so updated_at is NOW() —
-	// deliberately fresh.
+	// Age only the claim stamp: the UPDATE fires trg_reminder_updated_at, so
+	// updated_at stays deliberately fresh.
 	if _, err := ClaimDueReminders(ctx, time.Now()); err != nil {
 		t.Fatalf("ClaimDueReminders: %v", err)
 	}
@@ -769,8 +643,7 @@ func TestReclaimStaleRemindersUsesClaimedAtNotUpdatedAt(t *testing.T) {
 		t.Fatalf("backdate claimed_at: %v", err)
 	}
 
-	// Confirm the premise: updated_at is NOT stale, so a reclaim keyed on it
-	// would find nothing.
+	// Premise: updated_at is not stale, so a reclaim keyed on it finds nothing.
 	var updatedAt time.Time
 	if err := db().QueryRow(ctx, `SELECT updated_at FROM reminder WHERE id = $1`, id).Scan(&updatedAt); err != nil {
 		t.Fatalf("read updated_at: %v", err)
@@ -785,9 +658,8 @@ func TestReclaimStaleRemindersUsesClaimedAtNotUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReclaimStaleReminders: %v", err)
 	}
-	// Exactly one: this test created and staled exactly one reminder, and the
-	// precondition above establishes it is the only one in the table. A larger
-	// count would mean the reclaim swept something it was not asked to.
+	// Exact, not a lower bound: a larger count means the reclaim swept a row it
+	// was not asked to.
 	if outcome.Retried != 1 {
 		t.Errorf("retried %d reminders, want exactly 1", outcome.Retried)
 	}
@@ -795,21 +667,12 @@ func TestReclaimStaleRemindersUsesClaimedAtNotUpdatedAt(t *testing.T) {
 	if got := readReminderStatus(t, id); got != statusOf(pb.ReminderStatus_REMINDER_STATUS_PENDING) {
 		t.Errorf("stuck reminder status = %d, want PENDING after reclaim", got)
 	}
-	// The stamp must be cleared, or a later cycle would measure age from a claim
-	// that has already been resolved.
 	claimedAt, _ := readReminderClaim(t, id)
 	if claimedAt != nil {
 		t.Errorf("claimed_at = %v, want NULL after a reclaim", claimedAt)
 	}
 }
 
-// TestReclaimStaleRemindersIgnoresAFreshClaim is the other direction, and the
-// AC10 no-double-delivery guarantee.
-//
-// A reminder claimed a moment ago is IN FLIGHT: reclaiming it would re-push and
-// double-post. updated_at is forced far into the past here to prove the reclaim
-// does not consult it at all — under the old code this row would have been
-// reclaimed on the very next tick and re-pushed once per second.
 func TestReclaimStaleRemindersIgnoresAFreshClaim(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "fresh-claim")
@@ -819,9 +682,8 @@ func TestReclaimStaleRemindersIgnoresAFreshClaim(t *testing.T) {
 		t.Fatalf("ClaimDueReminders: %v", err)
 	}
 
-	// Backdate updated_at only. The trg_reminder_updated_at BEFORE-UPDATE
-	// trigger rewrites updated_at on every UPDATE, so it is disabled for this one
-	// statement and re-enabled immediately; both toggles' errors are asserted.
+	// trg_reminder_updated_at rewrites updated_at on every UPDATE, so it is
+	// disabled for this one statement and re-enabled immediately.
 	if _, err := db().Exec(ctx, `ALTER TABLE reminder DISABLE TRIGGER trg_reminder_updated_at`); err != nil {
 		t.Fatalf("disable updated_at trigger: %v", err)
 	}
@@ -843,14 +705,6 @@ func TestReclaimStaleRemindersIgnoresAFreshClaim(t *testing.T) {
 	}
 }
 
-// TestReclaimStaleRemindersGivesUpAtTheAttemptCap bounds the retry loop.
-//
-// A confirmation can be rejected PERMANENTLY rather than lost — the owner has no
-// platform_user row, so the client's confirm carries no user_id and the
-// interceptor answers InvalidArgument every time — while the channel post
-// succeeds on every cycle. Without a cap the user is notified once per grace
-// period forever. At maxDeliveryAttempts the reclaim must mark the reminder
-// FAILED instead of returning it to PENDING.
 func TestReclaimStaleRemindersGivesUpAtTheAttemptCap(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "cap")
@@ -881,7 +735,6 @@ func TestReclaimStaleRemindersGivesUpAtTheAttemptCap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			id := f.create(t, time.Now().Add(-time.Hour), "")
 
-			// Put it in flight with a stale claim and the attempt count under test.
 			if _, err := db().Exec(ctx,
 				`UPDATE reminder SET status = $1, claimed_at = $2, delivery_attempts = $3 WHERE id = $4`,
 				statusOf(pb.ReminderStatus_REMINDER_STATUS_SENT),
@@ -897,7 +750,6 @@ func TestReclaimStaleRemindersGivesUpAtTheAttemptCap(t *testing.T) {
 			if got := readReminderStatus(t, id); got != statusOf(tt.wantStatus) {
 				t.Errorf("status = %d, want %d (%v)", got, statusOf(tt.wantStatus), tt.wantStatus)
 			}
-			// Either way the claim stamp is cleared.
 			claimedAt, _ := readReminderClaim(t, id)
 			if claimedAt != nil {
 				t.Errorf("claimed_at = %v, want NULL", claimedAt)
@@ -906,9 +758,6 @@ func TestReclaimStaleRemindersGivesUpAtTheAttemptCap(t *testing.T) {
 	}
 }
 
-// TestReclaimStaleRemindersCountsBothOutcomes: the cron logs a retry and a
-// give-up differently, so the two must be reported separately and must not be
-// double-counted.
 func TestReclaimStaleRemindersCountsBothOutcomes(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "counts")
@@ -934,9 +783,8 @@ func TestReclaimStaleRemindersCountsBothOutcomes(t *testing.T) {
 		t.Fatalf("ReclaimStaleReminders: %v", err)
 	}
 
-	// Exact, not lower bounds. The counts are what the cron logs, and a
-	// reclaim that double-counted a row into BOTH buckets — the specific
-	// defect this test exists for — would still satisfy ">= 1" on each.
+	// Exact, not lower bounds: a row double-counted into both buckets would still
+	// satisfy ">= 1" on each.
 	if outcome.Retried != 1 {
 		t.Errorf("Retried = %d, want exactly 1", outcome.Retried)
 	}
@@ -952,12 +800,6 @@ func TestReclaimStaleRemindersCountsBothOutcomes(t *testing.T) {
 	}
 }
 
-// TestAdvanceReminderStatusIfSentOnlyMovesASentRow is the double-confirm guard,
-// tested as the helper it is.
-//
-// The bool return is the whole point: it is what lets ConfirmDelivery tell a real
-// transition from a no-op, and therefore what stops a duplicate confirmation
-// writing a second REMINDER_DELIVERED analytics row.
 func TestAdvanceReminderStatusIfSentOnlyMovesASentRow(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "advance")
@@ -999,9 +841,6 @@ func TestAdvanceReminderStatusIfSentOnlyMovesASentRow(t *testing.T) {
 	}
 }
 
-// TestAdvanceReminderStatusIfSentIsIdempotent: a second call for the same
-// reminder reports false and changes nothing — the property that makes a retried
-// or duplicated confirmation harmless.
 func TestAdvanceReminderStatusIfSentIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "advance-twice")
@@ -1035,9 +874,6 @@ func TestAdvanceReminderStatusIfSentIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestRescheduleReminderIfSentOnlyMovesASentRow: same guard for the repeating
-// path, plus the delivery bookkeeping reset that keeps a healthy daily repeat
-// from eventually failing out on an accumulated attempt count.
 func TestRescheduleReminderIfSentOnlyMovesASentRow(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "resched")
@@ -1101,11 +937,6 @@ func TestRescheduleReminderIfSentOnlyMovesASentRow(t *testing.T) {
 	})
 }
 
-// TestCountActiveRemindersCountsOnlyPendingOwned: the per-user cap is enforced
-// inside CreateReminder's transaction using this exact predicate
-// (activeReminderCountSQL). It must count only the caller's own PENDING,
-// non-deleted reminders — a delivered, deleted, or another user's reminder must
-// not count toward the cap.
 func TestCountActiveRemindersCountsOnlyPendingOwned(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "count")
@@ -1113,23 +944,19 @@ func TestCountActiveRemindersCountsOnlyPendingOwned(t *testing.T) {
 
 	future := time.Now().Add(time.Hour)
 
-	// Two pending for the owner.
 	f.create(t, future, "")
 	pendingID := f.create(t, future, "")
 
-	// One that we mark DELIVERED — must not count.
 	deliveredID := f.create(t, future, "")
 	if err := SetReminderStatus(ctx, deliveredID, pb.ReminderStatus_REMINDER_STATUS_DELIVERED); err != nil {
 		t.Fatalf("SetReminderStatus: %v", err)
 	}
 
-	// One soft-deleted — must not count.
 	deletedID := f.create(t, future, "")
 	if err := SoftDeleteReminderByUser(ctx, deletedID, f.userID); err != nil {
 		t.Fatalf("SoftDeleteReminderByUser: %v", err)
 	}
 
-	// One belonging to another user — must not count toward the owner.
 	other.create(t, future, "")
 
 	count, err := CountActiveReminders(ctx, f.userID)
@@ -1141,8 +968,6 @@ func TestCountActiveRemindersCountsOnlyPendingOwned(t *testing.T) {
 	}
 }
 
-// TestCreateReminderRefusesAtTheCap: the cap lives in the insert, so the helper
-// reports ErrReminderCapReached rather than silently writing past it.
 func TestCreateReminderRefusesAtTheCap(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "cap-refuse")
@@ -1183,14 +1008,6 @@ func TestCreateReminderRefusesAtTheCap(t *testing.T) {
 	}
 }
 
-// TestCreateReminderCapHoldsUnderConcurrency is AC13 — the cap must be a real
-// limit, not a check-then-insert race.
-//
-// Many creates are fired simultaneously at a low cap. Reading the count and then
-// inserting let two callers at the limit both pass the check and both write; the
-// insert is now inside a transaction that first takes a per-owner advisory lock,
-// so the total can never exceed the cap however many callers race. Run under
-// -race.
 func TestCreateReminderCapHoldsUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "cap-race")
@@ -1236,7 +1053,6 @@ func TestCreateReminderCapHoldsUnderConcurrency(t *testing.T) {
 				accepted++
 				mu.Unlock()
 			case ErrReminderCapReached:
-				// The expected refusal.
 			default:
 				t.Errorf("CreateReminder: %v", err)
 			}
@@ -1259,19 +1075,9 @@ func TestCreateReminderCapHoldsUnderConcurrency(t *testing.T) {
 	}
 }
 
-// requireOnlyStaleClaims asserts that the rows in want are the ONLY reminders
-// ReclaimStaleReminders will act on.
-//
-// ReclaimStaleReminders is table-global by design: the cron sweep really does
-// mean "every stale reminder". So a test that asserts an exact outcome COUNT
-// is implicitly claiming the table holds nothing else stale. That claim holds
-// today because this suite owns its own database (see TestMain) and every
-// fixture registers per-row cleanup — but it is an invariant of the whole
-// package, not of the test asserting it, and the first test to seed a stale
-// claim and leave it behind would break a neighbour with a count mismatch that
-// says nothing about the cause.
-//
-// Stating it as a precondition means that failure names itself instead.
+// requireOnlyStaleClaims asserts want are the only reminders the table-global
+// ReclaimStaleReminders will act on, so a neighbour's leftover stale claim fails
+// here by name rather than as an exact-count mismatch elsewhere.
 func requireOnlyStaleClaims(t *testing.T, want ...string) {
 	t.Helper()
 

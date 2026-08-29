@@ -12,10 +12,7 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// These assertions exist to fail at compile time if the exported surface drifts
-// from the agreed contract. A signature change here breaks every platform client
-// at once, so it is worth pinning explicitly rather than only implicitly through
-// the behavioural tests below.
+// These assertions fail at compile time if the exported surface drifts.
 var (
 	_ Handler = func(ctx context.Context, inv *Invocation) (*Response, error) { return nil, nil }
 
@@ -32,16 +29,10 @@ var (
 	_ func(*Invocation, string) bool          = (*Invocation).Bool
 	_ func(*Invocation, string) bool          = (*Invocation).Has
 
-	// Lookup keeps its flat signature above; ResolveChat is the group-aware one,
-	// and additionally returns the arguments left after the command name is
-	// consumed.
 	_ func(*Registry, string, []string) (Command, []string, bool) = (*Registry).ResolveChat
 
 	_ = Response{Content: "", Ephemeral: false, ReRollID: "", File: nil}
-	// A response file carries BYTES, not a URL. The platform CDN URL a trigger
-	// was created from has expired long before the trigger fires, so a []byte
-	// here is the contract and swapping it for a string would silently reopen
-	// that hole.
+	// Content is []byte, not a URL: see ADR-0007.
 	_ = ResponseFile{Name: "", MIMEType: "", Content: []byte(nil)}
 	_ = Arg{Name: "", Description: "", Type: ArgString, Required: false, Default: nil}
 	_ = Invocation{Args: map[string]any{}}
@@ -57,14 +48,11 @@ var (
 	}
 )
 
-// noopHandler is for tests that only care about registration or resolution.
 func noopHandler(ctx context.Context, inv *Invocation) (*Response, error) {
 	return &Response{}, nil
 }
 
 func TestArgTypeConstants(t *testing.T) {
-	// The zero value carries meaning: an Arg written without an explicit Type
-	// is a string argument, which is what most commands want.
 	if ArgString != 0 {
 		t.Errorf("ArgString = %d, want 0 so that a zero-valued Arg is a string", ArgString)
 	}
@@ -75,9 +63,6 @@ func TestArgTypeConstants(t *testing.T) {
 	}
 }
 
-// pkg/command is the platform-neutral layer that both the Discord and the Matrix
-// client depend on. A platform import here would make the package unusable from
-// the other client and invert the dependency direction on purpose-built code.
 func TestPackageStaysPlatformNeutral(t *testing.T) {
 	forbidden := []string{
 		"github.com/bwmarrin/discordgo",
@@ -122,7 +107,6 @@ func TestPackageStaysPlatformNeutral(t *testing.T) {
 	}
 }
 
-// The whole chat path minus the platform glue: parse, resolve, bind, run.
 func TestChatRoundTrip(t *testing.T) {
 	r := NewRegistry()
 
@@ -181,8 +165,6 @@ func TestChatRoundTrip(t *testing.T) {
 	}
 }
 
-// An unknown chat command must be silently ignored, which at this layer means
-// the registry simply does not resolve it and the caller has nothing to send.
 func TestUnknownChatCommandDoesNotResolve(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(Command{Name: "ping", Handler: noopHandler}); err != nil {

@@ -8,14 +8,8 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// Tests for internal/config/config.go. TestMain and unsetEnv come from
-// repost_test.go.
-
-// restoreGlobals snapshots AppEnvironment and LogLevel and puts them back
-// afterwards. loadEnvironment and loadLogLevel write package-level state
-// rather than returning a value, so without this a test would leave the
-// package configured for whatever it happened to assert last and the suite's
-// result would depend on test ordering.
+// restoreGlobals keeps the suite order-independent: the loaders write
+// package-level state rather than returning a value.
 func restoreGlobals(t *testing.T) {
 	t.Helper()
 
@@ -25,13 +19,7 @@ func restoreGlobals(t *testing.T) {
 	})
 }
 
-// TestLoadEnvironmentTreatsOnlyTheExactLiteralProductionAsProduction.
-//
-// Getting this wrong fails OPEN, which is why it is worth an exact-match
-// table: development mode enables gRPC server reflection (cmd/ginbot-server),
-// makes the cron loop fan out CLIENT_ACTION_SEND_TEST every minute, and
-// switches zap to the development encoder. A production deployment that spells
-// the value "Production" silently gets all three.
+// Fails open: "Production" silently gets reflection and the cron test fan-out.
 func TestLoadEnvironmentTreatsOnlyTheExactLiteralProductionAsProduction(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -67,12 +55,7 @@ func TestLoadEnvironmentTreatsOnlyTheExactLiteralProductionAsProduction(t *testi
 	}
 }
 
-// TestLoadLogLevelFallsBackToInfo covers every arm of the switch, including
-// the fact that there is deliberately NO "info" case — info is what the
-// default arm produces, so "info", "", an unset variable and outright garbage
-// all land on the same level. A future refactor that adds an explicit "info"
-// case and changes the default to, say, Debug would leak request payloads
-// into production logs for every operator who never set the variable.
+// No "info" case: a default of Debug would leak payloads for anyone unset.
 func TestLoadLogLevelFallsBackToInfo(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -87,7 +70,6 @@ func TestLoadLogLevelFallsBackToInfo(t *testing.T) {
 		{"an empty value reaches the default arm", true, "", zap.InfoLevel},
 		{"unset reaches the default arm", false, "", zap.InfoLevel},
 		{"garbage reaches the default arm", true, "verbose", zap.InfoLevel},
-		// The switch matches exact strings, so case matters here too.
 		{"uppercase DEBUG reaches the default arm", true, "DEBUG", zap.InfoLevel},
 	}
 
@@ -110,11 +92,7 @@ func TestLoadLogLevelFallsBackToInfo(t *testing.T) {
 	}
 }
 
-// ── webURL ───────────────────────────────────────────────────────────────────
-
-// TestWebURL: a raw passthrough with no default. It is normalised by hostOf
-// at the point of use, not here, so this must not trim or lowercase — doing so
-// would make the two layers disagree about what was configured.
+// Raw passthrough: hostOf normalises at the point of use instead.
 func TestWebURL(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -17,32 +17,11 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// This file is the single highest-value test in the whole Connect port.
-//
-// Go negotiates HTTP/2 automatically only over TLS, via ALPN. Plaintext
-// HTTP/2 needs UnencryptedHTTP2 in http.Server.Protocols on the server and an
-// http2.Transport with AllowHTTP plus an explicit plaintext DialTLSContext on
-// the client, both spelled out by hand. Get either wrong and the connection
-// silently falls back to HTTP/1.1 — where every unary RPC still passes,
-// because Connect's unary protocol works fine over HTTP/1.1, and only
-// OpenClientActionStream's bidirectional stream fails. That lands exactly in
-// the GINBOT_GRPC_TLS=false configuration cmd/ginbot-server ships by default
-// in docker-compose.prod.yml. The general harness in harness_test.go cannot
-// catch this class of bug at all: it deliberately runs over TLS (StartTLS),
-// where Go's http2 support is automatic and the plaintext wiring this file is
-// about is never exercised.
-//
-// newPlaintextH2CServer below reproduces cmd/ginbot-server's OWN
-// construction — the mux mounted unwrapped on a plain (non-TLS) http.Server
-// whose Protocols include UnencryptedHTTP2 — rather than reusing the general
-// harness, because reusing it would test httptest's HTTP/2 support instead of
-// production's.
+// Plaintext HTTP/2 needs UnencryptedHTTP2 in http.Server.Protocols on the server and
+// AllowHTTP plus an explicit plaintext DialTLSContext on the client. Get either wrong
+// and the connection falls back to HTTP/1.1, where only bidi streaming fails.
 
-// newPlaintextH2CServer mirrors cmd/ginbot-server/main.go's construction for
-// the GINBOT_GRPC_TLS=false path: an http.Server with UnencryptedHTTP2 in its
-// Protocols, served over a plain (non-TLS) listener. It mounts ReverseService
-// alone — enough to prove the transport carries a bidi stream, without pulling
-// in every other service's dependencies main.go wires (storage, cron, database).
+// newPlaintextH2CServer mirrors cmd/ginbot-server's own GINBOT_GRPC_TLS=false construction.
 func newPlaintextH2CServer(t *testing.T, reverse *ReverseServer, dir *directory) *httptest.Server {
 	t.Helper()
 
@@ -58,13 +37,7 @@ func newPlaintextH2CServer(t *testing.T, reverse *ReverseServer, dir *directory)
 	mux := http.NewServeMux()
 	mux.Handle(ginbotv1connect.NewReverseServiceHandler(reverse, handlerOpts...))
 
-	// The same Protocols set cmd/ginbot-server/main.go builds. HTTP2 is
-	// included even though nothing here negotiates ALPN, and HTTP2Config is
-	// left unset — neither is what this test is checking — but the
-	// UnencryptedHTTP2 wiring itself is byte-for-byte the same shape.
-	//
-	// Set on srv.Config before Start, because httptest only reads it when it
-	// hands the listener to http.Server.Serve.
+	// Set on srv.Config before Start: httptest reads it only when it calls http.Server.Serve.
 	var protocols http.Protocols
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)
@@ -72,22 +45,15 @@ func newPlaintextH2CServer(t *testing.T, reverse *ReverseServer, dir *directory)
 
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = &protocols
-	// Deliberately NOT srv.StartTLS(): plaintext is the point. This is the
-	// GINBOT_GRPC_TLS=false configuration, which is also cmd/ginbot-server's
-	// default.
+	// Deliberately NOT srv.StartTLS(): plaintext is the point, and the default.
 	srv.Start()
 	t.Cleanup(srv.Close)
 
 	return srv
 }
 
-// newH2CClient builds an http.Client that speaks HTTP/2 over plaintext,
-// mirroring what a Connect client dialing GINBOT_GRPC_TLS=false has to do:
-// http2.Transport does not offer h2c automatically, unlike its TLS/ALPN path,
-// so AllowHTTP and an explicit plaintext DialTLSContext are both required by
-// hand. DialTLSContext is the field to get right — the http2 package's API
-// has moved this around across versions, and the wrong name compiles against
-// a stale vendored copy but silently does nothing here.
+// newH2CClient sets AllowHTTP and a plaintext DialTLSContext by hand; the http2 package
+// has moved that field around, and a stale spelling compiles but does nothing.
 func newH2CClient() *http.Client {
 	return &http.Client{
 		Transport: &http2.Transport{
@@ -100,16 +66,7 @@ func newH2CClient() *http.Client {
 	}
 }
 
-// TestReverseStreamCarriesAMessageOverPlaintextH2C is the test the trap
-// exists for: it opens OpenClientActionStream over plaintext h2c against a
-// server built exactly the way cmd/ginbot-server builds it, pushes an action
-// through SendAction, and asserts the message actually arrives — server to
-// client, the direction SendAction's fan-out uses and the one that matters in
-// production. A test that only opened the stream without carrying a message
-// would not catch an HTTP/1.1 fallback: Connect can often still complete a
-// SINGLE request/response-shaped exchange degraded, but a message pushed from
-// the server with no client request driving it cannot arrive at all without
-// real HTTP/2 multiplexing.
+// A server push with no client request driving it needs real HTTP/2 multiplexing.
 func TestReverseStreamCarriesAMessageOverPlaintextH2C(t *testing.T) {
 	reverseServer := NewReverseServer()
 	dir := newDirectory().add(pb.Platform_PLATFORM_DISCORD, reverseCallerUID, testUser(reverseCallerUserID, pb.Clearance_CLEARANCE_REGISTERED))
@@ -118,10 +75,7 @@ func TestReverseStreamCarriesAMessageOverPlaintextH2C(t *testing.T) {
 	httpClient := newH2CClient()
 	t.Cleanup(httpClient.CloseIdleConnections)
 
-	// Assert the negotiated protocol directly, not just that SOME request
-	// succeeded: a plain GET against the mux still gets a response (404, since
-	// nothing is mounted at "/") over HTTP/1.1 if the h2c wiring is broken,
-	// which would make "the request succeeded" alone a false-positive signal.
+	// A plain GET still gets a 404 over HTTP/1.1, so "the request succeeded" proves nothing.
 	resp, err := httpClient.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatalf("GET %s: %v", srv.URL, err)

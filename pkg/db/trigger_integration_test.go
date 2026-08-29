@@ -1,14 +1,5 @@
 //go:build integration
 
-// Integration tests for the trigger and file database layer. These require a
-// live Postgres:
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/db/...
-//
-// TestMain, meta, cleanupUser and cleanupInstanceByMeta are declared in
-// db_integration_test.go in this same package and are reused here, not
-// redeclared.
 package db
 
 import (
@@ -22,15 +13,9 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// triggerFixture creates a user and an instance, registering their cleanup, so
-// tests only need to worry about the trigger rows they create on top.
-//
-// Cleanup order matters: trigger.user_id has an FK to user_account with no
-// ON DELETE CASCADE, so any trigger created against this fixture must be
-// deleted before the user is. t.Cleanup runs LIFO, so registering the user's
-// cleanup here (early) and each trigger's cleanup later (in create) makes the
-// trigger cleanups run first automatically, without every call site having to
-// reason about ordering itself.
+// triggerFixture registers the user's cleanup early so LIFO t.Cleanup order
+// removes triggers before the user they reference: trigger.user_id has no
+// ON DELETE CASCADE.
 type triggerFixture struct {
 	userID     string
 	instanceID int64
@@ -58,10 +43,8 @@ func newTriggerFixture(t *testing.T, label string) *triggerFixture {
 	return &triggerFixture{userID: userID, instanceID: instanceID, suffix: suffix}
 }
 
-// createOn creates a trigger scoped to the given instance ids, owned by the
-// fixture's user, and schedules cleanup of both the row and anything recorded
-// against it in action_record (which carries no FK to trigger and would
-// otherwise silently leak).
+// createOn also cleans up action_record rows, which carry no FK to trigger and
+// would otherwise leak.
 func (f *triggerFixture) createOn(t *testing.T, phrase string, mode pb.TriggerMode, chance int32, instanceIDs []int64) string {
 	t.Helper()
 	ctx := context.Background()
@@ -90,16 +73,11 @@ func (f *triggerFixture) createOn(t *testing.T, phrase string, mode pb.TriggerMo
 	return id
 }
 
-// create is createOn scoped to the fixture's own single instance, which is
-// the common case.
 func (f *triggerFixture) create(t *testing.T, phrase string, mode pb.TriggerMode, chance int32) string {
 	t.Helper()
 	return f.createOn(t, phrase, mode, chance, []int64{f.instanceID})
 }
 
-// TestCreateTriggerInsertsRowAndInstanceScopingInOneGo: CreateTrigger writes
-// the trigger and its trigger_instance rows together; GetTrigger reads the row
-// back and GetTriggerInstances returns the scoping.
 func TestCreateTriggerInsertsRowAndInstanceScopingInOneGo(t *testing.T) {
 	f := newTriggerFixture(t, "create")
 	ctx := context.Background()
@@ -136,9 +114,6 @@ func TestCreateTriggerInsertsRowAndInstanceScopingInOneGo(t *testing.T) {
 	}
 }
 
-// TestExactPhraseUniqueConstraintIsCaseInsensitiveAndLiveOnly is AC3: the
-// database enforces global, case-insensitive uniqueness among LIVE exact-mode
-// rows only.
 func TestExactPhraseUniqueConstraintIsCaseInsensitiveAndLiveOnly(t *testing.T) {
 	f := newTriggerFixture(t, "exact-uniq")
 	ctx := context.Background()
@@ -161,8 +136,6 @@ func TestExactPhraseUniqueConstraintIsCaseInsensitiveAndLiveOnly(t *testing.T) {
 	}
 }
 
-// TestTwoAnyModePhrasesMayRepeat: unlike exact mode, any-mode phrases are not
-// constrained, so the same phrase may be registered more than once.
 func TestTwoAnyModePhrasesMayRepeat(t *testing.T) {
 	f := newTriggerFixture(t, "any-repeat")
 
@@ -175,9 +148,7 @@ func TestTwoAnyModePhrasesMayRepeat(t *testing.T) {
 	}
 }
 
-// TestSoftDeletedExactTriggerDoesNotBlockReuseOfItsPhrase: the unique index is
-// partial (WHERE mode = 1 AND deleted = FALSE), so soft-deleting an exact
-// trigger frees its phrase for reuse.
+// The unique index is partial (WHERE mode = 1 AND deleted = FALSE).
 func TestSoftDeletedExactTriggerDoesNotBlockReuseOfItsPhrase(t *testing.T) {
 	f := newTriggerFixture(t, "exact-reuse")
 	ctx := context.Background()
@@ -189,15 +160,12 @@ func TestSoftDeletedExactTriggerDoesNotBlockReuseOfItsPhrase(t *testing.T) {
 		t.Fatalf("SoftDeleteTriggerByUser: %v", err)
 	}
 
-	// Must succeed now that the only other holder of the phrase is soft-deleted.
 	secondID := f.create(t, phrase, pb.TriggerMode_TRIGGER_MODE_EXACT, 10)
 	if secondID == firstID {
 		t.Fatal("second create returned the first (soft-deleted) id")
 	}
 }
 
-// TestListActiveTriggersByInstanceScopesPerInstance is AC15's db-layer half: a
-// trigger scoped to instance A is returned for A and NOT for B.
 func TestListActiveTriggersByInstanceScopesPerInstance(t *testing.T) {
 	f := newTriggerFixture(t, "scope-a")
 	ctx := context.Background()
@@ -238,7 +206,6 @@ func containsActiveID(actives []ActiveTrigger, id string) bool {
 	return false
 }
 
-// TestListActiveTriggersByInstanceExcludesSoftDeletedAndOrdersDeterministically.
 func TestListActiveTriggersByInstanceExcludesSoftDeletedAndOrdersDeterministically(t *testing.T) {
 	f := newTriggerFixture(t, "order")
 	ctx := context.Background()
@@ -263,7 +230,6 @@ func TestListActiveTriggersByInstanceExcludesSoftDeletedAndOrdersDeterministical
 		t.Errorf("live triggers missing from active list: %+v", active)
 	}
 
-	// Deterministic order: calling it twice must produce the same sequence.
 	activeAgain, err := ListActiveTriggersByInstance(ctx, f.instanceID)
 	if err != nil {
 		t.Fatalf("ListActiveTriggersByInstance (again): %v", err)
@@ -285,8 +251,6 @@ func sameOrder(a, b []ActiveTrigger) bool {
 	return true
 }
 
-// TestUpdateTriggerByUserRefusesAnotherUsersRow: ErrNotFound for a trigger
-// that is not the caller's, success for their own.
 func TestUpdateTriggerByUserRefusesAnotherUsersRow(t *testing.T) {
 	owner := newTriggerFixture(t, "upd-owner")
 	attacker := newTriggerFixture(t, "upd-attacker")
@@ -305,7 +269,6 @@ func TestUpdateTriggerByUserRefusesAnotherUsersRow(t *testing.T) {
 		t.Errorf("attacker's UpdateTriggerByUser err = %v, want ErrNotFound", err)
 	}
 
-	// The owner's own update must succeed.
 	err = UpdateTriggerByUser(ctx, TriggerUpdate{
 		ID:          id,
 		UserID:      owner.userID,
@@ -325,8 +288,6 @@ func TestUpdateTriggerByUserRefusesAnotherUsersRow(t *testing.T) {
 	}
 }
 
-// TestSoftDeleteTriggerByUserRefusesAnotherUsersRow: same ownership boundary
-// for delete.
 func TestSoftDeleteTriggerByUserRefusesAnotherUsersRow(t *testing.T) {
 	owner := newTriggerFixture(t, "del-owner")
 	attacker := newTriggerFixture(t, "del-attacker")
@@ -338,7 +299,6 @@ func TestSoftDeleteTriggerByUserRefusesAnotherUsersRow(t *testing.T) {
 		t.Errorf("attacker's SoftDeleteTriggerByUser err = %v, want ErrNotFound", err)
 	}
 
-	// Still readable: the attacker's attempt must not have deleted it.
 	if _, err := GetTrigger(ctx, id); err != nil {
 		t.Fatalf("GetTrigger after a foreign delete attempt: %v", err)
 	}
@@ -351,7 +311,6 @@ func TestSoftDeleteTriggerByUserRefusesAnotherUsersRow(t *testing.T) {
 	}
 }
 
-// TestDeletingATriggerCascadesToTriggerInstance: the FK is ON DELETE CASCADE.
 func TestDeletingATriggerCascadesToTriggerInstance(t *testing.T) {
 	f := newTriggerFixture(t, "cascade")
 	ctx := context.Background()
@@ -379,8 +338,6 @@ func TestDeletingATriggerCascadesToTriggerInstance(t *testing.T) {
 	}
 }
 
-// TestGetOrCreateFileByHashDedupesByHash: the same hash twice yields the same
-// id, inserted true then false.
 func TestGetOrCreateFileByHashDedupesByHash(t *testing.T) {
 	ctx := context.Background()
 	hash := "hash-" + time.Now().Format("150405.000000000")
@@ -418,9 +375,6 @@ func TestGetOrCreateFileByHashDedupesByHash(t *testing.T) {
 	}
 }
 
-// TestListTriggerStatsAggregatesActionRecord is AC11: leaderboard counts,
-// ordering by count descending, the period filter, instance scoping, and that
-// OCCURRED and CALLED are counted separately.
 func TestListTriggerStatsAggregatesActionRecord(t *testing.T) {
 	fixtureA := newTriggerFixture(t, "stats-a")
 	fixtureB := newTriggerFixture(t, "stats-b")
@@ -428,7 +382,6 @@ func TestListTriggerStatsAggregatesActionRecord(t *testing.T) {
 
 	popular := fixtureA.create(t, "popular-"+fixtureA.suffix, pb.TriggerMode_TRIGGER_MODE_ANY, 10)
 	quiet := fixtureA.create(t, "quiet-"+fixtureA.suffix, pb.TriggerMode_TRIGGER_MODE_ANY, 10)
-	// Same phrase text is irrelevant here; what matters is a DIFFERENT instance.
 	elsewhere := fixtureB.create(t, "elsewhere-"+fixtureB.suffix, pb.TriggerMode_TRIGGER_MODE_ANY, 10)
 
 	occurred := pb.ActionType_ACTION_TYPE_TRIGGER_OCCURRED
@@ -451,8 +404,6 @@ func TestListTriggerStatsAggregatesActionRecord(t *testing.T) {
 		}
 	}
 
-	// A row far outside any period window this test queries, so the period
-	// filter has something real to exclude.
 	if err := RecordTriggerFire(ctx, occurred, popular, fixtureA.userID); err != nil {
 		t.Fatalf("RecordTriggerFire ancient occurred: %v", err)
 	}
@@ -465,9 +416,6 @@ func TestListTriggerStatsAggregatesActionRecord(t *testing.T) {
 		t.Fatalf("backdate one action_record row: %v", err)
 	}
 
-	// Instance scoping + ordering by count descending: popular (3, the ancient
-	// one is outside the default unbounded query only if we don't filter by
-	// period — without a period filter it counts all 4) ahead of quiet (1).
 	statsA, err := ListTriggerStats(ctx, TriggerStatsFilter{
 		InstanceID: fixtureA.instanceID,
 		ActionType: occurred,
@@ -486,15 +434,12 @@ func TestListTriggerStatsAggregatesActionRecord(t *testing.T) {
 		t.Errorf("counts not descending: %d then %d", statsA[0].Count, statsA[1].Count)
 	}
 
-	// Instance scoping: instance B's trigger must never appear in A's stats.
 	for _, row := range statsA {
 		if row.TriggerID == elsewhere {
 			t.Errorf("instance B's trigger %s leaked into instance A's stats", elsewhere)
 		}
 	}
 
-	// The period filter: excluding the backdated row drops popular's count by
-	// exactly one (from 4 to 3).
 	statsWithPeriod, err := ListTriggerStats(ctx, TriggerStatsFilter{
 		InstanceID:  fixtureA.instanceID,
 		ActionType:  occurred,
@@ -515,8 +460,6 @@ func TestListTriggerStatsAggregatesActionRecord(t *testing.T) {
 		t.Errorf("popular's in-period occurred count = %d, want 3 (the backdated 4th excluded)", popularCountInPeriod)
 	}
 
-	// OCCURRED and CALLED are counted separately: popular has 1 CALLED, not
-	// merged into its OCCURRED count.
 	statsCalled, err := ListTriggerStats(ctx, TriggerStatsFilter{
 		InstanceID: fixtureA.instanceID,
 		ActionType: called,
@@ -535,9 +478,6 @@ func TestListTriggerStatsAggregatesActionRecord(t *testing.T) {
 
 func timePtr(t time.Time) *time.Time { return &t }
 
-// TestListOrphanFilesExcludesFilesReferencedByALiveTrigger is AC's file GC
-// query: a file with no referencing live trigger is returned; one that is
-// referenced is not.
 func TestListOrphanFilesExcludesFilesReferencedByALiveTrigger(t *testing.T) {
 	f := newTriggerFixture(t, "orphan")
 	ctx := context.Background()
@@ -565,8 +505,7 @@ func TestListOrphanFilesExcludesFilesReferencedByALiveTrigger(t *testing.T) {
 		}
 	})
 
-	// A trigger whose only content is the file (no reply needed: file_id alone
-	// satisfies chk_reply_or_file).
+	// file_id alone satisfies chk_reply_or_file, so no reply is needed.
 	_ = f.createTriggerWithFile(t, "file-trigger-"+suffix, referencedID)
 
 	olderThan := time.Now().Add(time.Hour).UTC() // safely after both files' created_at
@@ -583,8 +522,6 @@ func TestListOrphanFilesExcludesFilesReferencedByALiveTrigger(t *testing.T) {
 	}
 }
 
-// createTriggerWithFile creates a trigger whose response is a file rather
-// than a reply, scoped to the fixture's instance.
 func (f *triggerFixture) createTriggerWithFile(t *testing.T, phrase string, fileID string) string {
 	t.Helper()
 	ctx := context.Background()

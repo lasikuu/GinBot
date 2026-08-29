@@ -4,14 +4,8 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// EffectiveChance resolves a stored chance into the percentage a trigger fires
-// at.
-//
-// A stored 0 means DefaultChance, preserving the old bot's semantics where the
-// column doubled as "unset". Exact mode is then multiplied by
-// ExactChanceMultiplier, and the result is clamped to MaxChance. A negative
-// stored value is treated as 0; the column has a CHECK that forbids it, but the
-// function must not return nonsense if one appears.
+// EffectiveChance resolves a stored chance into a firing percentage; 0 and any
+// negative mean DefaultChance.
 func EffectiveChance(stored int32, mode pb.TriggerMode) int32 {
 	if stored < 0 {
 		stored = 0

@@ -6,7 +6,6 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// TestEffectiveChance pins every worked example from spec §7.3 verbatim.
 func TestEffectiveChance(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -37,8 +36,6 @@ func TestEffectiveChance(t *testing.T) {
 	}
 }
 
-// TestEffectiveChanceClampBoundary pins the exact-mode clamp boundary: 33*3=99
-// stays under MaxChance, 34*3=102 clamps down to exactly MaxChance.
 func TestEffectiveChanceClampBoundary(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -62,9 +59,6 @@ func TestEffectiveChanceClampBoundary(t *testing.T) {
 	}
 }
 
-// TestEffectiveChanceUnspecifiedBehavesAsAny: the proto comment says
-// TRIGGER_MODE_UNSPECIFIED "defaults to TRIGGER_MODE_ANY when unset", and this
-// package must honour that for every stored value, not only 0.
 func TestEffectiveChanceUnspecifiedBehavesAsAny(t *testing.T) {
 	for _, stored := range []int32{0, 1, 10, 50, 100} {
 		t.Run("", func(t *testing.T) {
@@ -77,8 +71,6 @@ func TestEffectiveChanceUnspecifiedBehavesAsAny(t *testing.T) {
 	}
 }
 
-// TestEffectiveChanceNeverReturnsZero: Fires relies on this to make an
-// effective chance of 0 impossible, per the doc comment on Fires.
 func TestEffectiveChanceNeverReturnsZero(t *testing.T) {
 	for _, mode := range []pb.TriggerMode{
 		pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED,

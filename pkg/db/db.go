@@ -18,21 +18,16 @@ import (
 //go:embed migrations
 var embedMigrations embed.FS
 
-// *pgx.Conn represents a single connection to the database and is not concurrency safe.
-// Using *pgxpool.Pool for a concurrency safe connection pool.
+// *pgx.Conn is a single connection and is not concurrency safe; a pool is.
 // https://pkg.go.dev/github.com/jackc/pgx/v5#hdr-Connection_Pool
 var dbpool *pgxpool.Pool
 
-// db allows access to the database connection pool
 func db() *pgxpool.Pool {
 	return dbpool
 }
 
-// InitDB initializes the database connection pool
 func InitDB() {
-	// Built via net/url rather than string concatenation so that passwords
-	// containing reserved characters (@ : / ?) are escaped rather than
-	// corrupting the URI.
+	// net/url escapes passwords containing reserved characters (@ : / ?).
 	dbURI := url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(config.Options.DB.Username, config.Options.DB.Password),
@@ -47,21 +42,19 @@ func InitDB() {
 	}
 }
 
-// EnsureLatestVersion ensures that the database is at the latest version by running all migrations.
 func EnsureLatestVersion() {
 	if !config.Options.DB.Migrations {
 		log.Z.Warn("database migrations are disabled.")
 		return
 	}
 
-	// For embedding the migrations in the binary.
 	goose.SetBaseFS(embedMigrations)
 
 	if err := goose.SetDialect("postgres"); err != nil {
 		log.Z.Fatal("failed setting DB dialect", zap.String("err", err.Error()))
 	}
 
-	// It is necessary to use the stdlib.OpenDBFromPool function to convert the *pgxpool.Pool to *sql.DB for goose.
+	// goose needs a *sql.DB, not a pool.
 	sqlDB := stdlib.OpenDBFromPool(db())
 	defer func() {
 		if err := sqlDB.Close(); err != nil {
@@ -74,16 +67,12 @@ func EnsureLatestVersion() {
 	}
 }
 
-// CloseDB closes the database connection
 func CloseDB() {
 	db().Close()
 }
 
-// Ping reports whether the connection pool can currently reach Postgres. It
-// backs cmd/ginbot-server's health surfaces (UtilityService/HealthCheck, the
-// gRPC health protocol and GET /healthz) — added here rather than composed at
-// the call site because dbpool is package-private by design, so answering
-// "is the database reachable" is only ever askable from inside this package.
+// Ping backs the server's health surfaces; it lives here because dbpool is
+// package-private.
 func Ping(ctx context.Context) error {
 	return db().Ping(ctx)
 }

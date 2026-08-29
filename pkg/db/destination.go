@@ -12,12 +12,9 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// GetOrCreateDestinationByMeta resolves a platform/instance/destination triple to
-// a destination id, creating the instance and destination rows if they do not
-// exist yet. This is how a guild or room first becomes known to the bot.
-// It runs in a transaction so the instance and destination are resolved
-// atomically, and both inserts use ON CONFLICT so concurrent callers converge on
-// the same rows rather than creating duplicates.
+// GetOrCreateDestinationByMeta creates the instance and destination rows if they
+// are new. Both inserts use ON CONFLICT so concurrent callers converge on the
+// same rows rather than duplicating them.
 func GetOrCreateDestinationByMeta(ctx context.Context, destination *pb.ReminderDestination) (int64, error) {
 	platformEnum := destination.GetPlatformEnum()
 	instanceMeta := destination.GetInstanceMeta()
@@ -33,8 +30,7 @@ func GetOrCreateDestinationByMeta(ctx context.Context, destination *pb.ReminderD
 		}
 	}()
 
-	// DO UPDATE rather than DO NOTHING: DO NOTHING returns no row on conflict, so
-	// RETURNING would yield nothing for an instance that already exists.
+	// DO UPDATE rather than DO NOTHING, which returns no row for RETURNING.
 	var instanceID int64
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO instance (platform_enum, instance_meta)
@@ -66,7 +62,6 @@ func GetOrCreateDestinationByMeta(ctx context.Context, destination *pb.ReminderD
 	return destinationID, nil
 }
 
-// CreateDestination inserts a destination under an instance and returns its id.
 func CreateDestination(ctx context.Context, instanceID int64, destinationMeta *structpb.Struct) (int64, error) {
 	var destinationID int64
 	err := db().QueryRow(ctx,
@@ -80,8 +75,7 @@ func CreateDestination(ctx context.Context, instanceID int64, destinationMeta *s
 	return destinationID, nil
 }
 
-// GetDestinationIDByMeta resolves a destination row's id within an instance.
-// ErrNotFound when it does not exist.
+// GetDestinationIDByMeta returns ErrNotFound when the row does not exist.
 func GetDestinationIDByMeta(ctx context.Context, instanceID int64, destinationMeta *structpb.Struct) (int64, error) {
 	var destinationID int64
 	err := db().QueryRow(ctx,
@@ -99,8 +93,6 @@ func GetDestinationIDByMeta(ctx context.Context, instanceID int64, destinationMe
 	return destinationID, nil
 }
 
-// GetReminderDestination rebuilds the protobuf destination for a destination id
-// by joining back to its instance.
 func GetReminderDestination(ctx context.Context, destinationID int64) (*pb.ReminderDestination, error) {
 	var platformEnum int32
 	var instanceMeta *structpb.Struct

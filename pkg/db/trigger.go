@@ -18,25 +18,19 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// exactPhraseConstraint is the partial unique index that enforces global,
-// case-insensitive uniqueness of exact-mode phrases. Named explicitly so a
-// violation can be told apart from any other unique constraint on the table
-// rather than by matching the error's message text.
+// exactPhraseConstraint is the partial unique index enforcing global,
+// case-insensitive uniqueness of exact-mode phrases. Named so a violation is
+// identified by constraint rather than by matching the error message.
 const exactPhraseConstraint = "uq_trigger_exact_phrase"
 
 // ErrExactPhraseTaken is returned when an exact-mode phrase already exists.
-// Exact phrases are globally unique, enforced by uq_trigger_exact_phrase.
 var ErrExactPhraseTaken = errors.New("exact phrase already exists")
 
-// isExactPhraseViolation reports whether err is a violation of
-// uq_trigger_exact_phrase specifically, as opposed to some other unique
-// constraint on the table.
 func isExactPhraseViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation && pgErr.ConstraintName == exactPhraseConstraint
 }
 
-// CreateTriggerParams is what CreateTrigger writes.
 type CreateTriggerParams struct {
 	Phrase string
 	Reply  string
@@ -44,13 +38,11 @@ type CreateTriggerParams struct {
 	UserID string
 	Chance int32
 	Mode   pb.TriggerMode
-	// InstanceIDs are the instances the trigger is active on. At least one is
-	// required: a trigger scoped to nothing could never fire.
+	// InstanceIDs must hold at least one: a trigger scoped to nothing never fires.
 	InstanceIDs []int64
 }
 
-// CreateTrigger inserts a trigger and its instance scoping in one
-// transaction.
+// CreateTrigger writes the trigger and its instance scoping in one transaction.
 func CreateTrigger(ctx context.Context, params CreateTriggerParams) (string, error) {
 	if len(params.InstanceIDs) == 0 {
 		return "", fmt.Errorf("create trigger: at least one instance is required")
@@ -84,9 +76,8 @@ func CreateTrigger(ctx context.Context, params CreateTriggerParams) (string, err
 		return "", fmt.Errorf("insert trigger: %w", err)
 	}
 
-	// ON CONFLICT DO NOTHING: a caller-supplied instance list is not
-	// deduplicated upstream, and inserting the same pair twice must not fail
-	// the create.
+	// The caller's instance list is not deduplicated upstream, so a repeated pair
+	// must not fail the create.
 	for _, instanceID := range params.InstanceIDs {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO trigger_instance (trigger_id, instance_id)
@@ -105,8 +96,8 @@ func CreateTrigger(ctx context.Context, params CreateTriggerParams) (string, err
 	return triggerID, nil
 }
 
-// GetTrigger returns one trigger row by id. Soft-deleted rows are not
-// returned.
+// GetTrigger returns one trigger by id, or ErrNotFound. Soft-deleted rows are
+// not returned.
 func GetTrigger(ctx context.Context, id string) (*model.Trigger, error) {
 	var row model.Trigger
 	err := db().QueryRow(ctx,
@@ -124,9 +115,8 @@ func GetTrigger(ctx context.Context, id string) (*model.Trigger, error) {
 	return &row, nil
 }
 
-// GetTriggerInstances returns the instances a trigger is active on, rebuilt
-// as protobuf the same way GetReminderDestination rebuilds a destination:
-// internal/model does not know about pb.TriggerInstance.
+// GetTriggerInstances rebuilds the protobuf shape here because internal/model
+// does not know about pb.TriggerInstance.
 func GetTriggerInstances(ctx context.Context, triggerID string) ([]*pb.TriggerInstance, error) {
 	rows, err := db().Query(ctx,
 		`SELECT instance.platform_enum, instance.instance_meta
@@ -162,13 +152,8 @@ func GetTriggerInstances(ctx context.Context, triggerID string) ([]*pb.TriggerIn
 	return instances, nil
 }
 
-// ListTriggerInstanceIDs returns the instance ids a trigger is scoped to.
-//
-// This is the glue GetTriggerInstances cannot provide: Cache.Invalidate takes
-// an instance id, and the GetTrigger/ExecTrigger handlers need ids to check
-// whether a caller's origin instance is one this trigger is scoped to.
-// GetTriggerInstances returns the richer protobuf shape for read responses
-// instead.
+// ListTriggerInstanceIDs returns raw ids for Cache.Invalidate and the handler
+// origin checks; GetTriggerInstances returns the protobuf shape for responses.
 func ListTriggerInstanceIDs(ctx context.Context, triggerID string) ([]int64, error) {
 	rows, err := db().Query(ctx,
 		`SELECT instance_id FROM trigger_instance WHERE trigger_id = $1`,
@@ -194,7 +179,6 @@ func ListTriggerInstanceIDs(ctx context.Context, triggerID string) ([]int64, err
 	return ids, nil
 }
 
-// ListTriggersFilter narrows a trigger listing.
 type ListTriggersFilter struct {
 	// UserID scopes to one creator when non-empty.
 	UserID string
@@ -209,8 +193,6 @@ type ListTriggersFilter struct {
 	Offset       int64
 }
 
-// defaultTriggerListLimit and maxTriggerListLimit bound a listing that
-// requests no or an excessive limit, mirroring defaultReminderListLimit.
 const (
 	defaultTriggerListLimit = 50
 	maxTriggerListLimit     = 200
@@ -261,15 +243,13 @@ func ListTriggers(ctx context.Context, filter ListTriggersFilter) ([]*model.Trig
 	}
 	args = append(args, limit)
 	limitPlaceholder := fmt.Sprintf("$%d", len(args))
-	// Clamped rather than passed through: Postgres rejects a negative OFFSET,
-	// which would surface to the caller as an opaque Internal error.
+	// Postgres rejects a negative OFFSET as an opaque Internal error.
 	offset := max(filter.Offset, 0)
 	args = append(args, offset)
 	offsetPlaceholder := fmt.Sprintf("$%d", len(args))
 
-	// id is the tie-break, not decoration: created_at is only microsecond
-	// precision and rows written in one transaction can share it, which would
-	// make paging with OFFSET drop or repeat rows.
+	// id breaks ties: created_at is microsecond precision and rows from one
+	// transaction share it, which makes OFFSET paging drop or repeat rows.
 	query := `SELECT ` + model.TriggerColumns + `
 		 FROM trigger
 		 WHERE ` + strings.Join(conditions, " AND ") + `
@@ -297,14 +277,10 @@ func ListTriggers(ctx context.Context, filter ListTriggersFilter) ([]*model.Trig
 	return triggers, nil
 }
 
-// TriggerUpdate is what UpdateTriggerByUser writes. Only the caller's own
-// triggers can be updated.
 type TriggerUpdate struct {
 	ID     string
 	UserID string
-	// Each Update* flag makes the paired field take effect, so that an empty
-	// value can be written deliberately rather than being indistinguishable
-	// from "leave alone".
+	// Each Update* flag lets its paired field write an empty value deliberately.
 	UpdatePhrase bool
 	Phrase       string
 	UpdateReply  bool
@@ -317,9 +293,8 @@ type TriggerUpdate struct {
 	Mode         pb.TriggerMode
 }
 
-// UpdateTriggerByUser applies an update to the caller's own trigger. It
-// returns ErrNotFound when the trigger does not exist or belongs to someone
-// else, so a caller cannot probe another user's triggers.
+// UpdateTriggerByUser returns ErrNotFound both when the trigger is missing and
+// when it belongs to someone else, so a caller cannot probe another's triggers.
 func UpdateTriggerByUser(ctx context.Context, update TriggerUpdate) error {
 	tag, err := db().Exec(ctx,
 		`UPDATE trigger
@@ -351,8 +326,7 @@ func UpdateTriggerByUser(ctx context.Context, update TriggerUpdate) error {
 	return nil
 }
 
-// SoftDeleteTriggerByUser marks the caller's own trigger deleted, returning
-// ErrNotFound for a trigger that is not theirs.
+// SoftDeleteTriggerByUser returns ErrNotFound for a trigger that is not theirs.
 func SoftDeleteTriggerByUser(ctx context.Context, id string, userID string) error {
 	tag, err := db().Exec(ctx,
 		`UPDATE trigger
@@ -372,8 +346,6 @@ func SoftDeleteTriggerByUser(ctx context.Context, id string, userID string) erro
 	return nil
 }
 
-// ActiveTrigger is the minimum a match needs: the compiled set is built from
-// these, so the query must not fetch anything matching does not use.
 type ActiveTrigger struct {
 	ID     string
 	Phrase string
@@ -381,9 +353,8 @@ type ActiveTrigger struct {
 	Mode   int32
 }
 
-// ListActiveTriggersByInstance returns every live trigger scoped to an
-// instance. This backs the in-memory compiled set, so it runs on a cache
-// miss, never per message.
+// ListActiveTriggersByInstance backs the in-memory compiled set, so it runs on a
+// cache miss and never per message.
 func ListActiveTriggersByInstance(ctx context.Context, instanceID int64) ([]ActiveTrigger, error) {
 	rows, err := db().Query(ctx,
 		`SELECT trigger.id, trigger.phrase, trigger.chance, trigger.mode
@@ -415,7 +386,6 @@ func ListActiveTriggersByInstance(ctx context.Context, instanceID int64) ([]Acti
 	return actives, nil
 }
 
-// TriggerStatRow is one aggregated leaderboard row.
 type TriggerStatRow struct {
 	TriggerID string
 	Phrase    string
@@ -424,7 +394,6 @@ type TriggerStatRow struct {
 	Mode      int32
 }
 
-// TriggerStatsFilter narrows a leaderboard query.
 type TriggerStatsFilter struct {
 	InstanceID  int64
 	ActionType  pb.ActionType
@@ -433,16 +402,13 @@ type TriggerStatsFilter struct {
 	Limit       int64
 }
 
-// defaultTriggerStatsLimit and maxTriggerStatsLimit bound a leaderboard query
-// that requests no or an excessive limit.
 const (
 	defaultTriggerStatsLimit = 10
 	maxTriggerStatsLimit     = 100
 )
 
-// ListTriggerStats aggregates action_record into a leaderboard, joining back
-// to trigger for the phrase. Counters on the trigger row were deliberately
-// not used: an event log is queryable by period and a counter is not.
+// ListTriggerStats aggregates action_record rather than a counter column, since
+// only an event log can be queried by period.
 func ListTriggerStats(ctx context.Context, filter TriggerStatsFilter) ([]TriggerStatRow, error) {
 	args := []any{filter.InstanceID, int32(filter.ActionType.Number())}
 	conditions := []string{
@@ -500,9 +466,7 @@ func ListTriggerStats(ctx context.Context, filter TriggerStatsFilter) ([]Trigger
 	return stats, nil
 }
 
-// RecordTriggerFire writes one action_record row for a fire.
-//
-// actionType is ACTION_TYPE_TRIGGER_OCCURRED for a chance fire and
+// RecordTriggerFire takes ACTION_TYPE_TRIGGER_OCCURRED for a chance fire and
 // ACTION_TYPE_TRIGGER_CALLED for a forced one or an explicit execution.
 func RecordTriggerFire(ctx context.Context, actionType pb.ActionType, triggerID string, actorID string) error {
 	_, err := db().Exec(ctx,

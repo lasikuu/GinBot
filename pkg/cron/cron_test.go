@@ -11,24 +11,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// TestMain gives this package a logger: runCronJobs logs on every minute and
-// hour boundary and on shutdown, and log.Z is nil until something initialises
-// it.
 func TestMain(m *testing.M) {
 	log.Z = zap.NewNop()
 	log.S = log.Z.Sugar()
 	os.Exit(m.Run())
 }
 
-// cronReturnTimeout is how long a test waits for runCronJobs to notice a
-// cancelled context. Generous on purpose: this bounds a hang so the suite
-// fails with a readable message instead of blocking forever, it is not a
-// measurement of how fast the loop reacts.
 const cronReturnTimeout = 2 * time.Second
 
-// The three tick shapes the schedule distinguishes. Fixed instants rather than
-// anything derived from time.Now(), so which branch a test exercises never
-// depends on when it runs.
 var (
 	offMinuteTick  = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)  // Second() != 0
 	minuteTick     = time.Date(2026, 1, 2, 3, 4, 0, 0, time.UTC)  // Second() == 0, Minute() != 0
@@ -37,9 +27,6 @@ var (
 	lateSecondTick = time.Date(2026, 1, 2, 3, 0, 59, 0, time.UTC) // Minute() == 0 but Second() != 0
 )
 
-// counts is the observed number of runs of each job. Every field is atomic
-// because runCronJobs dispatches from its own goroutine while the test
-// goroutine reads them, and this whole suite has to be clean under -race.
 type counts struct {
 	remind    atomic.Int64
 	sendTest  atomic.Int64
@@ -50,9 +37,6 @@ type counts struct {
 	remindCtx atomic.Pointer[context.Context]
 }
 
-// snapshot reads every counter into a plain comparable struct, so an
-// assertion can report the whole observed schedule in one line rather than six
-// separate near-identical failures.
 func (c *counts) snapshot() tally {
 	return tally{
 		Remind:               c.remind.Load(),
@@ -64,8 +48,6 @@ func (c *counts) snapshot() tally {
 	}
 }
 
-// tally names every job, so a failure message says which one ran when it
-// should not have instead of printing six anonymous integers.
 type tally struct {
 	Remind               int64
 	SendTestAction       int64
@@ -75,7 +57,6 @@ type tally struct {
 	PruneForcedLimiter   int64
 }
 
-// jobs builds a jobSet whose every field records that it ran.
 func (c *counts) jobs() jobSet {
 	return jobSet{
 		Remind: func(ctx context.Context) {
@@ -90,17 +71,8 @@ func (c *counts) jobs() jobSet {
 	}
 }
 
-// runTicks feeds runCronJobs a hand-made tick sequence and returns once the
-// loop has stopped.
-//
-// The channel is UNBUFFERED and the context is cancelled only after the last
-// send has completed, so by the time runCronJobs returns every tick sent has
-// also been fully dispatched — that ordering is what makes the counter reads
-// below deterministic rather than a sleep-and-hope.
-//
-// It deliberately never has a tick pending at the moment of cancellation.
-// Go's select chooses uniformly at random among ready cases, so a test that
-// arranged for both to be ready would be asserting a coin flip.
+// runTicks cancels only after the last unbuffered send returns, so no tick is
+// ever pending against a ready ctx.Done(), which select would decide by coin flip.
 func runTicks(t *testing.T, jobs jobSet, ticks ...time.Time) {
 	t.Helper()
 
@@ -126,13 +98,6 @@ func runTicks(t *testing.T, jobs jobSet, ticks ...time.Time) {
 	}
 }
 
-// ── The schedule ─────────────────────────────────────────────────────────────
-
-// TestRunCronJobsRunsOnlyRemindOnAnOffMinuteTick: Remind is the one job on the
-// every-second path, and it is the one with a user-visible deadline. Running
-// any of the others 60x too often would be a real incident — CollectOrphanFiles
-// is a table scan plus filesystem work — so "nothing else ran" is the
-// assertion, not merely "Remind ran".
 func TestRunCronJobsRunsOnlyRemindOnAnOffMinuteTick(t *testing.T) {
 	var c counts
 	runTicks(t, c.jobs(), offMinuteTick)
@@ -143,7 +108,6 @@ func TestRunCronJobsRunsOnlyRemindOnAnOffMinuteTick(t *testing.T) {
 	}
 }
 
-// TestRunCronJobsAddsTheMinuteJobsAtSecondZero.
 func TestRunCronJobsAddsTheMinuteJobsAtSecondZero(t *testing.T) {
 	var c counts
 	runTicks(t, c.jobs(), minuteTick)
@@ -154,8 +118,6 @@ func TestRunCronJobsAddsTheMinuteJobsAtSecondZero(t *testing.T) {
 	}
 }
 
-// TestRunCronJobsAddsTheHourlyJobsAtTheTopOfTheHour: the hour branch is
-// nested inside the minute branch, so all six run.
 func TestRunCronJobsAddsTheHourlyJobsAtTheTopOfTheHour(t *testing.T) {
 	for _, at := range []time.Time{hourTick, midnightTick} {
 		t.Run(at.Format(time.TimeOnly), func(t *testing.T) {
@@ -173,10 +135,6 @@ func TestRunCronJobsAddsTheHourlyJobsAtTheTopOfTheHour(t *testing.T) {
 	}
 }
 
-// TestRunCronJobsRequiresBothMinuteAndSecondForTheHourlyJobs pins that the
-// hourly condition is an AND. A tick at hh:00:59 has Minute() == 0 but is not
-// the top of the hour; treating it as one would run the orphan sweep up to 59
-// extra times an hour.
 func TestRunCronJobsRequiresBothMinuteAndSecondForTheHourlyJobs(t *testing.T) {
 	var c counts
 	runTicks(t, c.jobs(), lateSecondTick)
@@ -188,8 +146,6 @@ func TestRunCronJobsRequiresBothMinuteAndSecondForTheHourlyJobs(t *testing.T) {
 	}
 }
 
-// TestRunCronJobsRunsRemindOnceForEveryTick: exactly once each, not once for
-// the batch and not twice for a tick that also triggers the minute branch.
 func TestRunCronJobsRunsRemindOnceForEveryTick(t *testing.T) {
 	var c counts
 	ticks := []time.Time{
@@ -205,9 +161,6 @@ func TestRunCronJobsRunsRemindOnceForEveryTick(t *testing.T) {
 	if got := c.remind.Load(); got != int64(len(ticks)) {
 		t.Errorf("Remind ran %d times for %d ticks, want one per tick", got, len(ticks))
 	}
-	// Two of those ticks were at second zero, one of which was also the top of
-	// the hour — asserted so a Remind count that happened to be right cannot
-	// hide a minute branch that fired on every tick.
 	want := tally{
 		Remind: int64(len(ticks)), SendTestAction: 2, CongratulateBirthday: 2,
 		CollectOrphanFiles: 1, SweepRepostEntries: 1, PruneForcedLimiter: 1,
@@ -217,11 +170,6 @@ func TestRunCronJobsRunsRemindOnceForEveryTick(t *testing.T) {
 	}
 }
 
-// TestRunCronJobsThreadsItsOwnContextIntoRemind: the context-taking jobs get
-// the loop's context, not a fresh background one. If they did not, cancelling
-// the server's context would stop the loop from scheduling further work but
-// would leave whatever database work Remind had already started running
-// against a pool that is about to close.
 func TestRunCronJobsThreadsItsOwnContextIntoRemind(t *testing.T) {
 	var c counts
 
@@ -257,28 +205,15 @@ func TestRunCronJobsThreadsItsOwnContextIntoRemind(t *testing.T) {
 	}
 }
 
-// ── A zero-value jobSet ────────────────────────────────────────────────────────
-
-// TestRunCronJobsToleratesAZeroValueJobs: every field is documented as
-// optional, and cmd/ginbot-server is not the only caller — the migration and
-// one-shot paths run with parts of the service graph unwired. A nil field must
-// be skipped, not called, so this asserts no panic on every tick shape rather
-// than only on the cheap one.
 func TestRunCronJobsToleratesAZeroValueJobs(t *testing.T) {
 	for _, at := range []time.Time{offMinuteTick, minuteTick, hourTick} {
 		t.Run(at.Format(time.TimeOnly), func(t *testing.T) {
-			// A panic in the loop goroutine takes the test binary down
-			// regardless of recover here, so the assertion is simply that
-			// runTicks completes: a panicking loop never closes done and this
-			// fails on the timeout instead of hanging.
+			// A panicking loop never closes done, so this fails on the timeout.
 			runTicks(t, jobSet{}, at)
 		})
 	}
 }
 
-// TestRunCronJobsToleratesAPartiallyPopulatedJobs is the realistic middle
-// case: PruneForcedLimiter is skipped when the trigger service is not wired,
-// and the jobs around it must still run.
 func TestRunCronJobsToleratesAPartiallyPopulatedJobs(t *testing.T) {
 	var c counts
 	jobs := jobSet{
@@ -294,13 +229,6 @@ func TestRunCronJobsToleratesAPartiallyPopulatedJobs(t *testing.T) {
 	}
 }
 
-// ── Shutdown ─────────────────────────────────────────────────────────────────
-
-// TestRunCronJobsReturnsWhenTheContextIsCancelled with no tick ever sent: the
-// loop must not require a tick to notice it should stop. cmd/ginbot-server
-// waits on this return during shutdown, so a loop that only checks the context
-// after receiving a tick would add up to a full tick interval to every
-// shutdown — and would hang outright if the ticker had already been stopped.
 func TestRunCronJobsReturnsWhenTheContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -325,9 +253,6 @@ func TestRunCronJobsReturnsWhenTheContextIsCancelled(t *testing.T) {
 	}
 }
 
-// TestRunCronJobsReturnsAfterServicingItsTicks: cancellation after work has
-// been dispatched still stops the loop, and does not lose the work already
-// done. This is the shape the shutdown path actually sees.
 func TestRunCronJobsReturnsAfterServicingItsTicks(t *testing.T) {
 	var c counts
 	runTicks(t, c.jobs(), offMinuteTick, offMinuteTick.Add(time.Second))
@@ -337,14 +262,6 @@ func TestRunCronJobsReturnsAfterServicingItsTicks(t *testing.T) {
 	}
 }
 
-// ── defaultJobs ──────────────────────────────────────────────────────────────
-
-// TestDefaultJobsWiresEveryJob.
-//
-// A nil field is SKIPPED SILENTLY by design, which makes an accidentally
-// dropped wiring invisible: the job simply never runs and nothing logs. This
-// is the only place that can catch it, since runCronJobs cannot tell the
-// difference between "deliberately unwired" and "forgotten".
 func TestDefaultJobsWiresEveryJob(t *testing.T) {
 	jobs := defaultJobs()
 

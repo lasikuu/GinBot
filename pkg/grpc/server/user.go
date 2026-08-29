@@ -15,8 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// localTimezone is the one name time.LoadLocation accepts that means nothing to
-// a caller: it resolves to whatever zone the server process happens to run in.
+// localTimezone loads successfully but resolves to the server process's own zone.
 const localTimezone = "Local"
 
 type UserServer struct {
@@ -31,19 +30,7 @@ func NewUserServer() *UserServer {
 func (s *UserServer) Register(ctx context.Context, connReq *connect.Request[pb.RegisterReq]) (*connect.Response[pb.RegisterResp], error) {
 	req := connReq.Msg
 
-	// Platform identity comes from metadata, never from the request. It used to
-	// be available as two request fields as well; those numbers are now reserved
-	// in the proto, so there is one channel for identity instead of two that
-	// could disagree.
-	//
-	// That is not authentication. The client asserts the identity and this server
-	// trusts it, so anything that can reach the port can register an account
-	// against any platform uid it likes. See pkg/grpc/callermeta.
-	//
-	// Register is public (see interceptor.DefaultRequirements), so no
-	// interceptor resolves identity for it. It reads the request's own headers
-	// directly rather than through common.go's getMetadata, which is documented
-	// to only serve handlers a guarded call always reaches.
+	// Register is public, so no interceptor stashed identity. The assertion is trusted.
 	meta, err := callermeta.FromHeader(connReq.Header())
 	if err != nil {
 		return nil, err
@@ -86,17 +73,14 @@ func (s *UserServer) GetUser(ctx context.Context, connReq *connect.Request[pb.Ge
 		return nil, err
 	}
 
-	// An unset id means "me". A platform client never learns its own
-	// user_account UUID — identity travels as a platform id — so without this
-	// there is no way for a caller to read its own row.
+	// An unset id means "me": a client never learns its own user_account UUID.
 	if !req.HasId() || req.GetId() == caller.ID {
 		return connect.NewResponse(pb.GetUserResp_builder{
 			User: caller.ToProto(),
 		}.Build()), nil
 	}
 
-	// A user row carries locale, timezone and birthday, so reading somebody
-	// else's is a moderator action.
+	// A user row carries locale, timezone and birthday.
 	if caller.Clearance < int32(pb.Clearance_CLEARANCE_MODERATOR) {
 		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("cannot read another user"))
 	}
@@ -123,10 +107,7 @@ func (s *UserServer) SetLocale(ctx context.Context, connReq *connect.Request[pb.
 		return nil, err
 	}
 
-	// The request carries no subject, so the caller is the subject. The allowed
-	// values are pinned by a protovalidate pattern in user.proto, but an absent
-	// locale passes that pattern — a rule on a field with presence is skipped
-	// when the field is unset — so the handler has to require it itself.
+	// protovalidate skips a rule on an unset field, so an absent locale passes it.
 	if !req.HasLocale() || req.GetLocale() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("locale is required"))
 	}
@@ -150,19 +131,14 @@ func (s *UserServer) SetTimezone(ctx context.Context, connReq *connect.Request[p
 		return nil, err
 	}
 
-	// Empty is checked here as well as by the proto's min_len, because
-	// time.LoadLocation("") succeeds and returns UTC, so an empty name would
-	// otherwise be silently accepted as a valid zone.
+	// time.LoadLocation("") succeeds and returns UTC, so empty must be refused here.
 	if !req.HasTimezone() || req.GetTimezone() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("timezone is required"))
 	}
 
 	timezone := req.GetTimezone()
 
-	// protovalidate only checks the name is non-empty, so an unresolvable zone
-	// would be stored and then fail much later, when a reminder is scheduled
-	// against it. "Local" is rejected as well: it loads successfully but means
-	// the server's own zone, which is not what any caller intends.
+	// protovalidate only checks non-empty, so an unresolvable zone would fail far later.
 	if timezone == localTimezone {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("timezone must be a named IANA zone, such as Europe/Helsinki"))
 	}

@@ -2,12 +2,7 @@ package config
 
 import "testing"
 
-// Tests for internal/config/matrix.go. TestMain and unsetEnv come from
-// repost_test.go.
-
-// matrixCase names one (accessor, env var) pair so the table cannot stop
-// checking that an accessor reads the variable it is documented to. There is
-// no default column: all three are raw passthroughs.
+// All three are raw passthroughs, so there is no default column.
 type matrixCase struct {
 	name     string
 	accessor func() string
@@ -22,9 +17,7 @@ func matrixCases() []matrixCase {
 	}
 }
 
-// TestMatrixAccessorsAreEmptyWhenUnset: unlike the DB accessors these have no
-// default, so an unconfigured Matrix client gets empty strings and fails at
-// connect time rather than silently connecting somewhere else.
+// No defaults, so an unconfigured client fails at connect time.
 func TestMatrixAccessorsAreEmptyWhenUnset(t *testing.T) {
 	for _, tc := range matrixCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -37,10 +30,7 @@ func TestMatrixAccessorsAreEmptyWhenUnset(t *testing.T) {
 	}
 }
 
-// TestMatrixAccessorsPassTheValueThroughVerbatim: no trimming, no
-// normalisation. An access token with surrounding whitespace has to reach the
-// Matrix client exactly as configured, because silently trimming it would
-// make a genuinely whitespace-bearing secret unusable with no diagnostic.
+// No trimming: a genuinely whitespace-bearing secret must stay usable.
 func TestMatrixAccessorsPassTheValueThroughVerbatim(t *testing.T) {
 	const raw = "  https://matrix.example/  "
 

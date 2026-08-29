@@ -10,24 +10,15 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// Boundary tests for the buf.validate rules on trigger.proto.
-//
-// See validation_rules_test.go for why these validate directly rather than
-// through the interceptor, and for the end-to-end counterparts that do go
-// through the whole chain.
-
-// validTriggerUUID is a well-formed UUIDv7, the shape every trigger and file id
-// in this schema actually has.
+// validTriggerUUID is a well-formed UUIDv7.
 const validTriggerUUID = "018f0000-0000-7000-8000-000000000001"
 
-// undefinedTriggerMode is a number TriggerMode does not declare. Far outside
-// the declared range (0..3) rather than one past the end, so adding a mode
-// cannot quietly make these tests stop testing anything.
+// undefinedTriggerMode is far outside the declared range (0..3), so adding a
+// mode cannot quietly make these tests stop testing anything.
 const undefinedTriggerMode = pb.TriggerMode(99)
 
-// discordInstance is a well-formed TriggerInstance: a defined, non-unspecified
-// platform and a present instance_meta. Every list boundary below is built from
-// copies of this, so a rejection can only be about the list's length.
+// discordInstance is a well-formed TriggerInstance, so a rejection of a list
+// built from copies of it can only be about the list's length.
 func discordInstance() *pb.TriggerInstance {
 	return pb.TriggerInstance_builder{
 		PlatformEnum: pb.Platform_PLATFORM_DISCORD.Enum(),
@@ -43,7 +34,6 @@ func mustStruct(fields map[string]any) *structpb.Struct {
 	return s
 }
 
-// triggerInstances builds n distinct, individually valid instances.
 func triggerInstances(n int) []*pb.TriggerInstance {
 	out := make([]*pb.TriggerInstance, 0, n)
 	for range n {
@@ -52,8 +42,8 @@ func triggerInstances(n int) []*pb.TriggerInstance {
 	return out
 }
 
-// validCreateTrigger is a CreateTriggerReq that must pass validation, so that
-// every mutation below is the only thing wrong with the request.
+// validCreateTrigger must pass validation, so a mutation of it is the only
+// thing wrong with the result.
 func validCreateTrigger() *pb.CreateTriggerReq {
 	phrase := "boundary-phrase"
 	reply := "boundary-reply"
@@ -79,10 +69,8 @@ func validUpdateTrigger() *pb.UpdateTriggerReq {
 	}.Build()
 }
 
-// urlOfLength builds a plausible CDN URL of exactly n bytes. Padding a real
-// prefix rather than repeating a filler character keeps the fixture valid
-// against any shape rule file_url may also carry, so a max_len case cannot pass
-// for the wrong reason.
+// urlOfLength builds a plausible CDN URL of exactly n bytes, so a max_len case
+// cannot fail a shape rule instead.
 func urlOfLength(n int) string {
 	const prefix = "https://cdn.discordapp.com/attachments/"
 	if n <= len(prefix) {
@@ -91,10 +79,8 @@ func urlOfLength(n int) string {
 	return prefix + strings.Repeat("a", n-len(prefix))
 }
 
-// The bound that matters most. TriggerServer.resolveScopeInstances loops over
-// this list making a database round trip per element, so an unbounded list is a
-// query multiplier any CLEARANCE_REGISTERED caller can reach. The bound is read
-// from the schema, never restated here.
+// resolveScopeInstances makes one database round trip per element, so an
+// unbounded list is a query multiplier any registered caller can reach.
 func TestTriggerInstancesListIsBounded(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -133,8 +119,7 @@ func TestTriggerInstancesListIsBounded(t *testing.T) {
 				t.Fatalf("repeated.max_items = %d, which would refuse every list", bound)
 			}
 
-			// Exactly at the bound is legal: a rule that refused this would
-			// break scoping a trigger to every instance a caller may name.
+			// Exactly at the bound is legal.
 			requireValid(t, tt.build(triggerInstances(bound)))
 
 			requireOnlyViolation(t, tt.build(triggerInstances(bound+1)), "instances", "repeated.max_items")
@@ -142,10 +127,7 @@ func TestTriggerInstancesListIsBounded(t *testing.T) {
 	}
 }
 
-// A malformed id must be refused before it reaches Postgres. This is a
-// behaviour change worth pinning: such an id previously reached the database and
-// came back as NotFound, or as an Internal from a failed uuid cast, so the
-// caller could not tell a typo from a missing row.
+// A malformed id must be refused before it reaches Postgres.
 func TestTriggerIdsMustBeUUIDs(t *testing.T) {
 	valid := validTriggerUUID
 
@@ -173,17 +155,8 @@ func TestTriggerIdsMustBeUUIDs(t *testing.T) {
 		}},
 	}
 
-	// string.uuid is declared as TWO predefined rules, not one, so the rule id a
-	// rejection reports depends on the input: an empty string reports
-	// "string.uuid_empty" ("value is empty, which is not a valid UUID") and
-	// everything else reports "string.uuid". Verified against the real validator
-	// rather than assumed — see buf/validate/validate.proto's predefined CEL on
-	// StringRules.uuid, where the non-empty expression short-circuits on
-	// `this == ''` precisely so the empty case can carry its own message.
-	//
-	// The distinction is asserted rather than papered over with "either id will
-	// do": accepting both would stop this test noticing if the schema lost the
-	// rule on a field and gained a min_len somewhere instead.
+	// string.uuid is two predefined rules: the empty string reports
+	// "string.uuid_empty", everything else "string.uuid".
 	const (
 		ruleUUID      = "string.uuid"
 		ruleUUIDEmpty = "string.uuid_empty"
@@ -196,8 +169,6 @@ func TestTriggerIdsMustBeUUIDs(t *testing.T) {
 	}{
 		{"not a uuid at all", "12345", ruleUUID},
 		{"empty", "", ruleUUIDEmpty},
-		// The shapes a real client typo produces, and the shapes a SQL cast
-		// would have choked on.
 		{"one character short", "018f0000-0000-7000-8000-00000000000", ruleUUID},
 		{"braced form", "{018f0000-0000-7000-8000-000000000001}", ruleUUID},
 		{"non-hex digit", "018f0000-0000-7000-8000-00000000000g", ruleUUID},
@@ -217,9 +188,7 @@ func TestTriggerIdsMustBeUUIDs(t *testing.T) {
 	}
 }
 
-// file_url is fetched by the server, so its length is bounded. Exactly at the
-// limit must still be accepted: platform CDN URLs are long and signed, and a
-// limit that refused a real one would make trigger media unusable.
+// Exactly at the limit must still be accepted: CDN URLs are long and signed.
 func TestTriggerFileURLLengthIsBounded(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -247,8 +216,8 @@ func TestTriggerFileURLLengthIsBounded(t *testing.T) {
 	}
 }
 
-// phrase is compiled into a pattern and, in regex mode, run against every
-// message on the instance, so an unbounded one is a denial-of-service surface.
+// In regex mode the phrase runs against every message, so an unbounded one is a
+// denial-of-service surface.
 func TestTriggerPhraseLengthIsBounded(t *testing.T) {
 	limit := declaredMaxLen(t, validCreateTrigger(), "phrase")
 
@@ -261,11 +230,8 @@ func TestTriggerPhraseLengthIsBounded(t *testing.T) {
 	requireOnlyViolation(t, over, "phrase", "string.max_len")
 }
 
-// chance is a percentage, and 0 is NOT out of range: it is the "use the
-// default" sentinel carried over from the old bot (trigger.DefaultChance, ADR
-// 0021). A rule that rejected 0 would refuse every trigger created without an
-// explicit chance; worse, a rule that silently rewrote it would overwrite tuned
-// chances on update.
+// chance is a percentage; 0 is the "use the default" sentinel, not out of
+// range. See ADR-0021.
 func TestTriggerChanceRange(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -293,12 +259,7 @@ func TestTriggerChanceRange(t *testing.T) {
 		{"one hundred is certainty", 100},
 	}
 
-	// protovalidate FUSES gte and lte on the same numeric field into a single
-	// rule whose id is "int32.gte_lte" — verified against the real validator,
-	// not assumed. Asserting the fused id is deliberately stricter than
-	// accepting either half: a schema that declared only lte would report
-	// "int32.lte" here and fail, which is the correct answer, because 0 being
-	// the legal sentinel is only meaningful if the lower bound exists too.
+	// protovalidate fuses gte and lte on one numeric field into a single rule id.
 	const rangeRule = "int32.gte_lte"
 
 	rejected := []struct {
@@ -327,10 +288,8 @@ func TestTriggerChanceRange(t *testing.T) {
 	}
 }
 
-// TriggerMode carries enum.defined_only but deliberately NOT enum.not_in = 0:
-// TRIGGER_MODE_UNSPECIFIED legitimately means "default to TRIGGER_MODE_ANY",
-// which is what CreateTrigger and UpdateTrigger both implement. Getting this
-// backwards would break every trigger created without an explicit mode.
+// TriggerMode carries enum.defined_only but deliberately not enum.not_in = 0:
+// TRIGGER_MODE_UNSPECIFIED means "default to TRIGGER_MODE_ANY".
 func TestTriggerModeAcceptsUnspecifiedAndRefusesUndefined(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -370,11 +329,8 @@ func TestTriggerModeAcceptsUnspecifiedAndRefusesUndefined(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Absent: the client simply did not choose a mode.
 			requireValid(t, tt.build(nil))
-			// Explicitly the zero value: the client chose "the default".
 			requireValid(t, tt.build(&unspecified))
-			// An ordinary mode, so the rule is not refusing everything.
 			requireValid(t, tt.build(&anyMode))
 
 			requireOnlyViolation(t, tt.build(&undefined), "mode", "enum.defined_only")
@@ -382,13 +338,8 @@ func TestTriggerModeAcceptsUnspecifiedAndRefusesUndefined(t *testing.T) {
 	}
 }
 
-// No cap is placed on limit or offset, and that is the decision under test.
-//
-// pkg/db already clamps both (defaultTriggerListLimit / maxTriggerListLimit,
-// and a negative offset to 0). Adding an lte rule here would convert a
-// forgiving clamp into an InvalidArgument for a caller who typed a big number,
-// which is a regression for real users, not a hardening. This test is what a
-// future well-meaning `lte` breaks.
+// pkg/db clamps limit and offset; an lte rule here would turn that forgiving
+// clamp into an InvalidArgument.
 func TestTriggerListLimitAndOffsetAreNotRejected(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -411,8 +362,7 @@ func TestTriggerListLimitAndOffsetAreNotRejected(t *testing.T) {
 	}
 }
 
-// GetTriggerStatsReq.limit is clamped by pkg/db in the same way, for the same
-// reason.
+// GetTriggerStatsReq.limit is clamped by pkg/db in the same way.
 func TestTriggerStatsLimitIsNotRejected(t *testing.T) {
 	limit := int64(math.MaxInt64)
 	req := pb.GetTriggerStatsReq_builder{

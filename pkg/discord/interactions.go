@@ -18,15 +18,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// reRollPrefix namespaces a re-roll button's custom ID so that the component
-// handler can recover the command name and re-run it through the registry,
-// instead of needing one hand-written entry per rollable command.
 const reRollPrefix = "reroll:"
 
-// legacyReRollIDs maps the hand-written custom IDs that shipped before the
-// reroll: namespace existed. Discord components never expire, so every button
-// on an already-posted message still sends the old ID; without this every one
-// of them answers "This interaction failed" forever.
+// Discord components never expire, so buttons on already-posted messages still
+// send these pre-namespace IDs.
 var legacyReRollIDs = map[string]string{
 	"reRollDoubles": "doubles",
 	"reRollTriples": "triples",
@@ -36,7 +31,6 @@ func reRollID(name string) string {
 	return reRollPrefix + name
 }
 
-// reRollCommandName recovers the command a re-roll button refers to.
 func reRollCommandName(customID string) (string, bool) {
 	if name, found := strings.CutPrefix(customID, reRollPrefix); found {
 		return name, true
@@ -47,17 +41,10 @@ func reRollCommandName(customID string) (string, bool) {
 	return name, found
 }
 
-// invokerKey types the context value carrying the Discord user who ran a
-// command, so it cannot collide with another package's key.
 type invokerKey struct{}
 
-// invoker is the Discord user behind a command.
-//
-// It is deliberately not part of command.Invocation: identity belongs in gRPC
-// metadata, and duplicating it into the neutral invocation would give handlers
-// two sources of truth for who is calling. What metadata cannot carry is the
-// display name, which registration needs and which only the platform knows —
-// so it rides in the context, private to this package.
+// Kept out of command.Invocation: identity travels in request headers. Only the
+// display name, which headers cannot carry, rides in the context.
 type invoker struct {
 	ID       string
 	Username string
@@ -67,18 +54,14 @@ func withInvoker(ctx context.Context, user *discordgo.User) context.Context {
 	return context.WithValue(ctx, invokerKey{}, invoker{ID: user.ID, Username: user.Username})
 }
 
-// invokerFromContext returns the Discord user behind the current command.
 func invokerFromContext(ctx context.Context) (invoker, bool) {
 	user, ok := ctx.Value(invokerKey{}).(invoker)
 	return user, ok
 }
 
-// originKey types the context value carrying where a command was typed, so the
-// reminder commands can build the ReminderDestination for the current channel.
 type originKey struct{}
 
-// commandOrigin is the guild and channel a command was invoked in. A direct
-// message has an empty GuildID.
+// commandOrigin is where a command was invoked. A DM has an empty GuildID.
 type commandOrigin struct {
 	GuildID   string
 	ChannelID string
@@ -88,24 +71,18 @@ func withOrigin(ctx context.Context, guildID string, channelID string) context.C
 	return context.WithValue(ctx, originKey{}, commandOrigin{GuildID: guildID, ChannelID: channelID})
 }
 
-// originFromContext returns where the current command was typed.
 func originFromContext(ctx context.Context) (commandOrigin, bool) {
 	origin, ok := ctx.Value(originKey{}).(commandOrigin)
 	return origin, ok
 }
 
-// discordOrigin describes where a command was typed, so the server can create
-// the instance and destination rows on first contact.
-//
-// A direct message has no GuildID; callermeta drops such an origin, because
-// there is no guild to record.
+// A DM has no GuildID, and callermeta drops such an origin.
 func discordOrigin(guildID string, channelID string) callermeta.Origin {
 	return callermeta.Origin{InstanceUID: guildID, DestinationUID: channelID}
 }
 
-// commandContext assembles the context every handler receives: caller identity
-// and origin as request headers, the service clients, plus the invoking user
-// for the handlers that need a display name.
+// commandContext assembles every handler's context. Caller identity and origin
+// go in as request headers, never as request fields.
 func commandContext(clients *client.Clients, user *discordgo.User, guildID string, channelID string) context.Context {
 	ctx := callermeta.NewOutgoingContext(context.Background(), pb.Platform_PLATFORM_DISCORD, user.ID)
 	ctx = callermeta.NewOutgoingOrigin(ctx, discordOrigin(guildID, channelID))
@@ -117,9 +94,7 @@ func commandContext(clients *client.Clients, user *discordgo.User, guildID strin
 
 func interactionContext(i *discordgo.InteractionCreate, clients *client.Clients) (context.Context, error) {
 	var user *discordgo.User
-	// Member.User is populated for guild interactions and User for DMs, but the
-	// nested pointer is checked too: a nil deref here would kill the process,
-	// because discordgo does not recover panics raised in a handler.
+	// Member.User is populated for guild interactions, User for DMs.
 	if i.Member != nil && i.Member.User != nil {
 		user = i.Member.User
 	} else if i.User != nil {
@@ -132,14 +107,10 @@ func interactionContext(i *discordgo.InteractionCreate, clients *client.Clients)
 	return commandContext(clients, user, i.GuildID, i.ChannelID), nil
 }
 
-// messageContext builds the caller context for a chat command. Identity travels
-// as a request header, never as a request field.
 func messageContext(m *discordgo.MessageCreate, clients *client.Clients) context.Context {
 	return commandContext(clients, m.Author, m.GuildID, m.ChannelID)
 }
 
-// handleInteraction routes slash commands and re-roll buttons through the
-// registry.
 func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, clients *client.Clients) {
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
@@ -147,9 +118,7 @@ func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cli
 
 		cmd, options, ok := resolveApplicationCommand(data)
 		if !ok {
-			// resolveApplicationCommand has already logged why. It must still be
-			// answered: an unanswered interaction shows the user "the application
-			// did not respond".
+			// An unanswered interaction shows "the application did not respond".
 			respondStale(s, i)
 			return
 		}
@@ -190,26 +159,16 @@ func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cli
 	}
 }
 
-// resolveApplicationCommand resolves a slash invocation to the registered
-// command and the options that carry ITS arguments.
-//
-// Discord flattens nothing: for /reminder add, data.Name is the GROUP and
-// data.Options[0] is a SubCommand-typed option named after the member, whose own
-// .Options are the arguments. So a grouped invocation lives one level deeper
-// than a top-level one, and reading data.Options directly would bind the
-// subcommand itself as an argument.
-//
-// ok is false for anything unroutable, always with a log line saying which
-// shape it was — the caller answers the interaction rather than returning
-// silently.
+// For /reminder add, data.Name is the group and data.Options[0] is the
+// subcommand, whose own .Options are the arguments — one level deeper than a
+// top-level command.
 func resolveApplicationCommand(data discordgo.ApplicationCommandInteractionData) (command.Command, []*discordgo.ApplicationCommandInteractionDataOption, bool) {
 	if cmd, found := commandRegistry.Lookup(data.Name); found {
 		return cmd, data.Options, true
 	}
 
 	if !isCommandGroup(data.Name) {
-		// Unreachable while the Discord definitions are generated from the
-		// registry, but a stale command left over at Discord's end lands here.
+		// A stale command left registered at Discord's end lands here.
 		log.Z.Warn("unknown application command.", zap.String("command", data.Name))
 		return command.Command{}, nil, false
 	}
@@ -228,9 +187,7 @@ func resolveApplicationCommand(data discordgo.ApplicationCommandInteractionData)
 		return command.Command{}, nil, false
 	}
 
-	// ResolveChat resolves group + sub, which is exactly this lookup; the chat
-	// path and the slash path must not disagree about which handler /reminder add
-	// reaches.
+	// ResolveChat, so the slash and chat paths cannot reach different handlers.
 	cmd, _, found := commandRegistry.ResolveChat(data.Name, []string{sub.Name})
 	if !found {
 		log.Z.Warn("unknown subcommand.",
@@ -241,8 +198,6 @@ func resolveApplicationCommand(data discordgo.ApplicationCommandInteractionData)
 	return cmd, sub.Options, true
 }
 
-// isCommandGroup reports whether a name is a registered group rather than a
-// command. Group names fold like every other name in the registry.
 func isCommandGroup(name string) bool {
 	for _, group := range commandRegistry.Groups() {
 		if strings.EqualFold(group, name) {
@@ -253,12 +208,8 @@ func isCommandGroup(name string) bool {
 	return false
 }
 
-// runInteraction executes a command and renders its response to an interaction.
-//
-// A command declaring Slow is acknowledged BEFORE its handler runs, because
-// Discord kills the interaction after three seconds and the handler may take
-// longer than that. Everything else answers in the callback, which keeps the
-// response and the acknowledgement to a single round trip.
+// A Slow command is acknowledged before its handler runs: Discord kills an
+// interaction that is not answered within three seconds.
 func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd command.Command, inv *command.Invocation, clients *client.Clients) {
 	ctx, err := interactionContext(i, clients)
 	if err != nil {
@@ -268,9 +219,8 @@ func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd co
 
 	if cmd.Slow {
 		if !deferInteraction(s, i) {
-			// Nothing can be delivered against an interaction that was never
-			// acknowledged, and running the handler anyway would apply the
-			// change with no way to report it.
+			// Nothing can be delivered against an unacknowledged interaction,
+			// so running the handler would apply a change it cannot report.
 			return
 		}
 
@@ -296,30 +246,15 @@ func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd co
 	respondCommand(s, i, resp)
 }
 
-// messageContentRequired reports whether the bot must request the privileged
-// MESSAGE_CONTENT intent.
-//
-// Either capability alone justifies it: a chat command needs the content to find
-// its prefix, and trigger matching needs the content to match a phrase against
-// at all. They are separate switches because a deployment can want one without
-// the other.
-//
-// WANHA needing the same intent is deliberately NOT folded in here: this
-// function's signature is exercised directly by TestMessageContentRequired,
-// and widening it would break that test for a change this package's own
-// call site can express just as well with a plain ||. See discord.go.
+// messageContentRequired reports whether the privileged MESSAGE_CONTENT intent
+// is needed. WANHA's own need for it is applied at the call site in discord.go.
 func messageContentRequired(prefixes []string, messageContent bool) bool {
 	return len(prefixes) > 0 || messageContent
 }
 
-// triggerCandidate reports whether a message should be offered to TryTrigger.
 func triggerCandidate(content string, prefixes []string) bool {
-	// A prefix is an explicit address to a bot — this one or another one sharing
-	// the prefix. Firing a random trigger on a mistyped or somebody else's
-	// command would be surprising, so a prefixed message is never a candidate,
-	// whether or not a command name follows the prefix or resolves here.
-	// command.HasPrefix rather than ParseChat: ParseChat reports no match for a
-	// bare "??", which is ordinary chat shorthand and must not fire a trigger.
+	// HasPrefix rather than ParseChat: ParseChat reports no match for a bare
+	// "??", which is ordinary chat shorthand and must not fire a trigger.
 	if command.HasPrefix(content, prefixes) {
 		return false
 	}
@@ -329,22 +264,9 @@ func triggerCandidate(content string, prefixes []string) bool {
 	return strings.TrimSpace(content) != ""
 }
 
-// mentionsBot reports whether a message DELIBERATELY mentions the bot.
-//
-// The comparison is by id, never by display name: a name is attacker-controlled
-// and a nickname is per-guild, so matching one would both miss real mentions and
-// fire on impostors.
-//
-// The mention has to appear in the message TEXT as well as in Mentions, which is
-// what makes it deliberate. Discord adds the replied-to author to Mentions
-// whenever mention_author is set, and that is the client default — so without
-// this, clicking Reply on any message the bot posted and typing anything at all
-// would force a fire. An explicit mention always renders as the <@id> token in
-// the content; a reply ping never does.
-//
-// Every pointer is guarded. discordgo leaves State unpopulated until the session
-// is open and dispatches handlers as bare goroutines with no recover(), so a nil
-// deref here would take the process down.
+// mentionsBot reports whether a message DELIBERATELY mentions the bot. Matching
+// by id defeats impostors, and requiring the <@id> token in the text as well as
+// in Mentions excludes Discord's automatic reply ping.
 func mentionsBot(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 	if s == nil || s.State == nil || s.State.User == nil {
 		return false
@@ -363,61 +285,34 @@ func mentionsBot(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 		return false
 	}
 
-	// Both forms: Discord's older clients wrote a nickname mention as <@!id>,
-	// and messages carrying one are still in every channel's history.
+	// Older Discord clients wrote a nickname mention as <@!id>.
 	return strings.Contains(m.Content, "<@"+self+">") ||
 		strings.Contains(m.Content, "<@!"+self+">")
 }
 
-// triggerAttemptTimeout bounds one whole trigger attempt: the TryTrigger call
-// plus, when something fires, the GetFile that pulls its bytes back. It is the
-// outer budget, so triggerFileTimeout has to fit inside it to mean anything.
+// triggerAttemptTimeout is the outer budget for one attempt; triggerFileTimeout
+// must fit inside it to mean anything.
 const triggerAttemptTimeout = 15 * time.Second
 
-// maxConcurrentTriggerAttempts caps how many trigger attempts are in flight at
-// once.
-//
-// A fired file trigger still ends up holding the whole blob in memory, up to
-// maxTriggerFileBytes, once GetFile's stream finishes: Discord's attachment
-// upload needs the complete content, so accumulating it chunk-by-chunk (see
-// triggerPlaybackResponse) bounds the peak at one file rather than one
-// message's whole unmarshalled request as it did before GetFile streamed, but
-// does not eliminate it. discordgo dispatches every MessageCreate on its own
-// goroutine, so without a cap the number of concurrent buffers is set by
-// nothing but inbound message rate — an out-of-memory kill reachable by
-// ordinary chat traffic in a busy guild.
+// A fired file trigger buffers the whole blob for Discord's upload, and
+// discordgo dispatches every MessageCreate on its own goroutine, so without a
+// cap concurrent buffers are bounded only by inbound message rate.
 const maxConcurrentTriggerAttempts = 4
 
-// triggerAttemptSlots is that cap. Acquisition is non-blocking: dropping a
-// trigger under load is the right failure, because a queue of stale attempts
-// would post auto-responders to conversations that have already moved on.
+// Acquisition is non-blocking: a queued stale attempt would post to a
+// conversation that has already moved on.
 var triggerAttemptSlots = make(chan struct{}, maxConcurrentTriggerAttempts)
 
-// handleMessage routes a chat message: first through the command registry when
-// it carries a prefix, otherwise through trigger matching.
-//
-// The two are exclusive. A prefixed message is a command, and a command that
-// does not resolve is still not an invitation to fire an auto-responder.
+// Commands and triggers are exclusive: a prefixed message is a command even if
+// it does not resolve.
 func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate, clients *client.Clients) {
 	if !isHuman(s, m) {
 		return
 	}
 
-	// Checked before the prefix branch, and unconditionally on every human
-	// message rather than only unprefixed ones: triggerCandidate deliberately
-	// skips attachment-only messages and a prefixed command message, but
-	// WANHA must not be gated by either — a prefixed message can still carry
-	// a link, and an attachment-only message is exactly what WANHA exists to
-	// catch.
-	//
-	// Its own goroutine, unlike attemptTrigger. A repost check costs a CDN
-	// fetch plus a decode server-side, bounded only by repostAttemptTimeout,
-	// and it is NOT the last thing this handler does — running it inline would
-	// delay every chat command and every trigger behind it by up to that
-	// timeout, a regression in paths that worked before this feature existed.
-	// attemptTrigger's reasoning for staying inline does not transfer, because
-	// nothing follows it. Concurrency and memory are already bounded
-	// independently by repostAttemptSlots.
+	// Unconditional, before the prefix branch: a prefixed or attachment-only
+	// message can still carry a repost. Its own goroutine because work follows
+	// it here, and a CDN fetch would delay every command and trigger behind it.
 	if config.Options.Repost.Enabled {
 		go attemptRepost(s, m.Message, false, clients)
 	}
@@ -435,21 +330,13 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate, clients *cl
 	// A mention is an explicit ask, so it bypasses the chance roll server-side.
 	forced := mentionsBot(s, m)
 
-	// No goroutine here on purpose. discordgo already dispatches every event
-	// handler on its own goroutine (Session.handle, unless SyncEvents is set,
-	// which nothing here sets), so this handler is not the gateway receive loop
-	// and cannot stall it. Spawning another goroutine would only make the
-	// attempt unobservable to the caller while bounding nothing — what actually
-	// needs bounding is memory and RPC lifetime, which is what
-	// triggerAttemptSlots and triggerAttemptTimeout do.
+	// Inline: discordgo already dispatches each handler on its own goroutine,
+	// so this cannot stall the gateway receive loop.
 	attemptTrigger(s, m, forced, clients)
 }
 
-// handleMessageUpdate offers an edited message to WANHA. An edit MATCHES but
-// never INSERTS (W8): CheckRepost enforces that server-side via edit=true,
-// this is just the client-side trigger for it — editing a message to add a
-// link should be able to trigger WANHA, but must not seed the index and make
-// the edited message match itself.
+// An edit matches but never inserts, so it cannot make itself match; CheckRepost
+// enforces that server-side via edit=true.
 func handleMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate, clients *client.Clients) {
 	if !config.Options.Repost.Enabled {
 		return
@@ -461,15 +348,10 @@ func handleMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate, clien
 	attemptRepost(s, m.Message, true, clients)
 }
 
-// dispatchChatCommand runs a prefixed chat message through the registry.
 func dispatchChatCommand(s *discordgo.Session, m *discordgo.MessageCreate, name string, raw []string, clients *client.Clients) {
-	// ResolveChat rather than Lookup, so ??reminder add reaches the same handler
-	// as ??remindme. It returns the arguments left after the command name — which
-	// for a group is one token shorter than raw.
 	cmd, args, found := commandRegistry.ResolveChat(name, raw)
 	if !found {
-		// Silent: a prefix is also used by other bots, and answering every typo
-		// would make the bot noisy.
+		// Silent: other bots share the prefix, so answering every typo is noise.
 		return
 	}
 
@@ -489,24 +371,14 @@ func dispatchChatCommand(s *discordgo.Session, m *discordgo.MessageCreate, name 
 	respondChat(s, m, resp)
 }
 
-// attemptTrigger offers one message to the server's matching engine and posts
-// whatever fires.
-//
-// It shares commandContext with the command path so identity and origin travel
-// as request headers rather than as request fields, and it renders through
-// respondChat so truncation, mention suppression and attachment rendering are
-// the same code a command reply goes through.
-//
-// A non-match says NOTHING. Neither does a rate-limited forced fire, a direct
-// message with no instance, or a failed RPC: the alternative is a bot that
-// comments on ordinary conversation.
+// A non-match, a rate-limited forced fire, a DM and a failed RPC all say
+// nothing; the alternative is a bot that comments on ordinary conversation.
 func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced bool, clients *client.Clients) {
 	select {
 	case triggerAttemptSlots <- struct{}{}:
 		defer func() { <-triggerAttemptSlots }()
 	default:
-		// Debug, not warn: under a burst this is the design working, and a log
-		// line per dropped message would be its own flood.
+		// Debug, not warn: under a burst this is the design working.
 		log.Z.Debug("dropped a trigger attempt; too many already in flight.")
 		return
 	}
@@ -516,18 +388,15 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 
 	instance, err := currentTriggerInstance(ctx)
 	if err != nil {
-		// No instance means a direct message. Not worth a log line per message.
+		// No instance means a direct message.
 		return
 	}
 
-	// The raw content, not a trimmed or lowered copy: the matching modes and the
-	// spoiler stripping are the server's to define (ADR-0019).
+	// Raw content: matching and spoiler stripping are the server's (ADR-0019).
 	phrase := m.Content
 
-	// No caller identity in the request: it travels as a header, which is the
-	// only channel the server reads it from. No client-side forced-fire limiter
-	// either — trigger.ForcedLimiter already bounds it to once per author per
-	// interval, server-side, where it cannot be bypassed by a second client.
+	// No caller identity in the request; it travels as a header. The forced-fire
+	// limiter is server-side, where a second client cannot bypass it.
 	req := pb.TryTriggerReq_builder{
 		Instance: instance,
 		Phrase:   &phrase,
@@ -536,8 +405,8 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 
 	resp, err := clientsFrom(ctx).Trigger.TryTrigger(ctx, connect.NewRequest(req))
 	if err != nil {
-		// No phrase in the log line: a stored phrase must not be echoed into
-		// logs, and neither must the message that was matched against it.
+		// No phrase in the log line: neither stored phrases nor the message
+		// matched against them may be echoed into logs.
 		log.Z.Error("failed to call TryTrigger.", zap.Error(err))
 		return
 	}
@@ -558,22 +427,12 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 	respondChat(s, m, out)
 }
 
-// isHuman reports whether a message should be considered for dispatch.
-// Delegates to isHumanMessage; kept with this exact signature because
-// existing tests call it directly.
 func isHuman(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 	return isHumanMessage(s, m.Message)
 }
 
-// isHumanMessage is isHuman's logic, lifted to work on a bare *discordgo.Message
-// so handleMessageUpdate can reuse it: MessageUpdate wraps the same *Message
-// shape as MessageCreate, but is not a MessageCreate itself. Ignoring bots
-// covers this bot's own messages as well; the explicit self check guards
-// against a future non-bot token and makes the intent obvious.
-//
-// m may be nil, or carry a nil Author: Discord sends partial payloads for
-// some message update events (an embed-only update from a link unfurling,
-// for instance), and neither must reach a nil dereference here.
+// m may be nil or carry a nil Author: Discord sends partial payloads for some
+// update events, such as an embed-only update from a link unfurling.
 func isHumanMessage(s *discordgo.Session, m *discordgo.Message) bool {
 	if m == nil || m.Author == nil || m.Author.Bot {
 		return false
@@ -586,18 +445,12 @@ func isHumanMessage(s *discordgo.Session, m *discordgo.Message) bool {
 	return true
 }
 
-// invocationFromOptions translates Discord's typed slash options onto an
-// Invocation. Options arrive named and already typed, so they bypass the chat
-// tokeniser entirely.
 func invocationFromOptions(cmd command.Command, options []*discordgo.ApplicationCommandInteractionDataOption) (*command.Invocation, error) {
 	args := make(map[string]any, len(options))
 
 	for _, option := range options {
-		// Each accessor panics when the option is not of its type, and discordgo
-		// dispatches handlers without recovering, so a panic here kills the
-		// process. Every arm is matched explicitly rather than falling through to
-		// StringValue, which would panic on any option type the registry learns to
-		// emit later.
+		// Each accessor panics on a mismatched option type, and discordgo does
+		// not recover, so every arm is matched explicitly with no fallthrough.
 		switch option.Type {
 		case discordgo.ApplicationCommandOptionInteger:
 			args[option.Name] = option.IntValue()

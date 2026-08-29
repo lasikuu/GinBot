@@ -1,17 +1,5 @@
 //go:build integration
 
-// Integration tests for the repost database layer (Phase 5, WANHA). These
-// require a live Postgres, same as db_integration_test.go:
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/db/...
-//
-// TestMain, meta, cleanupUser and cleanupInstanceByMeta are declared in
-// db_integration_test.go in this same package and are reused here, not
-// redeclared. Deleting an instance row cascades to repost_entry (ON DELETE
-// CASCADE per docs/plans/wanha.md's schema) and from there to
-// repost_fingerprint, so cleanupInstanceByMeta alone is enough to leave no
-// repost rows behind — no separate repost cleanup helper is needed.
 package db
 
 import (
@@ -26,27 +14,8 @@ import (
 	"github.com/lasikuu/GinBot/pkg/repost"
 )
 
-// ── Assumed symbols from pkg/db (spec §3.6) ───────────────────────────────────
-//
-// Recorded because these are the symbols the tests below depend on, so a change
-// to any of them is a deliberate decision rather than a surprise:
-//
-//	const PerceptualAlgoPHash64 int32 = 1
-//	func MatchRepostBySourceKey(ctx, instanceID int64, sourceKey string, excludeUserID string) (*model.RepostEntry, error)
-//	func MatchRepostByContentHash(ctx, instanceID int64, contentHash []byte, excludeUserID string) (*model.RepostEntry, error)
-//	type PerceptualMatch struct { Entry *model.RepostEntry; Distance int32 }
-//	func MatchRepostByPerceptualHash(ctx, instanceID int64, phash int64, chunks [8]int16, maxDistance int32, excludeUserID string) (*PerceptualMatch, error)
-//	type CreateRepostEntryParams struct { ... PHash *int64 ... }
-//	func CreateRepostEntry(ctx, params CreateRepostEntryParams) (int64, error)
-//	type RepostRetention struct { InstanceID int64; RetentionDays int32 }
-//	func ListRepostRetentions(ctx) ([]RepostRetention, error)
-//	func DeleteRepostEntriesBefore(ctx, instanceID int64, before time.Time, limit int64) (int64, error)
-//	func GetDestinationIDByMeta(ctx, instanceID int64, destinationMeta *structpb.Struct) (int64, error)
-
-// createRepostInstance creates an instance row scoped to a unique meta and
-// registers its cleanup (which cascades to any repost_entry/repost_fingerprint
-// rows created against it). The returned suffix is unique per call, for
-// building collision-free source keys and content hashes.
+// createRepostInstance returns an instance whose cleanup cascades to its
+// repost_entry and repost_fingerprint rows, plus a per-call unique suffix.
 func createRepostInstance(t *testing.T, label string) (instanceID int64, suffix string) {
 	t.Helper()
 	suffix = time.Now().Format("150405.000000")
@@ -60,8 +29,6 @@ func createRepostInstance(t *testing.T, label string) (instanceID int64, suffix 
 	return id, suffix
 }
 
-// createRepostUser creates a registered user_account row for use as
-// CreateRepostEntryParams.UserID / an excludeUserID argument.
 func createRepostUser(t *testing.T, label string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -74,9 +41,6 @@ func createRepostUser(t *testing.T, label string) string {
 	return userID
 }
 
-// baseRepostParams builds a minimally valid CreateRepostEntryParams: a link
-// entry with a unique source key, so tests about one field do not have to
-// restate every other one.
 func baseRepostParams(instanceID int64, sourceKey string) CreateRepostEntryParams {
 	return CreateRepostEntryParams{
 		InstanceID:   instanceID,
@@ -87,8 +51,6 @@ func baseRepostParams(instanceID int64, sourceKey string) CreateRepostEntryParam
 		PostedAt:     time.Now().UTC(),
 	}
 }
-
-// ── CreateRepostEntry + MatchRepostBySourceKey ───────────────────────────────
 
 func TestCreateRepostEntryAndMatchBySourceKey(t *testing.T) {
 	ctx := context.Background()
@@ -133,8 +95,6 @@ func TestMatchRepostBySourceKeyReturnsNotFoundForAnUnseenKey(t *testing.T) {
 	}
 }
 
-// ── MatchRepostByContentHash ──────────────────────────────────────────────────
-
 func TestCreateRepostEntryAndMatchByContentHash(t *testing.T) {
 	ctx := context.Background()
 	instanceID, im := createRepostInstance(t, "contenthash")
@@ -172,8 +132,6 @@ func TestMatchRepostByContentHashReturnsNotFoundForUnseenBytes(t *testing.T) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
-
-// ── Same-author exclusion (AC12) and per-instance scoping (AC11) ────────────
 
 func TestMatchExcludesTheSameAuthorButAnEmptyExcludeIDMatchesEveryone(t *testing.T) {
 	ctx := context.Background()
@@ -217,11 +175,8 @@ func TestMatchIsScopedPerInstance(t *testing.T) {
 	}
 }
 
-// ── MatchRepostByPerceptualHash: closest, then oldest ────────────────────────
-
-// buildChunks is repost.Chunks by another name here, spelled out to make the
-// dependency explicit: the whole pigeonhole design rests on the SQL query
-// candidate-selecting on exactly these chunks.
+// buildChunks mirrors repost.Chunks: the candidate query selects on exactly
+// these chunks.
 func buildChunks(hash uint64) [8]int16 {
 	return repost.Chunks(hash)
 }
@@ -254,9 +209,7 @@ func TestMatchRepostByPerceptualHashReturnsTheClosestMatch(t *testing.T) {
 	instanceID, im := createRepostInstance(t, "phash-closest")
 
 	const base uint64 = 0x0F0F0F0F0F0F0F0F
-	// far: distance 5 from base (5 low bits flipped in the last byte)
 	far := base ^ 0x1F
-	// near: distance 2 from base (2 low bits flipped in the last byte)
 	near := base ^ 0x03
 
 	now := time.Now().UTC()
@@ -280,14 +233,10 @@ func TestMatchRepostByPerceptualHashPrefersTheOldestOnATie(t *testing.T) {
 	ctx := context.Background()
 	instanceID, im := createRepostInstance(t, "phash-oldest")
 
-	// Not a const: 0xAAAA...AAAA has its top bit set, and a compile-time
-	// int64(base) conversion of a CONSTANT that large overflows int64 at
-	// compile time (unlike the same conversion on a runtime uint64 value,
-	// which just reinterprets the bit pattern — which is what phash bigint
-	// storage actually needs).
+	// Not a const: int64() of a constant with the top bit set overflows at compile
+	// time, unlike the same conversion on a runtime uint64.
 	base := uint64(0xAAAAAAAAAAAAAAAA)
-	// Both at the SAME distance (1) from base, so the ordering must fall back
-	// to posted_at ASC — the oldest is the true original (docs/plans/wanha.md).
+	// Equidistant from base, so ordering must fall back to posted_at ASC.
 	sibling1 := base ^ 0x01
 	sibling2 := base ^ 0x02
 
@@ -320,27 +269,17 @@ func TestMatchRepostByPerceptualHashReturnsNotFoundBeyondMaxDistance(t *testing.
 	}
 }
 
-// TestMatchRepostByPerceptualHashRejectsACandidateItRetrieved is the test that
-// actually exercises the bit_count VERIFICATION step.
-//
-// The test above passes for the wrong reason: ^base shares no chunk with base,
-// so the candidate CTE comes back empty and nothing is ever verified. That
-// leaves the step which stops the pigeonhole CANDIDATE set from becoming the
-// MATCH set completely uncovered at the database level — and since a failing
-// perceptual query is logged and swallowed as "no match", a broken verifier
-// would look identical to a correct one from the outside.
-//
-// So the fixture here is built to be RETRIEVED and then REJECTED: it keeps c0
-// identical to base (guaranteeing the CTE returns it) while differing by 12
-// bits spread across the other seven chunks, which is beyond MaxDistance.
+// The fixture is built to be retrieved and then rejected: c0 matches base so the
+// candidate CTE returns it, but 12 differing bits exceed MaxDistance. That is
+// what exercises the bit_count verification step rather than the candidate CTE.
 func TestMatchRepostByPerceptualHashRejectsACandidateItRetrieved(t *testing.T) {
 	ctx := context.Background()
 	instanceID, _ := createRepostInstance(t, "phash-verified-reject")
 
 	const base uint64 = 0x1122334455667788
 
-	// Flip bits only outside the most significant byte, so chunk c0 still
-	// matches exactly and the candidate query cannot miss this row.
+	// Flip bits outside the most significant byte so chunk c0 still matches
+	// exactly and the candidate query cannot miss this row.
 	retrievedButTooFar := base ^ 0x0000_0F0F_0F0F_0000
 	distance := repost.Distance(base, retrievedButTooFar)
 	if distance <= repost.MaxDistance {
@@ -361,20 +300,15 @@ func TestMatchRepostByPerceptualHashRejectsACandidateItRetrieved(t *testing.T) {
 	}
 }
 
-// TestMatchRepostByPerceptualHashMatchesOnAChunkOtherThanTheFirst exercises a
-// BitmapOr branch other than c0.
-//
-// Every other perceptual fixture in this file differs from its base only in the
-// low byte, so only one OR branch is ever the one that hits. A rule that
-// indexed, say, c0 alone would pass all of them.
+// Exercises a BitmapOr branch other than c0: every other fixture here differs
+// only in the low byte, so an index on c0 alone would pass all of them.
 func TestMatchRepostByPerceptualHashMatchesOnAChunkOtherThanTheFirst(t *testing.T) {
 	ctx := context.Background()
 	instanceID, _ := createRepostInstance(t, "phash-midchunk")
 
 	const base uint64 = 0x1122334455667788
 
-	// Differ inside c0, c1, c2 and c3 but leave c4 untouched, so c4 is the only
-	// chunk that can match — and at 3 differing bits it is still within the band.
+	// c4 is left untouched, so it is the only chunk that can match.
 	near := base ^ 0x0100_0100_0100_0000
 	distance := repost.Distance(base, near)
 	if distance > repost.MaxDistance {
@@ -410,9 +344,8 @@ func TestMatchRepostByPerceptualHashMatchesOnAChunkOtherThanTheFirst(t *testing.
 	}
 }
 
-// TestBitCountAgreesWithGoSideDistance is the load-bearing cross-check between
-// Postgres's bit_count(a # b) and repost.Distance: the whole pigeonhole
-// verification step assumes these are the same function.
+// The pigeonhole verification assumes Postgres bit_count(a # b) and
+// repost.Distance are the same function.
 func TestBitCountAgreesWithGoSideDistance(t *testing.T) {
 	pairs := []struct{ a, b uint64 }{
 		{0, 0},
@@ -426,10 +359,8 @@ func TestBitCountAgreesWithGoSideDistance(t *testing.T) {
 	for _, p := range pairs {
 		want := repost.Distance(p.a, p.b)
 
-		// The bit(64) cast is not incidental: Postgres has no bit_count(bigint),
-		// only bit_count(bytea) and bit_count(bit). This must stay the same
-		// expression MatchRepostByPerceptualHash uses, or the cross-check
-		// verifies a form production does not run.
+		// Postgres has no bit_count(bigint), only bytea and bit, so this must stay
+		// the same expression MatchRepostByPerceptualHash uses.
 		var got int
 		if err := db().QueryRow(context.Background(),
 			`SELECT bit_count(($1::bigint # $2::bigint)::bit(64))::int`, int64(p.a), int64(p.b),
@@ -442,8 +373,6 @@ func TestBitCountAgreesWithGoSideDistance(t *testing.T) {
 		}
 	}
 }
-
-// ── repost_fingerprint: written only when PHash is set, cascades on delete ──
 
 func TestFingerprintRowIsWrittenOnlyWhenPHashIsSet(t *testing.T) {
 	ctx := context.Background()
@@ -513,7 +442,6 @@ func TestFingerprintRowContentsAndCascadeOnEntryDelete(t *testing.T) {
 		t.Errorf("stored chunks = %v, want %v (repost.Chunks of the same hash)", gotChunks, wantChunks)
 	}
 
-	// Deleting the entry must cascade to its fingerprint row.
 	if _, err := db().Exec(ctx, `DELETE FROM repost_entry WHERE id = $1`, entryID); err != nil {
 		t.Fatalf("delete repost_entry: %v", err)
 	}
@@ -525,8 +453,6 @@ func TestFingerprintRowContentsAndCascadeOnEntryDelete(t *testing.T) {
 		t.Errorf("%d repost_fingerprint row(s) survived their entry's deletion; ON DELETE CASCADE is not in effect", remaining)
 	}
 }
-
-// ── Retention ─────────────────────────────────────────────────────────────────
 
 func TestListRepostRetentionsIgnoresNullRetention(t *testing.T) {
 	ctx := context.Background()
@@ -588,9 +514,8 @@ func TestDeleteRepostEntriesBeforeRespectsCutoffAndLimit(t *testing.T) {
 
 	cutoff := now.Add(-30 * 24 * time.Hour)
 
-	// Limit is smaller than the number of eligible old rows, so only part of
-	// them are removed in this call — proving the limit is actually enforced,
-	// not merely accepted as an unused parameter.
+	// Limit is below the eligible count, so it is proven enforced rather than
+	// accepted as an unused parameter.
 	deleted, err := DeleteRepostEntriesBefore(ctx, instanceID, cutoff, 2)
 	if err != nil {
 		t.Fatalf("DeleteRepostEntriesBefore: %v", err)
@@ -607,8 +532,6 @@ func TestDeleteRepostEntriesBeforeRespectsCutoffAndLimit(t *testing.T) {
 		t.Errorf("remaining repost_entry rows = %d, want 2 (1 old survivor + the fresh one)", remainingTotal)
 	}
 
-	// The fresh row must never have been touched: it is well inside the
-	// retention window.
 	var freshStillPresent bool
 	if err := db().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM repost_entry WHERE id = $1)`, freshID).Scan(&freshStillPresent); err != nil {
 		t.Fatalf("check fresh entry survival: %v", err)
@@ -617,8 +540,6 @@ func TestDeleteRepostEntriesBeforeRespectsCutoffAndLimit(t *testing.T) {
 		t.Error("DeleteRepostEntriesBefore deleted an entry newer than its cutoff")
 	}
 }
-
-// ── db.GetDestinationIDByMeta (added to destination.go) ──────────────────────
 
 func TestGetDestinationIDByMeta(t *testing.T) {
 	ctx := context.Background()

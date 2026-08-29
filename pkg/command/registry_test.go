@@ -68,8 +68,6 @@ func TestRegisterRejectsCollisions(t *testing.T) {
 			add:  Command{Name: "ping", Handler: noopHandler},
 		},
 		{
-			// Lookup is case-insensitive, so a differently cased duplicate would
-			// make one of the two commands permanently unreachable.
 			name: "duplicate name in a different case",
 			add:  Command{Name: "PING", Handler: noopHandler},
 		},
@@ -115,9 +113,6 @@ func TestRegisterRejectsCollisions(t *testing.T) {
 	}
 }
 
-// Registration happens once at startup, so a declaration that no dispatch path
-// could ever satisfy is worth refusing loudly instead of shipping a command that
-// fails for every user.
 func TestRegisterRejectsBrokenDeclarations(t *testing.T) {
 	tests := []struct {
 		name string
@@ -156,8 +151,6 @@ func TestRegisterRejectsBrokenDeclarations(t *testing.T) {
 			},
 		},
 		{
-			// Chat arguments bind positionally, so the required one could never
-			// be reached without also supplying the optional one.
 			name: "required argument after an optional one",
 			add: Command{
 				Name: "ping",
@@ -183,9 +176,6 @@ func TestRegisterRejectsBrokenDeclarations(t *testing.T) {
 	}
 }
 
-// A rejected Register must not leave half of the command behind: the first alias
-// below is free, the second collides. If the first one were kept, the registry
-// would hold an alias pointing at a command that was never registered.
 func TestRegisterIsAtomicOnFailure(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(Command{Name: "ping", Handler: noopHandler}); err != nil {
@@ -206,9 +196,6 @@ func TestRegisterIsAtomicOnFailure(t *testing.T) {
 	}
 }
 
-// A group is a second namespace over the same chat prefix, so a half-declared
-// or colliding one makes ??reminder either unreachable or ambiguous. Both are
-// startup-fatal programming errors, like every other Register rejection.
 func TestRegisterRejectsBrokenGrouping(t *testing.T) {
 	tests := []struct {
 		name string
@@ -237,15 +224,11 @@ func TestRegisterRejectsBrokenGrouping(t *testing.T) {
 			add:  Command{Name: "reminderadd2", Group: "reminder", Sub: "add", Handler: noopHandler},
 		},
 		{
-			// Folding applies to a sub as it does to every other name, so a
-			// differently cased duplicate would make one member unreachable.
 			name: "duplicate sub in a different case",
 			seed: []Command{{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler}},
 			add:  Command{Name: "reminderadd2", Group: "REMINDER", Sub: "ADD", Handler: noopHandler},
 		},
 		{
-			// ResolveChat prefers the flat interpretation, so a command named
-			// after a group would shadow the entire group.
 			name: "group collides with an existing command name",
 			seed: []Command{{Name: "reminder", Handler: noopHandler}},
 			add:  Command{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler},
@@ -256,9 +239,6 @@ func TestRegisterRejectsBrokenGrouping(t *testing.T) {
 			add:  Command{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler},
 		},
 		{
-			// The reverse order: the group exists first and the flat name arrives
-			// second. Nothing else would catch it, because the group is not in
-			// the canonical name map.
 			name: "name collides with an existing group",
 			seed: []Command{{Name: "remind", Group: "reminder", Sub: "add", Handler: noopHandler}},
 			add:  Command{Name: "reminder", Handler: noopHandler},
@@ -274,8 +254,6 @@ func TestRegisterRejectsBrokenGrouping(t *testing.T) {
 			add:  Command{Name: "REMINDER", Handler: noopHandler},
 		},
 		{
-			// Self-collision: the command would be reachable flat and would
-			// shadow the group it is itself a member of.
 			name: "command is named after its own group",
 			add:  Command{Name: "reminder", Group: "reminder", Sub: "list", Handler: noopHandler},
 		},
@@ -303,8 +281,6 @@ func TestRegisterRejectsBrokenGrouping(t *testing.T) {
 			if err := r.Register(tt.add); err == nil {
 				t.Fatalf("Register(%+v) succeeded, want a grouping error", tt.add)
 			}
-			// A rejected Register must leave nothing behind, including in the
-			// group namespace.
 			if got := len(r.All()); got != len(tt.seed) {
 				t.Errorf("All() has %d commands after a rejected Register, want %d", got, len(tt.seed))
 			}
@@ -315,8 +291,6 @@ func TestRegisterRejectsBrokenGrouping(t *testing.T) {
 	}
 }
 
-// groupedRegistry is the shape the reminder family has: several flat commands,
-// each also a member of one group, plus an ungrouped command alongside them.
 func groupedRegistry(t *testing.T) *Registry {
 	t.Helper()
 
@@ -371,8 +345,6 @@ func TestResolveChat(t *testing.T) {
 			wantRest: []string{"in 2h", "tea"},
 		},
 		{
-			// The subcommand token is consumed, so what is left binds
-			// positionally exactly as ??remindme would.
 			name:     "group and sub",
 			invoked:  "reminder",
 			args:     []string{"add", "in 2h", "tea"},
@@ -407,10 +379,6 @@ func TestResolveChat(t *testing.T) {
 			wantRest: nil,
 		},
 		{
-			// A flat name wins over the group interpretation, which is what
-			// keeps every legacy invocation working. "remind" is both a command
-			// name and a group member; the flat command is what must resolve,
-			// and "add" must stay an argument rather than being consumed.
 			name:     "a flat name is preferred over a group interpretation",
 			invoked:  "remind",
 			args:     []string{"add", "tea"},
@@ -449,8 +417,6 @@ func TestResolveChatMiss(t *testing.T) {
 			args:    []string{"add"},
 		},
 		{
-			// A bare group is not a command: there is no handler to run and no
-			// sensible default member to pick.
 			name:    "group with no following argument",
 			invoked: "reminder",
 		},
@@ -460,15 +426,11 @@ func TestResolveChatMiss(t *testing.T) {
 			args:    []string{"nope", "in 2h"},
 		},
 		{
-			// The member's FLAT name is not its sub, so it must not resolve as
-			// one; otherwise ??reminder remind would work and ??reminder add
-			// would be one of two spellings for no reason.
 			name:    "group followed by a member's flat name",
 			invoked: "reminder",
 			args:    []string{"remind", "in 2h"},
 		},
 		{
-			// A sub only means anything under its own group.
 			name:    "sub used as a top-level name",
 			invoked: "add",
 			args:    []string{"in 2h"},
@@ -491,9 +453,6 @@ func TestResolveChatMiss(t *testing.T) {
 	}
 }
 
-// Groups feeds the Discord group parent generation, so it must be complete and
-// deterministically ordered — an unstable order would make every restart look
-// like a command change.
 func TestGroups(t *testing.T) {
 	if got := NewRegistry().Groups(); len(got) != 0 {
 		t.Errorf("Groups() = %v on an empty registry, want empty", got)
@@ -514,7 +473,6 @@ func TestGroups(t *testing.T) {
 
 	want := []string{"reminder", "squad"}
 
-	// Called twice: the order must be stable across calls, not merely sorted.
 	for attempt := range 2 {
 		if got := r.Groups(); !equalArgs(got, want) {
 			t.Errorf("attempt %d: Groups() = %q, want %q", attempt, got, want)
@@ -522,9 +480,6 @@ func TestGroups(t *testing.T) {
 	}
 }
 
-// Group membership is read off All(), so a grouped command must keep both fields
-// exactly as declared — the Discord layer names the parent and the subcommand
-// from them.
 func TestGroupedCommandKeepsItsGroupAndSub(t *testing.T) {
 	r := groupedRegistry(t)
 
@@ -536,7 +491,6 @@ func TestGroupedCommandKeepsItsGroupAndSub(t *testing.T) {
 		t.Errorf("Group/Sub = %q/%q, want %q/%q", cmd.Group, cmd.Sub, "reminder", "add")
 	}
 
-	// An ungrouped command must not acquire one.
 	ping, ok := r.Lookup("ping")
 	if !ok {
 		t.Fatal("Lookup(ping) found nothing")
@@ -545,8 +499,6 @@ func TestGroupedCommandKeepsItsGroupAndSub(t *testing.T) {
 		t.Errorf("ungrouped command has Group/Sub = %q/%q, want both empty", ping.Group, ping.Sub)
 	}
 
-	// Lookup stays flat: a group is not a command, and a sub is not a name.
-	// Callers that need the group-aware behaviour use ResolveChat.
 	for _, query := range []string{"reminder", "add", "list"} {
 		if got, found := r.Lookup(query); found {
 			t.Errorf("Lookup(%q) resolved to %q; Lookup must stay flat", query, got.Name)
@@ -576,8 +528,6 @@ func TestLookupIsCaseInsensitive(t *testing.T) {
 			if !ok {
 				t.Fatalf("Lookup(%q) found nothing", query)
 			}
-			// The stored name keeps the case it was registered with; only
-			// matching is case-insensitive.
 			if cmd.Name != "HealthCheck" {
 				t.Errorf("Name = %q, want %q", cmd.Name, "HealthCheck")
 			}
@@ -591,9 +541,6 @@ func TestLookupMiss(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// Whitespace-padded queries are deliberately absent: the contract says
-	// nothing about trimming, and ParseChat splits on whitespace, so a padded
-	// name cannot reach Lookup from the chat path.
 	for _, query := range []string{"", "pi", "pingg", "ping-", "q", "healthcheck"} {
 		t.Run(query, func(t *testing.T) {
 			cmd, ok := r.Lookup(query)
@@ -607,13 +554,9 @@ func TestLookupMiss(t *testing.T) {
 	}
 }
 
-// All() feeds the Discord slash-command registration, so its order must be
-// deterministic; otherwise every restart looks like a command change.
 func TestAllIsOrderedByName(t *testing.T) {
 	r := NewRegistry()
 
-	// Registered deliberately out of order. All names are lower case so the
-	// expectation holds under both byte-wise and case-insensitive sorting.
 	for _, name := range []string{"triples", "doubles", "number", "healthcheck", "quads"} {
 		if err := r.Register(Command{Name: name, Handler: noopHandler}); err != nil {
 			t.Fatalf("Register(%q): %v", name, err)
@@ -622,7 +565,6 @@ func TestAllIsOrderedByName(t *testing.T) {
 
 	want := []string{"doubles", "healthcheck", "number", "quads", "triples"}
 
-	// Called twice: the order must be stable across calls, not just sorted once.
 	for attempt := range 2 {
 		all := r.All()
 		if len(all) != len(want) {
@@ -642,9 +584,6 @@ func TestAllOnEmptyRegistry(t *testing.T) {
 	}
 }
 
-// Clearance is carried but deliberately not enforced in this phase: an owner-only
-// command must still resolve and run so that the field can be wired up later
-// without changing the registry contract.
 func TestClearanceIsStoredButNotEnforced(t *testing.T) {
 	r := NewRegistry()
 

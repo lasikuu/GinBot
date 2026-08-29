@@ -21,40 +21,9 @@ import (
 	"github.com/lasikuu/GinBot/pkg/storage"
 )
 
-// This file is the shared harness for the pkg/grpc/server tests. It boots a
-// real Connect server over httptest.NewUnstartedServer with HTTP/2 enabled,
-// with the same interceptor chain cmd/ginbot-server installs, in the same
-// order — recovery, validation, clearance, origin — applied identically to
-// every RPC shape a handler mounts, unary or streaming. Handler tests
-// therefore exercise caller resolution, clearance, validation and origin
-// bootstrap the way a deployed server does, including the paths where the
-// call never reaches the handler at all.
-//
-// Two streaming RPCs go through this chain, not one: OpenClientActionStream
-// (bidirectional) and, since this stage, TriggerService.GetFile
-// (server-streaming, see the trigger client adapter below). A
-// connect.Interceptor implements WrapStreamingHandler alongside WrapUnary, so
-// there is no separate stream-only chain for either to fall out of sync with
-// the unary one the way grpc-go's did.
-//
-// The one difference from production is what the interceptors are given
-// rather than which are installed: both the caller resolver and the origin
-// resolver are injected, and default to in-memory fakes. That keeps the
-// harness free of any database dependency, so reminder, trigger and repost
-// tests can be built on it without Postgres. Integration tests pass
-// db.GetUserByPlatformUID instead, which satisfies interceptor.CallerResolver
-// as it stands.
-//
-// Identity travels as REQUEST HEADERS on this transport, not gRPC metadata.
-// A Connect client sets headers per *connect.Request (or per
-// StreamingClientConn), not on the context, so callerCtx/originCtx stash
-// identity in ordinary context values of their own and identityInterceptor —
-// a CLIENT-side connect.Interceptor installed on every client this harness
-// builds — translates them into the ginbot-* headers a real platform client
-// would set, at the last possible moment before the request leaves the
-// process. This mirrors production exactly: the wire contract is still
-// pkg/grpc/callermeta's header names, just assembled by test code instead of
-// by pkg/discord or pkg/matrix.
+// Shared harness: a real Connect server over httptest with HTTP/2 and the same
+// interceptor chain cmd/ginbot-server installs. The resolvers are in-memory
+// fakes, so no test in this package needs Postgres.
 
 // directory is an in-memory interceptor.CallerResolver.
 type directory struct {
@@ -67,14 +36,12 @@ func newDirectory() *directory {
 	return &directory{users: make(map[string]*model.User)}
 }
 
-// directoryKey scopes a platform uid to its platform, because the same uid may
-// exist on two platforms and mean two different people.
+// directoryKey scopes a uid to its platform: the same uid may mean two people.
 func directoryKey(platform pb.Platform, platformUID string) string {
 	return platform.String() + "\x00" + platformUID
 }
 
-// add registers a platform identity. It returns the directory so several
-// identities can be declared in one expression.
+// add returns the directory, for chaining.
 func (d *directory) add(platform pb.Platform, platformUID string, user *model.User) *directory {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -83,8 +50,7 @@ func (d *directory) add(platform pb.Platform, platformUID string, user *model.Us
 	return d
 }
 
-// resolve matches interceptor.CallerResolver. An unknown identity reports
-// db.ErrNotFound, which is what the production resolver returns.
+// resolve matches interceptor.CallerResolver.
 func (d *directory) resolve(_ context.Context, platform pb.Platform, platformUID string) (*model.User, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -99,15 +65,13 @@ func (d *directory) resolve(_ context.Context, platform pb.Platform, platformUID
 	return user, nil
 }
 
-// resolveCount reports how often the interceptor asked who the caller was.
 func (d *directory) resolveCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.calls
 }
 
-// testUser builds a user_account row for the directory. The id must be a UUID
-// because GetUserReq validates it as one.
+// testUser needs a UUID id, since GetUserReq validates it as one.
 func testUser(id string, clearance pb.Clearance) *model.User {
 	return &model.User{
 		ID:        id,
@@ -116,9 +80,7 @@ func testUser(id string, clearance pb.Clearance) *model.User {
 	}
 }
 
-// originLog is an in-memory interceptor.OriginResolver, and the harness
-// default: it records the bootstrap writes the chain would have made instead
-// of writing rows, so a test that is not about origins needs no database.
+// originLog is an in-memory interceptor.OriginResolver that records rather than writes.
 type originLog struct {
 	mu           sync.Mutex
 	destinations []*pb.ReminderDestination
@@ -128,8 +90,7 @@ func newOriginLog() *originLog {
 	return &originLog{}
 }
 
-// resolve matches interceptor.OriginResolver. The id is the row count, which is
-// enough for a caller that only checks the error.
+// resolve matches interceptor.OriginResolver.
 func (o *originLog) resolve(_ context.Context, destination *pb.ReminderDestination) (int64, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -138,13 +99,9 @@ func (o *originLog) resolve(_ context.Context, destination *pb.ReminderDestinati
 	return int64(len(o.destinations)), nil
 }
 
-// harnessBaselineMessageBytes mirrors cmd/ginbot-server's baselineMessageBytes.
-// It is restated rather than imported because that constant lives in package
-// main; the value's justification lives there, and TestBaselineMessageCapIsSet
-// in cmd/ginbot-server is what pins the production side.
+// harnessBaselineMessageBytes mirrors cmd/ginbot-server's, which is in package main.
 const harnessBaselineMessageBytes = 4 << 20
 
-// harnessConfig is what the options mutate.
 type harnessConfig struct {
 	requirements  interceptor.Requirements
 	resolve       interceptor.CallerResolver
@@ -155,39 +112,26 @@ type harnessConfig struct {
 
 type harnessOption func(*harnessConfig)
 
-// withResolver replaces the caller resolver. Pass db.GetUserByPlatformUID to
-// run against a real database.
+// withResolver replaces the caller resolver, e.g. with db.GetUserByPlatformUID.
 func withResolver(resolve interceptor.CallerResolver) harnessOption {
 	return func(cfg *harnessConfig) { cfg.resolve = resolve }
 }
 
-// withDirectory is the common case: resolve callers from an in-memory map.
 func withDirectory(dir *directory) harnessOption {
 	return withResolver(dir.resolve)
 }
 
-// withTriggerServer replaces the default TriggerServer, e.g. with one built
-// over newTriggerServer(fetcher, blobs) so the media fetch/store/dedupe path
-// can be exercised against an httptest server instead of the real,
-// allow-listed CDN hosts.
+// withTriggerServer substitutes a TriggerServer not bound to the real CDN allow-list.
 func withTriggerServer(server *TriggerServer) harnessOption {
 	return func(cfg *harnessConfig) { cfg.triggerServer = server }
 }
 
-// withRepostServer replaces the default RepostServer, e.g. with one built over
-// newRepostServer(fetcher, hasher, norm, tiers) so the attachment fetch path
-// can be exercised against an httptest server instead of the real,
-// allow-listed CDN hosts, exactly as withTriggerServer does for TriggerServer.
+// withRepostServer substitutes a RepostServer not bound to the real CDN allow-list.
 func withRepostServer(server *RepostServer) harnessOption {
 	return func(cfg *harnessConfig) { cfg.repostServer = server }
 }
 
-// defaultTestRepostServer builds a RepostServer with the same defaults
-// NewRepostServer would apply given an unconfigured environment
-// (repost.DefaultTiers, fingerprint.DefaultGuards, the platform CDN
-// allow-list, no ffmpeg path), but without touching config.Options. It exists
-// purely so newHarness has something safe to fall back to; tests that care
-// about the fetch/hash path inject their own via withRepostServer instead.
+// defaultTestRepostServer avoids config.Options, which is nil throughout this package.
 func defaultTestRepostServer() *RepostServer {
 	return newRepostServer(
 		storage.NewFetcher(nil, storage.DefaultAllowedHosts(), storage.MaxFileBytes),
@@ -197,47 +141,28 @@ func defaultTestRepostServer() *RepostServer {
 	)
 }
 
-// harnessIdentityKey and harnessOriginKey type the context values callerCtx,
-// anonymousCtx and originCtx attach. identityInterceptor reads them back and
-// turns them into request headers immediately before a call leaves the
-// process — see the file-level comment for why headers, not context, is what
-// actually crosses the wire.
+// harnessIdentityKey and harnessOriginKey are read back into headers by identityInterceptor.
 type harnessIdentityKey struct{}
 type harnessOriginKey struct{}
 
-// harnessIdentity is what callerCtx stashes.
 type harnessIdentity struct {
 	platform    pb.Platform
 	platformUID string
 }
 
-// callerCtx attaches caller identity exactly as a platform client does.
 func callerCtx(platform pb.Platform, platformUID string) context.Context {
 	return context.WithValue(context.Background(), harnessIdentityKey{}, harnessIdentity{platform, platformUID})
 }
 
-// anonymousCtx carries no caller identity at all.
 func anonymousCtx() context.Context {
 	return context.Background()
 }
 
-// originCtx attaches a call origin to ctx, the harness's equivalent of
-// callermeta.NewOutgoingOrigin — which manipulates gRPC metadata and has no
-// effect on a Connect client's headers. It must be called on a context
-// callerCtx already produced, mirroring NewOutgoingOrigin's own ordering
-// requirement (see callermeta_test.go's
-// TestOriginIsLostWhenAttachedBeforeIdentity for why that requirement exists
-// at all): identityInterceptor reads both keys independently here, so in
-// practice the harness does not share NewOutgoingContext's wholesale-replace
-// hazard, but every call site still attaches identity first for parity with
-// production call sites and with the two client packages this test suite
-// otherwise mirrors.
+// originCtx must be given a context callerCtx already produced.
 func originCtx(ctx context.Context, origin callermeta.Origin) context.Context {
 	return context.WithValue(ctx, harnessOriginKey{}, origin)
 }
 
-// stampIdentityHeaders turns whatever callerCtx/originCtx attached to ctx into
-// the ginbot-* request headers a real platform client sends.
 func stampIdentityHeaders(ctx context.Context, header http.Header) {
 	if id, ok := ctx.Value(harnessIdentityKey{}).(harnessIdentity); ok {
 		header.Set(callermeta.HeaderPlatformEnum, id.platform.String())
@@ -255,13 +180,7 @@ func stampIdentityHeaders(ctx context.Context, header http.Header) {
 	}
 }
 
-// identityInterceptor is a CLIENT-side connect.Interceptor that stamps
-// headers from context values immediately before a request or stream leaves
-// the process — the harness's stand-in for pkg/discord and pkg/matrix, which
-// do the equivalent through callermeta directly. It is installed on every
-// client this harness builds, unary and streaming alike, which is what makes
-// h.Reverse.OpenClientActionStream(callerCtx(...)) carry the same identity a
-// unary call under the same context would.
+// identityInterceptor stands in for pkg/discord and pkg/matrix, on every client here.
 type identityInterceptor struct{}
 
 func (identityInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -279,19 +198,12 @@ func (identityInterceptor) WrapStreamingClient(next connect.StreamingClientFunc)
 	}
 }
 
-// WrapStreamingHandler is a no-op: identityInterceptor is only ever installed
-// as a client option in this package, never as a server one, so a handler
-// never sees it.
+// WrapStreamingHandler is a no-op: this is only ever installed client-side.
 func (identityInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return next
 }
 
-// unary adapts a generated Connect client method — func(context.Context,
-// *connect.Request[Req]) (*connect.Response[Resp], error) — to the plain
-// pb-in/pb-out shape every test file in this package already calls
-// (h.User.GetUser(ctx, req) etc.), so porting the transport did not require
-// rewriting every call site in every _test.go in this directory to wrap and
-// unwrap connect.Request/Response by hand.
+// unary adapts a generated Connect client method to a plain pb-in/pb-out call.
 func unary[Req, Resp any](ctx context.Context, call func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error), req *Req) (*Resp, error) {
 	resp, err := call(ctx, connect.NewRequest(req))
 	if err != nil {
@@ -299,10 +211,6 @@ func unary[Req, Resp any](ctx context.Context, call func(context.Context, *conne
 	}
 	return resp.Msg, nil
 }
-
-// The eight adapters below exist purely to give every test file in this
-// package the pb-in/pb-out calling convention it already used against the
-// grpc-go client, over the real ginbotv1connect client underneath.
 
 type userClient struct {
 	c ginbotv1connect.UserServiceClient
@@ -429,22 +337,7 @@ func (a triggerClient) GetTriggerStats(ctx context.Context, req *pb.GetTriggerSt
 	return unary(ctx, a.c.GetTriggerStats, req)
 }
 
-// GetFile drains a GetFile server stream and reports what arrived: the meta
-// chunk (nil if none arrived), the concatenation of every content chunk in
-// order, and the error the stream ended with (nil for a clean end).
-//
-// GetFile stopped being unary in this stage (server-streaming: one meta chunk
-// then content chunks bounded by GetFileChunkBytes), so the `unary` adapter
-// every other trigger method above still uses cannot cover it — there is no
-// single Response to unwrap. This is the stream-draining replacement, doing
-// the same job the eight other adapters do: give every test in this package
-// back a plain, readable calling convention instead of making each call site
-// drive Receive/Msg/Err/Close by hand.
-//
-// A rejection before the first chunk (unauthorised caller, file not found,
-// ...) is reported here as (nil, nil, err): nothing was ever assembled, which
-// is exactly the "zero chunks arrived" a caller needs to distinguish a refusal
-// from a stream that was admitted and then failed partway through.
+// GetFile drains the stream; a rejection before the first chunk is (nil, nil, err).
 func (a triggerClient) GetFile(ctx context.Context, req *pb.GetFileReq) (*pb.GetFileMeta, []byte, error) {
 	stream, err := a.c.GetFile(ctx, connect.NewRequest(req))
 	if err != nil {
@@ -467,11 +360,7 @@ func (a triggerClient) GetFile(ctx context.Context, req *pb.GetFileReq) (*pb.Get
 	return meta, content, stream.Err()
 }
 
-// drainGetFileChunks is the lower-level counterpart to triggerClient.GetFile,
-// for the tests that need to inspect the raw chunk sequence itself — chunk
-// count, ordering, which arm each one carries — rather than the assembled
-// result. Everything triggerClient.GetFile asserts (meta present, content
-// byte-identical) can be derived from what this returns, but not the reverse.
+// drainGetFileChunks returns the raw chunk sequence rather than the assembled result.
 func drainGetFileChunks(ctx context.Context, c ginbotv1connect.TriggerServiceClient, req *pb.GetFileReq) ([]*pb.GetFileChunk, error) {
 	stream, err := c.GetFile(ctx, connect.NewRequest(req))
 	if err != nil {
@@ -481,9 +370,7 @@ func drainGetFileChunks(ctx context.Context, c ginbotv1connect.TriggerServiceCli
 
 	var chunks []*pb.GetFileChunk
 	for stream.Receive() {
-		// Msg() allocates a fresh *pb.GetFileChunk inside Receive on every
-		// call, so appending the pointer here is safe: nothing overwrites it
-		// out from under chunks on the next iteration.
+		// Receive allocates a fresh message each call, so retaining the pointer is safe.
 		chunks = append(chunks, stream.Msg())
 	}
 
@@ -498,13 +385,10 @@ func (a repostClient) CheckRepost(ctx context.Context, req *pb.CheckRepostReq) (
 	return unary(ctx, a.c.CheckRepost, req)
 }
 
-// harness is a running in-process server plus a client for every service.
 type harness struct {
 	Server *httptest.Server
 
-	// reverseServer is the concrete *ReverseServer the harness mounted,
-	// exposed so a test can drive its white-box surface (SendAction,
-	// Shutdown, clientCount) alongside the real client below.
+	// reverseServer is exposed for its white-box surface.
 	reverseServer *ReverseServer
 
 	User          userClient
@@ -518,8 +402,7 @@ type harness struct {
 	Repost        repostClient
 }
 
-// newHarness starts a server and connects a client to it. Everything is torn
-// down through t.Cleanup.
+// newHarness tears everything down through t.Cleanup.
 func newHarness(t *testing.T, opts ...harnessOption) *harness {
 	t.Helper()
 
@@ -532,24 +415,8 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		opt(&cfg)
 	}
 
-	// Order matches cmd/ginbot-server exactly: recovery outermost so it
-	// covers the interceptors themselves, then validation so a malformed
-	// request is rejected before the caller lookup clearance needs, then
-	// clearance, then origin innermost — which does nothing unless clearance
-	// resolved a caller. connect.WithInterceptors applies this SAME chain to
-	// every RPC shape a handler mounts, unary or streaming, which is what
-	// puts ClearanceInterceptor and OriginInterceptor on
-	// ReverseService/OpenClientActionStream for the first time.
-	//
-	// Recovery earns its place here twice over: tests that inject a resolver
-	// leave pkg/db's pool nil on purpose, so a handler that reaches the
-	// database dereferences it, and without recovery that panic takes the
-	// whole test binary down instead of failing one call.
-	// The message caps are mirrored, not just the interceptors. Connect applies
-	// no cap of its own — WithReadMaxBytes is only consulted when it is above
-	// zero — so a harness that omitted them would be the one part of the chain
-	// where production's bound is absent, and deleting that bound from
-	// cmd/ginbot-server would break nothing in this suite.
+	// Order matches cmd/ginbot-server. The caps are mirrored too, since Connect
+	// applies none of its own without WithReadMaxBytes.
 	handlerOpts := []connect.HandlerOption{
 		connect.WithReadMaxBytes(harnessBaselineMessageBytes),
 		connect.WithSendMaxBytes(harnessBaselineMessageBytes),
@@ -576,53 +443,24 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 	if triggerServer == nil {
 		triggerServer = NewTriggerServer()
 	}
-	// TriggerService is mounted with the SAME handlerOpts as every other
-	// service, deliberately: GetFile stopped returning a file's bytes inline in
-	// one message this stage (it streams GetFileChunkBytes-sized chunks
-	// instead), so the raise to config.MaxGRPCMessageBytes cmd/ginbot-server
-	// used to apply here no longer has anything to defend. See
-	// cmd/ginbot-server/messagecap_test.go for the pin that TriggerService is
-	// held to the baseline in production, not just in this harness.
 	mux.Handle(ginbotv1connect.NewTriggerServiceHandler(triggerServer, handlerOpts...))
 
 	repostServer := cfg.repostServer
 	if repostServer == nil {
-		// NOT NewRepostServer(): it reads config.Options directly, which is
-		// nil in every test in this package (this harness deliberately stays
-		// config-free, matching reverse_test.go's TestMain and the same
-		// reasoning documented on triggerServer above), so calling it here
-		// would nil-deref before a single test in the whole package could
-		// run. newRepostServer with hardcoded, config-independent defaults is
-		// the same seam trigger_media_integration_test.go uses to bypass
-		// NewTriggerServer's package-level storage dependency.
+		// NOT NewRepostServer(): it reads config.Options, which is nil here.
 		repostServer = defaultTestRepostServer()
 	}
 	mux.Handle(ginbotv1connect.NewRepostServiceHandler(repostServer, handlerOpts...))
 
-	// httptest.NewUnstartedServer + EnableHTTP2 + StartTLS gives a real
-	// HTTP/2 connection end to end (ALPN negotiates "h2" over the server's
-	// generated test certificate), which is what OpenClientActionStream's
-	// bidirectional stream needs — HTTP/1.1 cannot carry it at all. This is
-	// the general-purpose harness for every handler test in this package;
-	// reverse_h2c_test.go is the SEPARATE, dedicated test for the plaintext
-	// h2c configuration cmd/ginbot-server actually ships with
-	// GINBOT_GRPC_TLS=false, which this TLS-based harness cannot exercise and
-	// is not meant to.
+	// A real h2 connection, which the bidi stream needs; HTTP/1.1 cannot carry it.
 	srv := httptest.NewUnstartedServer(mux)
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 
 	httpClient := srv.Client()
-	// A test that opened OpenClientActionStream and then only cancelled its
-	// OWN request context leaves the underlying HTTP/2 connection itself
-	// pooled for reuse — cancelling one stream is not the same as closing the
-	// TCP connection it rode on, and http.Transport keeps idle connections
-	// alive on purpose. srv.Close() waits for every connection to go
-	// inactive, so without this it hangs (eventually failing the whole
-	// package on -timeout) rather than the one test that leaked a stream.
-	// Registered after srv.Close so LIFO runs it FIRST, closing the
-	// now-otherwise-idle connection before srv.Close waits on it.
+	// srv.Close waits for connections to go idle, so a cancelled stream's pooled
+	// connection would hang it. Registered second so LIFO runs it first.
 	t.Cleanup(httpClient.CloseIdleConnections)
 	clientOpts := connect.WithInterceptors(identityInterceptor{})
 
@@ -641,7 +479,6 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 	}
 }
 
-// requireCode asserts the exact Connect code carried by err.
 func requireCode(t *testing.T, err error, want connect.Code) {
 	t.Helper()
 
@@ -655,9 +492,7 @@ func requireCode(t *testing.T, err error, want connect.Code) {
 	}
 }
 
-// requireNotCode asserts that err — which may be nil — is not a particular
-// rejection. It exists for the calls that get past the interceptor chain and
-// then fail further in, at the database, which most of these tests do not have.
+// requireNotCode tolerates a nil err.
 func requireNotCode(t *testing.T, err error, unwanted ...connect.Code) {
 	t.Helper()
 

@@ -9,33 +9,6 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 )
 
-// ── Assumed symbols from pkg/repost (spec §3.2) ───────────────────────────────
-//
-// Recorded because these are the symbols the tests below depend on, so a change
-// to any of them is a deliberate decision rather than a surprise.
-//
-//	const MaxDistance = 7
-//	const ChunkCount = 8
-//
-//	func Chunks(hash uint64) [ChunkCount]int16
-//	func Distance(a, b uint64) int
-//
-//	type Tiers struct {
-//		Identical int
-//		High      int
-//		Probable  int
-//	}
-//
-//	func DefaultTiers() Tiers
-//	func (t Tiers) Normalise() (Tiers, bool)
-//	func (t Tiers) Grade(distance int) pb.RepostConfidence
-
-// ── Chunks ────────────────────────────────────────────────────────────────────
-
-// TestChunksRoundTripsTheHash: reassembling the eight 8-bit chunks, most
-// significant first (index 0), must reproduce the original 64-bit hash
-// exactly. If this does not hold the pigeonhole index is indexing something
-// other than the hash it claims to.
 func TestChunksRoundTripsTheHash(t *testing.T) {
 	hashes := []uint64{
 		0,
@@ -67,12 +40,7 @@ func TestChunksRoundTripsTheHash(t *testing.T) {
 	}
 }
 
-// TestChunksIndexZeroIsMostSignificantByte pins the documented byte order
-// directly, since the pigeonhole SQL query binds c0..c7 positionally and a
-// silently reversed order would still round-trip in the test above but bind
-// the wrong chunk to the wrong indexed column in production.
 func TestChunksIndexZeroIsMostSignificantByte(t *testing.T) {
-	// Byte 0 (MSB) = 0xAB, byte 7 (LSB) = 0x01.
 	hash := uint64(0xAB23456789ABCD01)
 
 	chunks := Chunks(hash)
@@ -84,12 +52,6 @@ func TestChunksIndexZeroIsMostSignificantByte(t *testing.T) {
 	}
 }
 
-// ── Distance ──────────────────────────────────────────────────────────────────
-
-// TestDistanceKnownValues pins Distance against hand-computed Hamming
-// distances and against Go's own bits.OnesCount64 of the XOR, which is the
-// textbook Hamming-distance definition and the same computation Postgres's
-// bit_count(a # b) performs.
 func TestDistanceKnownValues(t *testing.T) {
 	tests := []struct {
 		a, b uint64
@@ -100,26 +62,21 @@ func TestDistanceKnownValues(t *testing.T) {
 		{0b0000, 0b0001, 1},
 		{0b0000, 0b1111, 4},
 		{0xFF00FF00FF00FF00, 0xFF00FF00FF00FF00, 0},
-		{1, 2, 2}, // 0b01 vs 0b10
+		{1, 2, 2},
 	}
 
 	for _, tt := range tests {
 		if got := Distance(tt.a, tt.b); got != tt.want {
 			t.Errorf("Distance(%#x, %#x) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
-		// Distance must be symmetric.
 		if got := Distance(tt.b, tt.a); got != tt.want {
 			t.Errorf("Distance(%#x, %#x) [swapped] = %d, want %d", tt.b, tt.a, got, tt.want)
 		}
 	}
 }
 
-// TestDistanceAgreesWithOnesCountXOR is the Go-side half of the "bit_count
-// agreement" test guidance: Distance must equal bits.OnesCount64(a^b) for a
-// spread of random pairs, since that is exactly what Postgres's
-// bit_count(a # b) computes and the whole pigeonhole guarantee depends on the
-// two being the same function. (The Postgres-side half needs a live database
-// and lives in pkg/db's integration suite.)
+// TestDistanceAgreesWithOnesCountXOR pins Distance to the same function
+// Postgres bit_count(a # b) computes; the Postgres half is in pkg/db.
 func TestDistanceAgreesWithOnesCountXOR(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 
@@ -134,13 +91,7 @@ func TestDistanceAgreesWithOnesCountXOR(t *testing.T) {
 	}
 }
 
-// ── Pigeonhole correctness (property test) ───────────────────────────────────
-//
-// pigeonholeSeed is fixed so a failure is reproducible: the property under
-// test is the correctness claim the whole index design rests on (ADR-0005,
-// docs/plans/wanha.md "why this is exact, not approximate"), so a flake here
-// is never something to shrug off and rerun — it has to point at the same
-// counter-example every time until fixed.
+// pigeonholeSeed is fixed so a counter-example reproduces exactly.
 const pigeonholeSeed = 20260823
 
 // flipBits returns hash with exactly k distinct random bit positions flipped.
@@ -152,9 +103,7 @@ func flipBits(rng *rand.Rand, hash uint64, k int) uint64 {
 	return hash
 }
 
-// sharesAChunk reports whether a and b share at least one of the eight
-// pigeonhole chunks exactly, which is what the SQL candidate-set query tests
-// via 8-way OR.
+// sharesAChunk mirrors the SQL candidate-set query's eight-way chunk OR.
 func sharesAChunk(a, b uint64) bool {
 	ca, cb := Chunks(a), Chunks(b)
 	for i := range ca {
@@ -165,15 +114,8 @@ func sharesAChunk(a, b uint64) bool {
 	return false
 }
 
-// TestPigeonholeGuaranteeWithinDistanceSeven is the property test the design
-// document calls out by name: split a 64-bit hash into 8 disjoint 8-bit
-// chunks, and two hashes differing in at most 7 bit positions MUST share at
-// least one chunk exactly. If this ever fails, the SQL candidate-set query can
-// silently miss a true match — a false negative that no amount of query
-// testing against Postgres would catch, because the query is only as correct
-// as this claim.
-//
-// Seed: pigeonholeSeed, fixed above, so a failing case reproduces exactly.
+// TestPigeonholeGuaranteeWithinDistanceSeven asserts the property the SQL
+// candidate-set query depends on: hashes within distance 7 share a chunk.
 func TestPigeonholeGuaranteeWithinDistanceSeven(t *testing.T) {
 	rng := rand.New(rand.NewPCG(pigeonholeSeed, pigeonholeSeed))
 
@@ -187,10 +129,6 @@ func TestPigeonholeGuaranteeWithinDistanceSeven(t *testing.T) {
 				flipped := flipBits(rng, original, k)
 
 				if got := Distance(original, flipped); got != k {
-					// flipBits can flip the same bit twice only if k > 64,
-					// which cannot happen here (k <= MaxDistance == 7), but
-					// this pins the fixture itself is honest about the
-					// distance it claims to construct.
 					t.Fatalf("fixture distance = %d, want %d (original=%#x flipped=%#x)",
 						got, k, original, flipped)
 				}
@@ -205,13 +143,8 @@ func TestPigeonholeGuaranteeWithinDistanceSeven(t *testing.T) {
 	}
 }
 
-// TestPigeonholeCandidatesAboveSevenAreNotGuaranteed is the other half of the
-// property test: past the pigeonhole ceiling the guarantee no longer holds, so
-// the verifier (Distance <= MaxDistance) is what has to reject a too-distant
-// pair — the chunk match is not a safety net there. This does not assert that
-// EVERY distance-8+ pair fails to share a chunk (some will, by chance; the
-// guarantee is a floor at <=7, not a ceiling at >7) — it asserts that the
-// verifier, not the pigeonhole match, is what draws the line.
+// TestPigeonholeCandidatesAboveSevenAreNotGuaranteed asserts the verifier, not
+// the chunk match, is what rejects a too-distant pair.
 func TestPigeonholeCandidatesAboveSevenAreNotGuaranteed(t *testing.T) {
 	rng := rand.New(rand.NewPCG(pigeonholeSeed, pigeonholeSeed+1))
 
@@ -220,19 +153,11 @@ func TestPigeonholeCandidatesAboveSevenAreNotGuaranteed(t *testing.T) {
 		flipped := flipBits(rng, original, k)
 
 		t.Run(distanceLabel(k), func(t *testing.T) {
-			// Asserted rather than used as a condition. Wrapping the real
-			// assertion in `if Distance(...) > MaxDistance` made this test pass
-			// silently whenever the fixture was wrong — exactly the failure
-			// mode a property test exists to catch. flipBits flips k DISTINCT
-			// positions, so the distance is k by construction, and if that ever
-			// stops being true this should fail rather than skip.
 			distance := Distance(original, flipped)
 			if distance != k {
 				t.Fatalf("fixture distance = %d, want exactly %d; flipBits is not flipping distinct positions", distance, k)
 			}
 
-			// Regardless of whether they happen to share a chunk, the verifier
-			// must be the thing that refuses this pair.
 			if got := DefaultTiers().Grade(distance); got != pb.RepostConfidence_REPOST_CONFIDENCE_UNSPECIFIED {
 				t.Errorf("a distance-%d pair (over MaxDistance=%d) graded as %v, want UNSPECIFIED",
 					k, MaxDistance, got)
@@ -245,9 +170,6 @@ func distanceLabel(k int) string {
 	return "distance=" + strconv.Itoa(k)
 }
 
-// ── Tiers ─────────────────────────────────────────────────────────────────────
-
-// TestDefaultTiersBoundaries pins the documented starting boundaries: 0, 3, 7.
 func TestDefaultTiersBoundaries(t *testing.T) {
 	got := DefaultTiers()
 	if got.Identical != 0 {
@@ -261,10 +183,6 @@ func TestDefaultTiersBoundaries(t *testing.T) {
 	}
 }
 
-// TestGradeBoundaries covers every documented tier edge: 0 is IDENTICAL, 1 and
-// 3 bound HIGH, 4 and 7 bound PROBABLE, and anything past Probable is
-// UNSPECIFIED (no match) — the exact rule that keeps a heavily-edited image
-// from being reported as any kind of repost at all.
 func TestGradeBoundaries(t *testing.T) {
 	tiers := DefaultTiers()
 
@@ -288,12 +206,6 @@ func TestGradeBoundaries(t *testing.T) {
 	}
 }
 
-// TestNormaliseRefusesAProbableBoundaryAboveMaxDistance is the sharpest edge in
-// the whole tiering scheme: the pigeonhole index only guarantees recall up to
-// MaxDistance (7). A Probable boundary configured above that would silently
-// promise matches the SQL candidate-set query cannot actually find — a false
-// sense of coverage that quietly loses recall in production. Normalise must
-// refuse to let that boundary through unclamped.
 func TestNormaliseRefusesAProbableBoundaryAboveMaxDistance(t *testing.T) {
 	bad := Tiers{Identical: 0, High: 3, Probable: MaxDistance + 5}
 
@@ -307,9 +219,6 @@ func TestNormaliseRefusesAProbableBoundaryAboveMaxDistance(t *testing.T) {
 	}
 }
 
-// TestNormaliseEnforcesMonotonicity: Identical <= High <= Probable must hold
-// after normalisation, however the input was scrambled, because Grade's
-// if/else-style boundary checks assume that ordering.
 func TestNormaliseEnforcesMonotonicity(t *testing.T) {
 	tests := []struct {
 		name string
@@ -337,9 +246,6 @@ func TestNormaliseEnforcesMonotonicity(t *testing.T) {
 	}
 }
 
-// TestNormaliseLeavesAnAlreadyValidTiersUnchanged: applying Normalise to
-// DefaultTiers() must be a no-op, so configuration that is already sane is not
-// perturbed by validation on every load.
 func TestNormaliseLeavesAnAlreadyValidTiersUnchanged(t *testing.T) {
 	valid := DefaultTiers()
 
@@ -352,29 +258,13 @@ func TestNormaliseLeavesAnAlreadyValidTiersUnchanged(t *testing.T) {
 	}
 }
 
-// ── Benchmarks ────────────────────────────────────────────────────────────────
-//
-// Chunks and Distance are the two functions in this feature that run per
-// candidate row rather than per request: CheckRepost calls Chunks once to
-// build the lookup and then Distance once for every row the eight-way
-// pigeonhole OR returned, which — see
-// pkg/repost/fingerprint/selectivity_test.go — is a good deal more rows than
-// the N/256 the index design assumes. They are cheap, and these benchmarks
-// exist to keep them that way: a Chunks that started allocating, or a Distance
-// that stopped compiling down to POPCNT, would be invisible in correctness
-// terms and would show up here immediately.
-
-// benchmarkChunkSink and benchmarkDistanceSink are package-level so the
-// compiler cannot prove the results unused and delete the calls outright.
+// Package-level so the compiler cannot prove the results unused.
 var (
 	benchmarkChunkSink    [ChunkCount]int16
 	benchmarkDistanceSink int
 )
 
-// benchmarkHashes is a fixed spread of inputs. A single constant hash would
-// let constant folding and a perfectly predicted branch flatter the numbers;
-// varying the input keeps the measurement honest without introducing any
-// randomness into the benchmark itself.
+// benchmarkHashes varies the input so constant folding cannot flatter the numbers.
 var benchmarkHashes = [...]uint64{
 	0,
 	^uint64(0),

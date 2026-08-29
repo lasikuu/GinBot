@@ -12,39 +12,13 @@ import (
 	"github.com/lasikuu/GinBot/pkg/repost"
 )
 
-// This file measures the SELECTIVITY of the pigeonhole chunking, which is a
-// different question from its correctness.
+// Selectivity, not correctness: how many rows a chunk-column lookup actually
+// returns. The index design assumes a uniform 8-bit key, i.e. N/256 rows.
 //
-// The correctness guarantee — two hashes within Hamming distance 7 share at
-// least one of the eight 8-bit chunks exactly — is proved by property test in
-// pkg/repost and is not in question here. What has never been measured is how
-// much work that guarantee costs at lookup time. The index design assumes each
-// chunk column behaves roughly like a uniform 8-bit key, so a candidate set is
-// about N/256 rows. That assumption is not obviously true:
-// goimagehash.PerceptionHash thresholds each DCT coefficient against the
-// MEDIAN of the coefficients, so the DC term — which is the largest by a wide
-// margin and lands in chunk 0 — is above the median for very nearly every
-// real image, and the neighbouring low-frequency coefficients are strongly
-// correlated with each other. Chunk 0 therefore takes far fewer than 256
-// distinct values in practice, and every lookup that ORs across the eight
-// columns pays for it.
-//
-// THIS IS A REPRODUCIBLE LOWER-BOUND PROXY, NOT THE PRODUCTION NUMBER.
-//
-// The corpus is procedurally generated from a fixed seed so the measurement is
-// deterministic and reviewable in CI, but synthetic gradients, checkerboards
-// and noise are not photographs, screenshots and memes. Synthetic content is
-// if anything MORE varied in its low-frequency structure than real traffic, so
-// the distinct-value counts printed below are an optimistic bound: real
-// content will do no better. The definitive number needs a sample of actual
-// indexed content from a live instance, and nothing here should be quoted as
-// though it were that.
-//
-// THE RESULT, so that it lives in the repository rather than only in a CI log:
-//
-//	292 images, 271 distinct hashes, seed 20260823.
-//	A perfectly uniform 8-bit chunk at n=292 would reach ~174 distinct values
-//	(not 256 — the birthday argument caps it) with a top-bin share near 0.4%.
+// The selectivity table, measured over a synthetic corpus and so an optimistic
+// bound on real traffic — 292 images, 271 distinct hashes, seed 20260823. A
+// perfectly uniform chunk at n=292 reaches only ~174 distinct values (birthday
+// argument), with a top-bin share near 0.4%:
 //
 //	  chunk  distinct  top value  top share  candidate set vs the N/256 design
 //	  c0     91        128        8.6%       21.9x
@@ -56,51 +30,20 @@ import (
 //	  c6     146       0          9.9%       25.4x
 //	  c7     149       0          6.5%       16.7x
 //
-// Two conclusions, and the second is not the one the investigation expected.
-//
-// First, the DC-bit story above is visible but is NOT the main effect. c0 is
-// the least spread column by distinct count — 91 against c7's 149, about half
-// the achievable spread — and its modal value is 128, i.e. the top bit set and
-// the next seven clear, exactly what a DC coefficient that is always above the
-// median produces. So the mechanism is real.
-//
-// Second, and more important: EVERY chunk is 14-25x worse than the uniform
-// assumption, and by the measure that actually governs lookup cost — the share
-// held by the most common value, which is the worst-case candidate set — c6 at
-// 25.4x is the worst column, not c0. Fixing or dropping c0 would therefore not
-// recover the design's assumed cost. Low-frequency DCT correlation is spread
-// across the whole hash, not concentrated in one byte. The pigeonhole guarantee
-// is unaffected and the index still beats a sequential scan; what is wrong is
-// the "sub-millisecond, so retention-forever is free" reasoning built on N/256.
-//
-// The assertions below are of two kinds. The universal ones — values in range,
-// one observation per image per chunk, no chunk above 256 — hold for any
-// corpus. The golden ones pin the table above against this fixed seed, so that
-// a goimagehash upgrade, a change to the decode path or an edit to the
-// generators fails here and forces the measurement to be redone rather than
-// leaving a stale table quoted as current. There is deliberately still no
-// assertion that one chunk is more selective than another: that ordering is an
-// artefact of the generators and pinning it would be a flake.
-//
-// It lives in pkg/repost/fingerprint rather than pkg/repost because it needs
-// both the hashing path and repost.Chunks, and fingerprint may import repost
-// while the reverse would be an import cycle.
+// Every chunk is 14-25x worse than uniform, and the worst by top share is c6,
+// not the DC-carrying c0, so low-frequency DCT correlation is spread across
+// the whole hash. The pigeonhole guarantee is unaffected; the "sub-millisecond
+// so retention-forever is free" reasoning built on N/256 is not.
 
-// selectivitySeed is fixed so the reported table is reproducible run to run.
-// A number that moves on its own is not a measurement.
+// selectivitySeed is fixed so the reported table is reproducible.
 const selectivitySeed = 20260823
 
-// selectivityImageSize is the generated image edge length. PerceptionHash
-// resizes to 64x64 internally, so anything comfortably above that is
-// equivalent for the hash while keeping PNG encoding cheap.
+// selectivityImageSize is the generated image edge length, comfortably above
+// the 64x64 PerceptionHash resizes to internally.
 const selectivityImageSize = 160
 
-// ── Corpus generation ────────────────────────────────────────────────────────
-
-// gradientImage draws a linear luminance ramp at the given angle, with the
-// ramp repeating `cycles` times across the image. Varying both gives a family
-// of images whose low-frequency DCT structure genuinely differs, which is the
-// part of the spectrum the pHash bits are drawn from.
+// gradientImage draws a linear luminance ramp at the given angle, repeating
+// cycles times across the image.
 func gradientImage(size int, angle, cycles float64) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	dx, dy := math.Cos(angle), math.Sin(angle)
@@ -132,9 +75,8 @@ func checkerImage(size, cell, phase int) image.Image {
 	return img
 }
 
-// blockImage divides the image into a grid and fills each cell with a
-// pseudo-random luminance. This is the closest synthetic analogue to a
-// screenshot or a comic panel: large flat regions with hard edges.
+// blockImage fills a grid of cells with pseudo-random luminance: the synthetic
+// analogue of a screenshot, large flat regions with hard edges.
 func blockImage(size, cells int, rng *rand.Rand) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	values := make([]uint8, cells*cells)
@@ -154,9 +96,7 @@ func blockImage(size, cells int, rng *rand.Rand) image.Image {
 	return img
 }
 
-// noiseImage fills every pixel independently. Its DCT is flat, which is the
-// opposite extreme from the gradients and the widest possible spread of
-// high-frequency bits.
+// noiseImage fills every pixel independently, giving a flat DCT.
 func noiseImage(size int, rng *rand.Rand) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	for y := range size {
@@ -187,9 +127,8 @@ func radialImage(size int, originX, originY, cycles float64) image.Image {
 	return img
 }
 
-// shifted rolls the image by (dx, dy), wrapping around. A shift is the
-// cheapest real-world edit — a crop-and-repost that happens to preserve
-// content — and it perturbs the phase of every DCT coefficient.
+// shifted rolls the image by (dx, dy) with wraparound, perturbing the phase of
+// every DCT coefficient.
 func shifted(src image.Image, dx, dy int) image.Image {
 	bounds := src.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
@@ -205,8 +144,7 @@ func shifted(src image.Image, dx, dy int) image.Image {
 	return out
 }
 
-// cropped takes an inset sub-rectangle and rescales it back to full size,
-// which is what a "screenshot of a screenshot" does to the spectrum.
+// cropped insets a sub-rectangle and rescales it back to full size.
 func cropped(src image.Image, inset int) image.Image {
 	bounds := src.Bounds().Inset(inset)
 	if bounds.Dx() < 8 || bounds.Dy() < 8 {
@@ -222,10 +160,8 @@ func cropped(src image.Image, inset int) image.Image {
 	return rescaled(sub, selectivityImageSize)
 }
 
-// rescaled resamples to a square of the given edge length by nearest
-// neighbour. Nearest neighbour rather than a smooth filter on purpose: it
-// keeps the high-frequency content that a smooth filter would remove, so the
-// variant is a genuinely different image rather than a blurred copy.
+// rescaled resamples to a square by nearest neighbour, deliberately keeping
+// the high-frequency content a smooth filter would remove.
 func rescaled(src image.Image, size int) image.Image {
 	bounds := src.Bounds()
 	out := image.NewRGBA(image.Rect(0, 0, size, size))
@@ -240,9 +176,6 @@ func rescaled(src image.Image, size int) image.Image {
 	return out
 }
 
-// buildSelectivityCorpus assembles a few hundred images with genuine
-// structural variety, then derives shifted, cropped and rescaled variants of
-// every one of them.
 func buildSelectivityCorpus() []image.Image {
 	rng := rand.New(rand.NewPCG(selectivitySeed, selectivitySeed))
 	const size = selectivityImageSize
@@ -283,8 +216,7 @@ func buildSelectivityCorpus() []image.Image {
 		}
 	}
 
-	// One derived variant per base image, rotating through the three edits so
-	// each kind is represented without tripling the corpus.
+	// One derived variant per base image, rotating through the three edits.
 	corpus := make([]image.Image, 0, len(base)*2)
 	corpus = append(corpus, base...)
 	for i, img := range base {
@@ -301,13 +233,6 @@ func buildSelectivityCorpus() []image.Image {
 	return corpus
 }
 
-// ── The measurement ──────────────────────────────────────────────────────────
-//
-// The corpus is rendered to PNG through encodePNG (declared in
-// fingerprint_test.go, not redeclared here) and hashed through the exported
-// PerceptualHash, so the decode bound and the guards are exercised exactly as
-// they are during ingest rather than via a shortcut into hashImage.
-
 // chunkStats is one chunk column's observed distribution.
 type chunkStats struct {
 	distinct  int
@@ -317,43 +242,24 @@ type chunkStats struct {
 	totalSeen int
 }
 
-// goldenChunkDistinct is the distinct-value count per chunk observed for the
-// selectivitySeed corpus, and is the table recorded at the top of this file.
-//
-// It is pinned, not merely printed. The whole point of the measurement is that
-// somebody later reads those numbers and reasons about index cost from them, so
-// the failure that matters is not "the numbers are bad" — they are, knowingly —
-// but "the numbers no longer describe what the code does". A goimagehash bump,
-// a change to the resize or decode path, or an edit to the generators all move
-// these, and all invalidate the conclusions written above.
+// goldenChunkDistinct pins the distinct-value counts in the table above, so a
+// goimagehash, decode-path or generator change forces a re-measurement.
 var goldenChunkDistinct = [repost.ChunkCount]int{91, 132, 133, 141, 133, 140, 146, 149}
 
 // goldenDistinctHashes is the number of distinct hashes the corpus yields.
 const goldenDistinctHashes = 271
 
-// TestPigeonholeChunkSelectivityIsMeasuredAndReported computes the per-chunk
-// distribution described at the top of this file, prints it, and pins it.
-//
-// Run it on its own to read the table, which CI also does in its own step
-// because `go test` discards t.Log output from a passing test unless -v is set:
-//
-//	go test -v -run TestPigeonholeChunkSelectivity ./pkg/repost/fingerprint/
+// TestPigeonholeChunkSelectivityIsMeasuredAndReported computes, prints and
+// pins the per-chunk distribution. Needs -v to read the table.
 func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 	corpus := buildSelectivityCorpus()
 
-	// A corpus that silently shrank would make every number below meaningless
-	// while still passing, so its size is a precondition rather than an
-	// observation.
 	if len(corpus) < 200 {
 		t.Fatalf("corpus is %d images, want at least 200 for the distribution to mean anything", len(corpus))
 	}
 
-	// Guards are deliberately opened up rather than left at DefaultGuards.
-	// MinEntropy would reject the flat checkerboards and MinWidth/MinHeight
-	// the rescaled variants — both are INGEST POLICY about what is worth
-	// indexing, and excluding them here would bias the measurement toward
-	// exactly the busy, high-entropy images that spread best. The hashing path
-	// itself is unchanged.
+	// Guards opened up on purpose: they are ingest policy, and applying them
+	// here would bias the measurement toward the images that spread best.
 	hasher := NewHasher(Guards{MinWidth: 1, MinHeight: 1, MinEntropy: 0}, "")
 	ctx := context.Background()
 
@@ -376,10 +282,8 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		}
 	}
 
-	// Not vacuous: if every generator had produced the same flat image — a
-	// plausible bug in this file, not in the code under test — every chunk
-	// would report exactly one distinct value and the assertions below would
-	// still pass.
+	// Guards against a degenerate corpus, under which every assertion below
+	// would pass vacuously.
 	if len(distinctHashes) < 16 {
 		t.Fatalf("the corpus produced only %d distinct perceptual hashes, so it is degenerate and the per-chunk numbers below describe the fixtures rather than the chunking",
 			len(distinctHashes))
@@ -404,12 +308,8 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		len(corpus), len(distinctHashes), selectivitySeed)
 	t.Log("chunk 0 is the most significant byte, which carries the DC term and the lowest-frequency coefficients")
 
-	// Calibration, without which the table below is unreadable. At this sample
-	// size a PERFECTLY uniform chunk cannot fill all 256 bins — by the
-	// birthday argument it reaches only about the figure below — and its most
-	// common bin still holds several samples purely by chance. Comparing a
-	// chunk against 256 rather than against these baselines would make every
-	// chunk look concentrated.
+	// Calibration: at this sample size even a uniform chunk cannot fill all
+	// 256 bins, so comparing against 256 would make every chunk look bad.
 	expectedDistinct := 256 * (1 - math.Pow(255.0/256.0, float64(len(corpus))))
 	t.Logf("baseline for a perfectly uniform 8-bit chunk at n=%d: about %.0f distinct values, "+
 		"and a most-common-value share around %.1f%% (the 1/256 mean, inflated by small-sample noise)",
@@ -420,8 +320,7 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		t.Log(formatChunkStats(chunk, s))
 	}
 
-	// Universal invariants: true of any corpus, so they cannot become flaky as
-	// the generators change.
+	// Universal invariants: true of any corpus.
 	for chunk, s := range stats {
 		if s.distinct < 1 {
 			t.Errorf("chunk %d has %d distinct values, want at least 1", chunk, s.distinct)
@@ -441,10 +340,7 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 		}
 	}
 
-	// Golden values: these pin the recorded table rather than the code under
-	// test. Failing here does not mean the index broke — it means the
-	// measurement at the top of this file is now describing something that no
-	// longer exists, and the conclusions drawn from it have to be redone.
+	// Golden values pin the recorded table, not the index behaviour.
 	if len(distinctHashes) != goldenDistinctHashes {
 		t.Errorf("corpus yields %d distinct hashes, want %d — %s",
 			len(distinctHashes), goldenDistinctHashes, staleMeasurementHint)
@@ -457,17 +353,12 @@ func TestPigeonholeChunkSelectivityIsMeasuredAndReported(t *testing.T) {
 	}
 }
 
-// staleMeasurementHint is appended to every golden failure, because the useful
-// response to one is to re-measure and rewrite the table, not to edit the
-// constant until it passes.
 const staleMeasurementHint = "the hashing path or the corpus changed, so the selectivity table in this file's " +
 	"doc comment is stale: re-run with -v, replace the table and the goldens together, and re-check the " +
 	"conclusions drawn from it"
 
-// formatChunkStats renders one row of the reported table. The last column
-// converts the observed concentration into the number the index design cares
-// about: how many times larger a candidate set is than the N/256 the uniform
-// assumption predicts.
+// formatChunkStats renders one table row; the last column is how many times
+// larger a candidate set is than the N/256 the uniform assumption predicts.
 func formatChunkStats(chunk int, s chunkStats) string {
 	inflation := s.topShare * 256
 

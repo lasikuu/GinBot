@@ -1,15 +1,5 @@
 //go:build integration
 
-// Integration tests for the trigger surface, driven through the harness
-// harness with the real interceptor chain and a real database.
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/grpc/server/...
-//
-// Reuses requireDatabase, uniqueUID, registerUser, setClearance (from
-// user_integration_test.go), withOriginResolver, registeredCaller,
-// cleanupInstanceRows (from reminder_integration_test.go) — none are
-// redeclared here.
 package server
 
 import (
@@ -23,11 +13,8 @@ import (
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 )
 
-// liveTriggerHarness wires both the caller resolver and the origin resolver to
-// the real database: CreateTrigger's instance-scoping fallback and
-// ListTriggers/GetTrigger's origin-based visibility both need
-// interceptor.NewOriginInterceptor to have actually bootstrapped the
-// instance row for the call's origin.
+// liveTriggerHarness wires both resolvers to the real database: scoping needs the
+// origin interceptor to have bootstrapped the instance row for the call's origin.
 func liveTriggerHarness(t *testing.T) (*harness, *pgxpool.Pool) {
 	t.Helper()
 	pool := requireDatabase(t)
@@ -37,24 +24,17 @@ func liveTriggerHarness(t *testing.T) (*harness, *pgxpool.Pool) {
 	), pool
 }
 
-// triggerCtx attaches both caller identity and call origin, in that order:
-// originCtx must run after callerCtx.
 func triggerCtx(platformUID string, origin callermeta.Origin) context.Context {
 	return originCtx(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), origin)
 }
 
-// triggerInstanceFor builds the *pb.TriggerInstance a request names to match
-// the instance row bootstrapped for origin.
 func triggerInstanceFor(origin callermeta.Origin) *pb.TriggerInstance {
 	platform := pb.Platform_PLATFORM_DISCORD
 	return pb.TriggerInstance_builder{PlatformEnum: &platform, InstanceMeta: origin.InstanceMeta()}.Build()
 }
 
-// cleanupTriggerRow removes a trigger row and anything recorded against it in
-// action_record, which carries no FK to trigger and would otherwise leak.
-// Registered after the fixture's own user/instance cleanup, so it runs first
-// (t.Cleanup is LIFO) and releases trigger.user_id's FK before user_account is
-// deleted.
+// cleanupTriggerRow also removes action_record rows, which carry no FK to trigger.
+// Registered after the fixture's user/instance cleanup so LIFO runs it first.
 func cleanupTriggerRow(t *testing.T, pool *pgxpool.Pool, id string) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -68,9 +48,7 @@ func cleanupTriggerRow(t *testing.T, pool *pgxpool.Pool, id string) {
 	})
 }
 
-// createTriggerVia creates a trigger through the public CreateTrigger RPC,
-// scoped by falling back to the caller's own call origin (no explicit
-// Instances), and schedules cleanup of the row.
+// createTriggerVia scopes by falling back to the caller's own origin, and cleans up.
 func createTriggerVia(t *testing.T, h *harness, pool *pgxpool.Pool, ctx context.Context, phrase, reply string, chance int32, mode pb.TriggerMode) string {
 	t.Helper()
 
@@ -90,8 +68,6 @@ func createTriggerVia(t *testing.T, h *harness, pool *pgxpool.Pool, ctx context.
 	return id
 }
 
-// TestTriggerCreateTryGetDeleteRoundTrip: a full create -> TryTrigger fires ->
-// GetTrigger -> DeleteTrigger round trip through the real RPCs.
 func TestTriggerCreateTryGetDeleteRoundTrip(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -138,8 +114,6 @@ func TestTriggerCreateTryGetDeleteRoundTrip(t *testing.T) {
 	requireCode(t, err, connect.CodeNotFound)
 }
 
-// TestTryTriggerFiresDeterministicallyAtChance100: an effective chance of 100
-// must always fire, so a real (non-injected) roller cannot flake this test.
 func TestTryTriggerFiresDeterministicallyAtChance100(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -168,9 +142,6 @@ func TestTryTriggerFiresDeterministicallyAtChance100(t *testing.T) {
 	}
 }
 
-// TestTriggerInstanceScopingEndToEnd is AC15: a trigger scoped to instance A
-// does not fire via TryTrigger on instance B, and ExecTrigger for it from
-// instance B is connect.CodeNotFound.
 func TestTriggerInstanceScopingEndToEnd(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -185,9 +156,7 @@ func TestTriggerInstanceScopingEndToEnd(t *testing.T) {
 	ctxA := triggerCtx(ownerUID, originA)
 	ctxB := triggerCtx(ownerUID, originB)
 
-	// Bootstrap instance B for real (rather than leaving it nonexistent), so
-	// the NotFound below is provably about SCOPING and not merely about an
-	// instance row that was never created.
+	// Bootstrap instance B for real, so the NotFound below is provably about scoping.
 	if _, err := h.Trigger.ListTriggers(ctxB, pb.ListTriggersReq_builder{}.Build()); err != nil {
 		t.Fatalf("bootstrap instance B via ListTriggers: %v", err)
 	}
@@ -213,7 +182,6 @@ func TestTriggerInstanceScopingEndToEnd(t *testing.T) {
 	}.Build())
 	requireCode(t, err, connect.CodeNotFound)
 
-	// The owner, on instance A, can still fire it explicitly.
 	execRespA, err := h.Trigger.ExecTrigger(ctxA, pb.ExecTriggerReq_builder{
 		Id:       &id,
 		Instance: triggerInstanceFor(originA),
@@ -226,8 +194,6 @@ func TestTriggerInstanceScopingEndToEnd(t *testing.T) {
 	}
 }
 
-// TestDeleteAndUpdateTriggerRefuseAnotherUsersRowWithNotFound is AC4: another
-// user's trigger is indistinguishable from a missing one.
 func TestDeleteAndUpdateTriggerRefuseAnotherUsersRowWithNotFound(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -252,8 +218,6 @@ func TestDeleteAndUpdateTriggerRefuseAnotherUsersRowWithNotFound(t *testing.T) {
 	_, err = h.Trigger.DeleteTrigger(attackerCtx, pb.DeleteTriggerReq_builder{Id: &id}.Build())
 	requireCode(t, err, connect.CodeNotFound)
 
-	// Untouched: the owner can still read the original reply and delete it
-	// themselves.
 	getResp, err := h.Trigger.GetTrigger(ownerCtx, pb.GetTriggerReq_builder{Id: &id}.Build())
 	if err != nil {
 		t.Fatalf("owner GetTrigger after a foreign attack attempt: %v", err)
@@ -267,8 +231,6 @@ func TestDeleteAndUpdateTriggerRefuseAnotherUsersRowWithNotFound(t *testing.T) {
 	}
 }
 
-// TestCreateTriggerDuplicateExactPhraseReturnsAlreadyExists is AC3, through
-// the RPC.
 func TestCreateTriggerDuplicateExactPhraseReturnsAlreadyExists(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -291,9 +253,6 @@ func TestCreateTriggerDuplicateExactPhraseReturnsAlreadyExists(t *testing.T) {
 	requireCode(t, err, connect.CodeAlreadyExists)
 }
 
-// TestExecTriggerRecordsTriggerCalledActionRecord is AC10: ExecTrigger fires
-// a specific trigger and records ACTION_TYPE_TRIGGER_CALLED, asserted by
-// querying action_record directly.
 func TestExecTriggerRecordsTriggerCalledActionRecord(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -334,9 +293,6 @@ func TestExecTriggerRecordsTriggerCalledActionRecord(t *testing.T) {
 	}
 }
 
-// TestGetTriggerStatsReturnsLeaderboardAfterSeedingFires is AC11, through the
-// real RPC: ExecTrigger seeds deterministic ACTION_TYPE_TRIGGER_CALLED fires
-// (no chance roll involved), then GetTriggerStats must report them.
 func TestGetTriggerStatsReturnsLeaderboardAfterSeedingFires(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -388,10 +344,8 @@ func TestGetTriggerStatsReturnsLeaderboardAfterSeedingFires(t *testing.T) {
 	}
 }
 
-// bootstrapInstance makes a real call from ctx so its origin instance is
-// created for real by interceptor.NewOriginInterceptor, rather than being
-// left nonexistent — so a later NotFound is provably about SCOPING and not
-// merely about an instance row that was never created.
+// bootstrapInstance creates ctx's origin instance for real, so a later NotFound is
+// provably about scoping.
 func bootstrapInstance(t *testing.T, h *harness, ctx context.Context) {
 	t.Helper()
 	if _, err := h.Trigger.ListTriggers(ctx, pb.ListTriggersReq_builder{}.Build()); err != nil {
@@ -399,12 +353,7 @@ func bootstrapInstance(t *testing.T, h *harness, ctx context.Context) {
 	}
 }
 
-// TestTryTriggerNamingAnotherInstanceReturnsNotFound is a regression test for
-// the highest-value authorization gap: a request naming instance B, made from
-// a call whose real origin is instance A, must not evaluate — let alone fire
-// — B's trigger set. The chance-100 trigger on B would certainly fire if B's
-// set were mistakenly evaluated, making the leak observable rather than just
-// theoretical.
+// Chance 100 makes a cross-instance leak observable rather than theoretical.
 func TestTryTriggerNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -431,9 +380,7 @@ func TestTryTriggerNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 	requireCode(t, err, connect.CodeNotFound)
 }
 
-// TestExecTriggerNamingAnotherInstanceReturnsNotFound: the trigger genuinely
-// exists on instance B, so the NotFound below can only be about the caller's
-// origin (A) not matching the named instance (B), not about a bad id.
+// The trigger genuinely exists on B, so the NotFound can only be about the origin.
 func TestExecTriggerNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -460,9 +407,7 @@ func TestExecTriggerNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 	requireCode(t, err, connect.CodeNotFound)
 }
 
-// TestGetTriggerStatsNamingAnotherInstanceReturnsNotFound: a recorded fire on
-// B is seeded first, so a leak would return a non-empty leaderboard rather
-// than an empty one that could pass by coincidence.
+// A recorded fire on B is seeded first, so a leak returns a non-empty leaderboard.
 func TestGetTriggerStatsNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -482,8 +427,6 @@ func TestGetTriggerStatsNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 	reply := "cross-stats-reply"
 	id := createTriggerVia(t, h, pool, ctxB, phrase, reply, 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
 
-	// Seed a recorded fire on B: a leak would come back as a non-empty
-	// leaderboard.
 	if _, err := h.Trigger.ExecTrigger(ctxB, pb.ExecTriggerReq_builder{
 		Id:       &id,
 		Instance: triggerInstanceFor(originB),
@@ -497,10 +440,6 @@ func TestGetTriggerStatsNamingAnotherInstanceReturnsNotFound(t *testing.T) {
 	requireCode(t, err, connect.CodeNotFound)
 }
 
-// TestCreateTriggerNamingAnotherInstanceIsRefusedAndCreatesNothing: a request
-// naming instance B while the call originates from A must be refused, and
-// must not have created any trigger_instance row scoped to B — the insert is
-// one transaction, but this proves it rather than assuming it.
 func TestCreateTriggerNamingAnotherInstanceIsRefusedAndCreatesNothing(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -546,9 +485,6 @@ func TestCreateTriggerNamingAnotherInstanceIsRefusedAndCreatesNothing(t *testing
 	}
 }
 
-// TestCreateTriggerNamingOwnOriginInstanceExplicitlySucceeds proves the
-// scoping check does not break the legitimate path: naming the caller's own
-// call-origin instance explicitly must still create a trigger scoped to it.
 func TestCreateTriggerNamingOwnOriginInstanceExplicitlySucceeds(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -594,21 +530,8 @@ func TestCreateTriggerNamingOwnOriginInstanceExplicitlySucceeds(t *testing.T) {
 	}
 }
 
-// TestListTriggersWithNoOriginDoesNotLeakOtherUsersTriggers is the regression
-// test for the worst finding: with no resolvable origin instance and no owner
-// predicate, db.ListTriggers skips BOTH and returns every trigger in the
-// database, across every guild.
-//
-// `mine` did not change this and must not have: the owner predicate it sets is
-// opt-in, so it cannot be what rescues the no-origin case. The handler's else
-// branch is, and it runs regardless of `mine` — which is exactly the thing that
-// would be easy to delete while refactoring `mine` in, since with an origin
-// present the branch looks redundant.
-//
-// Both spellings of the request are driven for that reason. Asserting that
-// every returned row belongs to the caller, rather than only that one specific
-// victim row is absent, is what makes this a test of "scoped" instead of a test
-// of "does not contain this one id".
+// With no resolvable origin and no owner predicate, db.ListTriggers skips both and
+// returns every trigger in the database. The fallback must run regardless of `mine`.
 func TestListTriggersWithNoOriginDoesNotLeakOtherUsersTriggers(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -624,15 +547,12 @@ func TestListTriggersWithNoOriginDoesNotLeakOtherUsersTriggers(t *testing.T) {
 	reply := "leak-reply"
 	victimTriggerID := createTriggerVia(t, h, pool, victimCtx, phrase, reply, 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
 
-	// The stranger owns one trigger of their own, on the same instance, so the
-	// listing below is provably non-empty for the right reason. Without it a
-	// handler that returned nothing at all would satisfy every assertion here.
+	// The stranger owns one trigger too, so a handler returning nothing would not pass.
 	strangerOwnCtx := triggerCtx(strangerUID, origin)
 	strangerTriggerID := createTriggerVia(t, h, pool, strangerOwnCtx,
 		"leak-own-phrase-"+suffix, "leak-own-reply", 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
 
-	// Caller identity only, no NewOutgoingOrigin: this is what a direct
-	// message looks like.
+	// Caller identity only, no origin: this is what a direct message looks like.
 	strangerCtx := callerCtx(pb.Platform_PLATFORM_DISCORD, strangerUID)
 
 	mine := true
@@ -657,9 +577,6 @@ func TestListTriggersWithNoOriginDoesNotLeakOtherUsersTriggers(t *testing.T) {
 				if trig.GetId() == strangerTriggerID {
 					sawOwn = true
 				}
-				// The general form of the same claim: an unscoped fallthrough
-				// returns rows owned by everybody, so any row that is not the
-				// caller's is the bug regardless of who created it.
 				if owner := trig.GetUserId(); owner != strangerID {
 					t.Errorf("ListTriggers with no origin returned trigger %s owned by %q, want only the caller's (%q); "+
 						"the listing fell through unscoped",
@@ -676,18 +593,7 @@ func TestListTriggersWithNoOriginDoesNotLeakOtherUsersTriggers(t *testing.T) {
 	}
 }
 
-// TestListTriggersMineNarrowsToTheCallerWithinTheInstance is the `mine` half of
-// the same rule, and the one behavioural change in this commit.
-//
-// Without `mine`, /trigger list is the INSTANCE's triggers, including ones the
-// caller did not create — that is what the command is for, and
-// TestListTriggersScopesToTheOriginInstanceRatherThanTheCaller pins it. With
-// `mine`, the same call must narrow to the caller's own and drop the rest.
-//
-// Both directions are asserted from one fixture, because the interesting
-// failure is not "mine returned nothing" but "mine returned the same thing as
-// no mine" — a handler that accepted the field and ignored it would pass a test
-// that only checked the caller's own trigger was present.
+// The interesting failure is "mine returned the same thing as no mine".
 func TestListTriggersMineNarrowsToTheCallerWithinTheInstance(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -703,8 +609,7 @@ func TestListTriggersMineNarrowsToTheCallerWithinTheInstance(t *testing.T) {
 
 	ownID := createTriggerVia(t, h, pool, callerListCtx,
 		"mine-own-phrase-"+suffix, "own", 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
-	// Same instance, different owner: this is the row `mine` has to drop and
-	// that an unset `mine` has to keep.
+	// Same instance, different owner: the row `mine` has to drop and an unset `mine` keeps.
 	foreignID := createTriggerVia(t, h, pool, otherListCtx,
 		"mine-foreign-phrase-"+suffix, "foreign", 10, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
 
@@ -750,9 +655,6 @@ func TestListTriggersMineNarrowsToTheCallerWithinTheInstance(t *testing.T) {
 	})
 }
 
-// TestCreateTriggerInvalidatesTheInstanceCache is AC17's create half: a
-// trigger created after the instance's compiled set has already been loaded
-// must still fire on the very next TryTrigger call.
 func TestCreateTriggerInvalidatesTheInstanceCache(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -763,8 +665,7 @@ func TestCreateTriggerInvalidatesTheInstanceCache(t *testing.T) {
 	cleanupInstanceRows(t, pool, origin.InstanceMeta())
 	ctx := triggerCtx(ownerUID, origin)
 
-	// Warm the cache: this loads (and caches) the instance's currently empty
-	// candidate set.
+	// Warm the cache: this loads the instance's currently empty candidate set.
 	warmPhrase := "cache-create-warm-" + suffix
 	if _, err := h.Trigger.TryTrigger(ctx, pb.TryTriggerReq_builder{
 		Instance: triggerInstanceFor(origin),
@@ -789,7 +690,6 @@ func TestCreateTriggerInvalidatesTheInstanceCache(t *testing.T) {
 	}
 }
 
-// TestDeleteTriggerInvalidatesTheInstanceCache is AC17's delete half.
 func TestDeleteTriggerInvalidatesTheInstanceCache(t *testing.T) {
 	h, pool := liveTriggerHarness(t)
 
@@ -804,8 +704,7 @@ func TestDeleteTriggerInvalidatesTheInstanceCache(t *testing.T) {
 	reply := "cache-delete-reply"
 	id := createTriggerVia(t, h, pool, ctx, phrase, reply, 100, pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED)
 
-	// Warm the cache with the trigger present, confirming it actually fires
-	// first — otherwise a later "didn't fire" observation would prove nothing.
+	// Warm with the trigger present: otherwise a later "didn't fire" proves nothing.
 	warmResp, err := h.Trigger.TryTrigger(ctx, pb.TryTriggerReq_builder{
 		Instance: triggerInstanceFor(origin),
 		Phrase:   &phrase,

@@ -5,35 +5,8 @@ import (
 	"testing"
 )
 
-// ── Assumed symbols from pkg/repost/urlnorm (spec §3.3) ──────────────────────
-//
-// Recorded because these are the symbols the tests below depend on, so a change
-// to any of them is a deliberate decision rather than a surprise.
-//
-//	var ErrExcluded = errors.New("url is excluded from repost indexing")
-//	var ErrUnsupported = errors.New("url is not an absolute http or https url")
-//
-//	type Result struct {
-//		Source       string
-//		ID           string
-//		SourceKey    string
-//		CanonicalURL string
-//	}
-//
-//	type Canonicaliser struct { /* unexported */ }
-//
-//	func New(extraExcludedHosts []string) *Canonicaliser
-//	func (c *Canonicaliser) Canonicalise(rawURL string) (Result, error)
-//	func Canonicalise(rawURL string) (Result, error)
-//	func ExtractURLs(text string) []string
-
-// ── Stage 1: generic normalisation ───────────────────────────────────────────
-
-// TestCanonicaliseGenericNormalisation covers stage 1 in isolation, using
-// fallback (unmatched) hosts so only the generic rules are in play: lowercase
-// scheme/host, drop "www.", drop the fragment, drop the default port, drop a
-// trailing slash from a non-empty path, drop an empty query, strip tracking
-// parameters, and sort surviving parameters by key then value.
+// TestCanonicaliseGenericNormalisation uses fallback hosts so only the generic
+// stage-1 rules are in play.
 func TestCanonicaliseGenericNormalisation(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -127,8 +100,6 @@ func TestCanonicaliseGenericNormalisation(t *testing.T) {
 			wantID:     "https://example.com/foo",
 		},
 		{
-			// AC5 names utm_*, si, igshid, fbclid, gclid and ref. Every one of
-			// those is pure attribution and is stripped on ANY host.
 			name: "every acceptance-criterion tracking parameter is stripped on an unknown host",
 			input: "https://example.com/foo?utm_source=a&utm_medium=b&utm_campaign=c&si=1&igshid=2&" +
 				"fbclid=3&gclid=4&ref=5&ref_src=6&keep=yes",
@@ -137,12 +108,7 @@ func TestCanonicaliseGenericNormalisation(t *testing.T) {
 			wantID:     "https://example.com/foo?keep=yes",
 		},
 		{
-			// The other half of the split: on a host with no per-host rule, `s`
-			// and `t` and friends are IDENTITY, not tracking, so they survive.
-			// Stripping them here is what made two different forum threads or
-			// two different search results collapse onto one source_key — a
-			// false positive on unrelated content, which is the exact failure
-			// class this redesign exists to remove.
+			// On a host with no rule, `s` and `t` are identity, not tracking.
 			name:       "ambiguous parameters survive on a host with no rule",
 			input:      "https://forum.example.com/viewtopic.php?t=100&s=cats&feature=x",
 			wantURL:    "https://forum.example.com/viewtopic.php?feature=x&s=cats&t=100",
@@ -150,9 +116,8 @@ func TestCanonicaliseGenericNormalisation(t *testing.T) {
 			wantID:     "https://forum.example.com/viewtopic.php?feature=x&s=cats&t=100",
 		},
 		{
-			// Discord CDN links are signed and the signature EXPIRES, so the
-			// same image posted twice arrives under two different query
-			// strings. Left in, the row could never match itself.
+			// The signature expires, so the same image posted twice arrives
+			// under two different query strings.
 			name:       "discord cdn signed parameters are stripped",
 			input:      "https://cdn.discordapp.com/attachments/1/2/a.png?ex=abc&is=def&hm=0123",
 			wantURL:    "https://cdn.discordapp.com/attachments/1/2/a.png",
@@ -183,11 +148,6 @@ func TestCanonicaliseGenericNormalisation(t *testing.T) {
 	}
 }
 
-// ── Acceptance criterion 3: YouTube variants converge ────────────────────────
-
-// TestYouTubeVariantsShareOneSourceKey is AC3: youtu.be/X, youtube.com/watch?v=X,
-// youtube.com/shorts/X and m.youtube.com/watch?v=X&si=... must all normalise to
-// the same source key.
 func TestYouTubeVariantsShareOneSourceKey(t *testing.T) {
 	const videoID = "dQw4w9WgXcQ"
 	const wantKey = "youtube:" + videoID
@@ -224,10 +184,8 @@ func TestYouTubeVariantsShareOneSourceKey(t *testing.T) {
 	}
 }
 
-// TestYouTubeUnmatchedPathFallsBackRatherThanGuessing covers the "wrong id is a
-// false positive" rule: a youtube.com URL whose path is not one of the
-// recognised shapes must not be forced into the youtube extractor with a
-// fabricated id. It must fall back to the generic "url" source.
+// TestYouTubeUnmatchedPathFallsBackRatherThanGuessing: an unrecognised path on
+// a known host must fall back to "url", never mint an id.
 func TestYouTubeUnmatchedPathFallsBackRatherThanGuessing(t *testing.T) {
 	input := "https://youtube.com/channel/UCabcdefghijklmnopqrstuv"
 
@@ -240,12 +198,6 @@ func TestYouTubeUnmatchedPathFallsBackRatherThanGuessing(t *testing.T) {
 	}
 }
 
-// ── Acceptance criterion 4: Twitter/X and its proxy front-ends converge ──────
-
-// TestTwitterVariantsShareOneSourceKey is AC4: twitter.com, x.com, fxtwitter.com
-// and vxtwitter.com normalise to the same status key. twittpr.com and the
-// nitter.* wildcard are exercised too, since the design explicitly calls out
-// proxy front-ends as the case that matters in practice.
 func TestTwitterVariantsShareOneSourceKey(t *testing.T) {
 	const statusID = "1234567890123456789"
 	const wantKey = "twitter:" + statusID
@@ -276,11 +228,6 @@ func TestTwitterVariantsShareOneSourceKey(t *testing.T) {
 	}
 }
 
-// ── Acceptance criterion 5: tracking parameters ──────────────────────────────
-
-// TestTrackingParametersDoNotSurviveOnRealSites is AC5 exercised against real
-// per-host rules rather than the generic fallback: si must fall away before a
-// YouTube link's v= is read, and utm_* before a Reddit permalink's id is read.
 func TestTrackingParametersDoNotSurviveOnRealSites(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -317,11 +264,6 @@ func TestTrackingParametersDoNotSurviveOnRealSites(t *testing.T) {
 	}
 }
 
-// ── Acceptance criterion 6: exclusions ───────────────────────────────────────
-
-// TestPlatformMessageDeepLinksAreExcluded is half of AC6: quoting a Discord
-// message must not be indexable as a repost, across the documented host
-// aliases, but only when the path is actually a message deep link.
 func TestPlatformMessageDeepLinksAreExcluded(t *testing.T) {
 	excluded := []string{
 		"https://discord.com/channels/111/222/333",
@@ -341,9 +283,8 @@ func TestPlatformMessageDeepLinksAreExcluded(t *testing.T) {
 	}
 }
 
-// TestDiscordNonChannelsPathIsNotExcluded proves the exclusion above is scoped
-// to the message deep-link path and is not "every discord.com URL": an invite
-// link is ordinary content and must still be indexable.
+// TestDiscordNonChannelsPathIsNotExcluded: the exclusion is scoped to the
+// deep-link path, not to every discord.com URL.
 func TestDiscordNonChannelsPathIsNotExcluded(t *testing.T) {
 	got, err := Canonicalise("https://discord.com/invite/abcdefg")
 	if err != nil {
@@ -354,8 +295,6 @@ func TestDiscordNonChannelsPathIsNotExcluded(t *testing.T) {
 	}
 }
 
-// TestMatrixDeepLinksAreExcluded is the other half of AC6 for the Matrix
-// platform's own deep-link host.
 func TestMatrixDeepLinksAreExcluded(t *testing.T) {
 	_, err := Canonicalise("https://matrix.to/#/!roomid:example.org/$eventid")
 	if !errors.Is(err, ErrExcluded) {
@@ -363,9 +302,8 @@ func TestMatrixDeepLinksAreExcluded(t *testing.T) {
 	}
 }
 
-// TestExtraExcludedHostsAndSubdomainsAreExcluded covers New's own contract: the
-// bot's own web URL (an operator-supplied host) is excluded, including any
-// subdomain of it, case-insensitively.
+// TestExtraExcludedHostsAndSubdomainsAreExcluded: an operator-supplied host is
+// excluded case-insensitively, along with its subdomains.
 func TestExtraExcludedHostsAndSubdomainsAreExcluded(t *testing.T) {
 	c := New([]string{"MyBot.Example"})
 
@@ -384,25 +322,16 @@ func TestExtraExcludedHostsAndSubdomainsAreExcluded(t *testing.T) {
 		})
 	}
 
-	// A host that merely shares a suffix substring, but is not the excluded
-	// host or one of its subdomains, must not be excluded.
+	// A mere suffix substring is not a subdomain.
 	if _, err := c.Canonicalise("https://notmybot.example/x"); errors.Is(err, ErrExcluded) {
 		t.Error("a host that is not mybot.example or a subdomain of it was excluded")
 	}
 
-	// The package-level Canonicalise (no extra exclusions configured) must not
-	// exclude a host that is only excluded via an operator-supplied list.
 	if _, err := Canonicalise("https://mybot.example/invite"); errors.Is(err, ErrExcluded) {
 		t.Error("the package-level Canonicalise excluded a host that is only excluded via New's argument")
 	}
 }
 
-// ── ErrUnsupported ────────────────────────────────────────────────────────────
-
-// TestUnsupportedURLs covers every documented ErrUnsupported case: non-http(s)
-// scheme, a relative URL, an empty host, and userinfo in the URL — the last of
-// which is a request-smuggling-adjacent shape that must never be silently
-// accepted.
 func TestUnsupportedURLs(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -425,8 +354,6 @@ func TestUnsupportedURLs(t *testing.T) {
 		})
 	}
 }
-
-// ── Per-host rule table: Reddit ──────────────────────────────────────────────
 
 func TestRedditVariants(t *testing.T) {
 	tests := []struct {
@@ -454,8 +381,6 @@ func TestRedditVariants(t *testing.T) {
 		})
 	}
 }
-
-// ── Per-host rule table: Twitch, TikTok, Instagram, Bluesky ──────────────────
 
 func TestTwitchVariants(t *testing.T) {
 	tests := []struct {
@@ -527,8 +452,7 @@ func TestInstagramVariants(t *testing.T) {
 	}
 }
 
-// TestBlueskyExtractsHandleAndRkey covers the one source whose id is a compound
-// value rather than a single token.
+// TestBlueskyExtractsHandleAndRkey: the one source whose id is compound.
 func TestBlueskyExtractsHandleAndRkey(t *testing.T) {
 	input := "https://bsky.app/profile/alice.bsky.social/post/3jzfnovewqk2h"
 	want := "bluesky:alice.bsky.social/3jzfnovewqk2h"
@@ -542,10 +466,6 @@ func TestBlueskyExtractsHandleAndRkey(t *testing.T) {
 	}
 }
 
-// ── Fallback ──────────────────────────────────────────────────────────────────
-
-// TestUnrecognisedHostFallsBackToURL covers the "url" fallback source for any
-// host with no per-host rule: the id is the fully normalised URL itself.
 func TestUnrecognisedHostFallsBackToURL(t *testing.T) {
 	input := "https://some-blog.example/2026/08/23/a-post?utm_source=twitter&keep=me"
 	wantURL := "https://some-blog.example/2026/08/23/a-post?keep=me"
@@ -568,11 +488,6 @@ func TestUnrecognisedHostFallsBackToURL(t *testing.T) {
 	}
 }
 
-// ── ExtractURLs ───────────────────────────────────────────────────────────────
-
-// TestExtractURLsFindsEveryURLInOrderDeduplicated covers the base case: several
-// distinct URLs are returned in appearance order, and an exact duplicate is not
-// repeated.
 func TestExtractURLsFindsEveryURLInOrderDeduplicated(t *testing.T) {
 	text := "check this out https://example.com/a and also http://example.org/b, " +
 		"oh and https://example.com/a again"
@@ -590,9 +505,6 @@ func TestExtractURLsFindsEveryURLInOrderDeduplicated(t *testing.T) {
 	}
 }
 
-// TestExtractURLsStripsTrailingSentencePunctuation covers every documented
-// trailing character, including unbalanced closing brackets/quotes that were
-// not opened in the URL itself.
 func TestExtractURLsStripsTrailingSentencePunctuation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -625,10 +537,8 @@ func TestExtractURLsStripsTrailingSentencePunctuation(t *testing.T) {
 	}
 }
 
-// TestExtractURLsHandlesDiscordSuppressedEmbedForm: wrapping a link in angle
-// brackets is Discord's own syntax for "post this link but do not embed it".
-// The URL underneath is still a real candidate for repost checking and the
-// brackets are not part of it.
+// TestExtractURLsHandlesDiscordSuppressedEmbedForm: <...> is Discord's
+// suppress-embed syntax, and the brackets are not part of the URL.
 func TestExtractURLsHandlesDiscordSuppressedEmbedForm(t *testing.T) {
 	text := "no embed please <https://example.com/a>"
 
@@ -638,9 +548,6 @@ func TestExtractURLsHandlesDiscordSuppressedEmbedForm(t *testing.T) {
 	}
 }
 
-// TestExtractURLsHandlesSpoilerWrapping: a spoilered link must still be
-// checkable — WANHA should not be blind to a repost just because the poster
-// marked it as a spoiler.
 func TestExtractURLsHandlesSpoilerWrapping(t *testing.T) {
 	text := "||https://example.com/a||"
 
@@ -650,10 +557,6 @@ func TestExtractURLsHandlesSpoilerWrapping(t *testing.T) {
 	}
 }
 
-// TestExtractURLsReturnsNilForNoURLs: repostCandidates depends on being able to
-// tell "nothing to check" apart from "one candidate", so an empty result must
-// genuinely be empty rather than a slice of length zero built some other way
-// that still evaluates truthy in an unexpected place. len() == 0 covers both.
 func TestExtractURLsReturnsNilForNoURLs(t *testing.T) {
 	got := ExtractURLs("just some ordinary chat, nothing to see here")
 	if len(got) != 0 {
@@ -661,15 +564,8 @@ func TestExtractURLsReturnsNilForNoURLs(t *testing.T) {
 	}
 }
 
-// ── The known-host / unknown-host split in tracking-param stripping ──────────
-
-// TestAmbiguousParametersAreStrippedOnlyOnKnownHosts pins the split that keeps
-// AC5 and AC9 from contradicting each other.
-//
-// `s` and `t` are tracking noise on the social hosts and load-bearing identity
-// everywhere else. Stripping them everywhere satisfies AC5's letter but
-// reintroduces AC9's false positives; stripping them nowhere leaves YouTube
-// timestamps defeating a match. The rule table decides which a host is.
+// TestAmbiguousParametersAreStrippedOnlyOnKnownHosts: `s` and `t` are tracking
+// noise on the social hosts and identity everywhere else.
 func TestAmbiguousParametersAreStrippedOnlyOnKnownHosts(t *testing.T) {
 	t.Run("distinct forum threads stay distinct", func(t *testing.T) {
 		first, err := Canonicalise("https://forum.example.com/viewtopic.php?t=100")
@@ -716,11 +612,8 @@ func TestAmbiguousParametersAreStrippedOnlyOnKnownHosts(t *testing.T) {
 	})
 }
 
-// TestKnownHostPathsThatDoNotMatchTheirRuleDoNotMintAnID guards the wrong-id
-// class directly: a marker word appearing at the wrong depth in a path must not
-// be mistaken for the marker the rule is looking for. `r/s` is a real
-// subreddit, so an unanchored search for "s" turned an arbitrary wiki page into
-// a post id.
+// TestKnownHostPathsThatDoNotMatchTheirRuleDoNotMintAnID: a marker word at the
+// wrong depth must not count. `r/s` is a real subreddit.
 func TestKnownHostPathsThatDoNotMatchTheirRuleDoNotMintAnID(t *testing.T) {
 	tests := []struct {
 		name  string

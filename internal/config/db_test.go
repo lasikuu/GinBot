@@ -6,15 +6,8 @@ import (
 	"testing"
 )
 
-// Tests for internal/config/db.go. TestMain and unsetEnv are declared in
-// repost_test.go and are reused here rather than redeclared.
-
-// ── String accessors: default when unset, verbatim when set ─────────────────
-
-// dbStringCase names one (accessor, env var, default) triple, so the table
-// cannot silently stop checking that an accessor reads the variable it is
-// documented to — the same construction intThresholdCases uses in
-// repost_test.go.
+// One (accessor, env var, default) triple, so the table cannot stop checking
+// that an accessor reads the variable it documents.
 type dbStringCase struct {
 	name     string
 	accessor func() string
@@ -43,10 +36,7 @@ func TestDBStringAccessorsDefaultWhenUnset(t *testing.T) {
 	}
 }
 
-// TestDBStringAccessorsDefaultOnAnEmptyValue: these accessors treat "" as
-// "not configured" rather than as a deliberate empty value, which matters
-// because an empty database name or username produces a connection URI that
-// fails much later, at InitDB, with a far less obvious message.
+// "" means "not configured"; an empty name would fail much later at InitDB.
 func TestDBStringAccessorsDefaultOnAnEmptyValue(t *testing.T) {
 	for _, tc := range dbStringCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,13 +62,7 @@ func TestDBStringAccessorsReadAnOverride(t *testing.T) {
 	}
 }
 
-// ── dbPort ──────────────────────────────────────────────────────────────────
-
-// TestDBPort covers every branch of the ParseInt: unset, valid, empty,
-// unparseable, and — the one worth pinning — a value that parses as an
-// integer but does not fit in int32. ParseInt is given a bitSize of 32, so
-// that case is a parse ERROR rather than a silent truncation to a wrong port,
-// and the accessor must fall back rather than dial port -1.
+// A bitSize of 32 makes an out-of-range value an error, not a truncation.
 func TestDBPort(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -109,15 +93,7 @@ func TestDBPort(t *testing.T) {
 	}
 }
 
-// ── dbMigrationsEnabled ─────────────────────────────────────────────────────
-
-// TestDBMigrationsEnabled pins the surprising part of the contract: the check
-// is `!= "false"`, so ONLY the exact lowercase literal disables migrations.
-// "FALSE", "0" and "no" all leave them ON. That is a boot-time behaviour a
-// deployment can get wrong silently — the server runs goose.Up against a
-// database the operator believed it would not touch — so the exact-match rule
-// is asserted rather than left to be inferred from the comment on the
-// accessor.
+// `!= "false"`, so "FALSE", "0" and "no" all leave goose.Up running.
 func TestDBMigrationsEnabled(t *testing.T) {
 	tests := []struct {
 		name  string

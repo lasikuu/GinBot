@@ -13,40 +13,18 @@ import (
 	"github.com/lasikuu/GinBot/pkg/repost"
 )
 
-// This file covers confidence tiering (docs/plans/wanha.md W9) and, most
-// importantly, acceptance criterion 9: an unrelated image must NOT be flagged
-// at all. The previous implementation's whole failure mode was false
-// positives — roughly 8 in 10 by the author's own estimate — so this is the
-// highest-value test in the phase.
-//
-// Every fixture is generated in-process (gradients, shapes, JPEG re-encoding,
-// a manual nearest-neighbour resize); nothing binary is committed.
-//
-// Note on scope, stated honestly rather than tested around: pHash — like
-// every global perceptual hash — fails on crops by design (docs/plans/wanha.md
-// W11, ADR-0005's documented downside). No crop fixture is exercised here
-// because a "must not match" assertion on a crop would be trivially true for
-// the wrong reason, and a "must match" assertion would contradict the design.
-// Tiled crop tolerance is explicitly out of scope for this phase.
+// Crops are out of scope: pHash, like every global perceptual hash, does not
+// survive them by design (ADR-0005).
 
-// distinctImage renders visually distinct content per variant: a different
-// gradient axis, colour scheme and shape layout each time, so that pHash's DCT
-// sees genuinely different low-frequency structure rather than near-identical
-// images that merely differ in a noise seed. That distinction matters here
-// specifically: two images sharing the same gradient formula would be a weak,
-// unrepresentative test of "unrelated content must not match".
+// distinctImage gives each variant a different gradient axis, palette and
+// shape layout, so pHash's DCT sees genuinely different low-frequency
+// structure rather than one image under a different noise seed.
 func distinctImage(width, height, variant int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	// Seeded per variant, so the image is reproducible run to run but the
-	// noise pattern differs between variants. The noise is not cosmetic: an
-	// earlier version of this fixture picked R/G/B weights that happened to
-	// cancel out almost exactly in ITU-R luma (0.299R + 0.587G + 0.114B), so
-	// the "horizontal gradient" variant scored well under the entropy floor
-	// and PerceptualHash rejected it with ErrLowEntropy — a fixture defect,
-	// not a guard defect. Mixing genuine per-pixel noise into every channel
-	// makes the luma histogram wide regardless of which channel weights a
-	// given gradient formula happens to pick.
+	// Per-pixel noise in every channel keeps the ITU-R luma histogram wide
+	// whichever channel weights a variant's gradient picks, so no variant
+	// falls under the entropy floor.
 	rng := rand.New(rand.NewPCG(uint64(variant)*7919+1, uint64(variant)*104729+7))
 
 	for y := range height {
@@ -78,9 +56,6 @@ func distinctImage(width, height, variant int) *image.RGBA {
 		}
 	}
 
-	// A couple of solid blocks per variant, placed differently so the DCT's
-	// low-frequency structure genuinely differs between variants rather than
-	// only the fine texture.
 	blockX, blockY := (width/6)*(1+variant%3), (height/6)*(1+(variant+1)%3)
 	blockW, blockH := width/4, height/4
 	blockColor := color.RGBA{R: uint8(40 * variant % 255), G: uint8(80 * variant % 255), B: uint8(160 * variant % 255), A: 255}
@@ -93,9 +68,6 @@ func distinctImage(width, height, variant int) *image.RGBA {
 	return img
 }
 
-// encodeJPEG re-encodes img as a JPEG at the given quality, simulating the
-// recompression a repost commonly undergoes (re-uploaded through a platform
-// that transcodes, saved and re-shared, and so on).
 func encodeJPEG(t *testing.T, img image.Image, quality int) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -105,18 +77,8 @@ func encodeJPEG(t *testing.T, img image.Image, quality int) []byte {
 	return buf.Bytes()
 }
 
-// resizeBox produces a genuinely rescaled copy of img using box-filter
-// (area-average) downsampling, simulating a re-upload at a different
-// resolution.
-//
-// Not nearest-neighbour: nearest-neighbour resampling of a noisy image
-// aliases badly — it literally throws most source pixels away — which
-// manufactures a harsher, less realistic distortion than any real image
-// editor or platform re-encoder produces when it shrinks an image (almost
-// all of them average or otherwise low-pass filter before subsampling,
-// precisely to avoid this). A box filter is the simplest resize that does
-// the same, and confirms the tier assertion is testing recompression
-// robustness rather than an artifact of a specific, unrealistic downscaler.
+// resizeBox downsamples by area-average. Not nearest-neighbour: that aliases
+// far harder than any real resizer, which low-pass filters before subsampling.
 func resizeBox(img *image.RGBA, newWidth, newHeight int) *image.RGBA {
 	bounds := img.Bounds()
 	srcW, srcH := bounds.Dx(), bounds.Dy()
@@ -154,8 +116,7 @@ func resizeBox(img *image.RGBA, newWidth, newHeight int) *image.RGBA {
 	return out
 }
 
-// watermark overlays a solid, semi-opaque block in one corner, simulating a
-// heavier edit: a watermark, logo or caption bar burned into a re-share.
+// watermark burns a solid block into one corner: the heavier-edit case.
 func watermark(img *image.RGBA) *image.RGBA {
 	bounds := img.Bounds()
 	out := image.NewRGBA(bounds)
@@ -177,9 +138,6 @@ func watermark(img *image.RGBA) *image.RGBA {
 	return out
 }
 
-// hashOrFatal is a small helper so every fixture case reports a clear failure
-// location if the guards unexpectedly reject a fixture that is supposed to
-// pass them.
 func hashOrFatal(t *testing.T, hasher *Hasher, content []byte, mimeType string) uint64 {
 	t.Helper()
 	got, err := hasher.PerceptualHash(context.Background(), content, mimeType)
@@ -188,8 +146,6 @@ func hashOrFatal(t *testing.T, hasher *Hasher, content []byte, mimeType string) 
 	}
 	return got
 }
-
-// ── Acceptance criterion 8: recompression and rescaling grade IDENTICAL/HIGH ─
 
 func TestRecompressedImageGradesIdenticalOrHigh(t *testing.T) {
 	guards := DefaultGuards()
@@ -232,14 +188,8 @@ func TestRescaledImageGradesIdenticalOrHigh(t *testing.T) {
 	}
 }
 
-// TestWatermarkedImageIsStillCloserThanAnUnrelatedImage covers the
-// "heavier edit" case in the tiering regression net. It intentionally does not
-// pin an exact tier for the watermark, because the precise distance a given
-// watermark produces depends on its size and placement, which is a test
-// fixture detail, not a specified contract. What IS specified, and asserted
-// here, is the relative property the whole tiering scheme depends on: a
-// partially-edited repost must read as more similar to its original than a
-// wholly unrelated image does.
+// TestWatermarkedImageIsStillCloserThanAnUnrelatedImage asserts only the
+// relative property; the exact distance depends on the fixture's mark size.
 func TestWatermarkedImageIsStillCloserThanAnUnrelatedImage(t *testing.T) {
 	guards := DefaultGuards()
 	hasher := NewHasher(guards, "")
@@ -265,17 +215,8 @@ func TestWatermarkedImageIsStillCloserThanAnUnrelatedImage(t *testing.T) {
 	}
 }
 
-// ── Acceptance criterion 9: an unrelated image is NOT flagged ────────────────
-//
-// This is the single most important test in the phase. The old implementation
-// failed here roughly 8 times in 10.
-
-// TestUnrelatedImagesAreNotFlagged builds several visually distinct, high
-// entropy, well-above-minimum-size images and asserts every pairwise distance
-// exceeds MaxDistance — the exact threshold the pigeonhole index and the
-// confidence tiers are built around. Every measured distance is logged so the
-// margin against the threshold is on record for the next time these
-// thresholds are tuned.
+// TestUnrelatedImagesAreNotFlagged asserts every pairwise distance between
+// distinct fixtures exceeds MaxDistance, and logs the margins for tuning.
 func TestUnrelatedImagesAreNotFlagged(t *testing.T) {
 	guards := DefaultGuards()
 	hasher := NewHasher(guards, "")

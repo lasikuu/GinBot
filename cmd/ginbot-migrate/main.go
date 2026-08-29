@@ -1,6 +1,5 @@
 // Command ginbot-migrate is the one-shot TohsakaBot -> GinBot data migration.
-// It reads a mysqldump .sql file (not a live database) and writes into GinBot's
-// Postgres. See docs/plans/migration.md.
+// It reads a mysqldump .sql file, not a live database. See docs/plans/migration.md.
 package main
 
 import (
@@ -150,16 +149,12 @@ func run(ctx context.Context, pool *pgxpool.Pool, source, dataDir string, dryRun
 	return tx.Commit(ctx)
 }
 
-// ---------------------------------------------------------------- dump parser
-
 type value struct {
 	s    string
 	null bool
 }
 
-// parseDump extracts every INSERT INTO ... VALUES tuple from a mysqldump file.
-// It fails on anything it does not fully understand rather than guessing, so a
-// row can never be silently mangled or dropped.
+// parseDump errors on anything it does not fully understand, never guessing.
 func parseDump(path string) (map[string][][]value, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -339,8 +334,6 @@ func at(src string, i int) string {
 	return fmt.Sprintf("offset %d (line %d)", i, strings.Count(src[:min(i, len(src))], "\n")+1)
 }
 
-// ---------------------------------------------------------------- servers.json
-
 type server struct {
 	ID               int64 `json:"id"`
 	DefaultChannel   int64 `json:"default_channel"`
@@ -360,8 +353,6 @@ func loadServers(path string) ([]server, error) {
 	}
 	return doc.Servers, nil
 }
-
-// ---------------------------------------------------------------- migrator
 
 type migrator struct {
 	ctx     context.Context
@@ -483,8 +474,6 @@ func (m *migrator) rows(table string) [][]value {
 	return m.tables[table]
 }
 
-// ---------------------------------------------------------------- pass 1
-
 func (m *migrator) passInstances() error {
 	r := m.report("1 instances")
 
@@ -548,8 +537,6 @@ func (m *migrator) upsertInstance(uid, defaultChannel string) (int64, error) {
 	return id, err
 }
 
-// ---------------------------------------------------------------- pass 2
-
 func (m *migrator) passUsers() error {
 	r := m.report("2 users")
 
@@ -608,8 +595,8 @@ func (m *migrator) passUsers() error {
 	return nil
 }
 
-// clearanceFor maps the legacy 0-1000 permission level onto the clearance enum,
-// banding down. The second result reports whether the level was an exact band.
+// clearanceFor bands a legacy 0-1000 level down; the second result reports
+// whether it was an exact band.
 func clearanceFor(level int) (int32, bool) {
 	bands := []struct {
 		level     int
@@ -654,8 +641,6 @@ func parseBirthday(v value) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// ---------------------------------------------------------------- pass 3
-
 func (m *migrator) passPlatformUsers() error {
 	r := m.report("3 platform identities")
 
@@ -698,13 +683,10 @@ func (m *migrator) passPlatformUsers() error {
 	return nil
 }
 
-// ---------------------------------------------------------------- pass 4
-
 func (m *migrator) passDestinations() error {
 	r := m.report("4 destinations")
 
-	// highlights pairs channel_id with server_id, which is the only place the
-	// old schema records which guild a channel belongs to.
+	// highlights is the only place the old schema records a channel's guild.
 	channelGuild := map[string]string{}
 	for _, s := range m.servers {
 		guild := strconv.FormatInt(s.ID, 10)
@@ -783,8 +765,6 @@ func (m *migrator) upsertDestination(instanceID int64, uid string) (int64, error
 	return id, err
 }
 
-// ---------------------------------------------------------------- pass 5
-
 func (m *migrator) passFiles() error {
 	r := m.report("5 files")
 
@@ -857,8 +837,6 @@ func (m *migrator) passFiles() error {
 	return nil
 }
 
-// ---------------------------------------------------------------- pass 6
-
 func (m *migrator) passTriggers() error {
 	r := m.report("6 triggers")
 
@@ -901,8 +879,7 @@ func (m *migrator) passTriggers() error {
 			}
 		}
 		if reply == nil && fileID == nil {
-			// Violates chk_reply_or_file. Deliberately NOT recorded in
-			// migration_id_map, so a later run picks it up once the blob exists.
+			// Not recorded in migration_id_map, so a later run retries it.
 			r.skip("no reply and no available file")
 			continue
 		}
@@ -944,8 +921,7 @@ func (m *migrator) passTriggers() error {
 	return nil
 }
 
-// legacyTriggerMode maps the old 0=exact/1=any/2=regex onto the new enum, whose
-// values are the same order shifted by one.
+// legacyTriggerMode maps the old 0=exact/1=any/2=regex onto the new enum.
 func legacyTriggerMode(mode int) pb.TriggerMode {
 	switch mode {
 	case 0:
@@ -957,8 +933,7 @@ func legacyTriggerMode(mode int) pb.TriggerMode {
 	}
 }
 
-// stripRegexDelimiters unwraps a Ruby /pattern/flags literal. BuildPattern
-// already applies (?i), so the only flag the old data carries is redundant.
+// Unwraps a Ruby /pattern/flags literal; BuildPattern already applies (?i).
 func stripRegexDelimiters(phrase string) string {
 	if len(phrase) < 2 || phrase[0] != '/' {
 		return phrase
@@ -973,12 +948,7 @@ func stripRegexDelimiters(phrase string) string {
 	return phrase[1:end]
 }
 
-// ---------------------------------------------------------------- pass 7
-
-// passTriggerStats seeds action_record so the leaderboard totals survive.
-// ListTriggerStats aggregates with COUNT(*), so one row per counted event is
-// required; a single summary row would count as 1. The history is seeded, not
-// reconstructed: every row shares the trigger's last_triggered timestamp.
+// ListTriggerStats uses COUNT(*), so one action_record row per event is needed.
 func (m *migrator) passTriggerStats() error {
 	r := m.report("7 trigger stats")
 
@@ -1044,8 +1014,6 @@ func (m *migrator) passTriggerStats() error {
 	r.reasons[fmt.Sprintf("action_record rows seeded: %d", len(recs))]++
 	return nil
 }
-
-// ---------------------------------------------------------------- pass 8
 
 func (m *migrator) passReminders() error {
 	r := m.report("8 reminders")
@@ -1145,10 +1113,7 @@ func (m *migrator) legacyUserTimezone(legacyUserID string) string {
 	return ""
 }
 
-// ---------------------------------------------------------------- pass 9
-
-// passStaging copies the deferred features verbatim so the data survives
-// without inventing schema for features that do not exist yet.
+// passStaging copies deferred features verbatim, inventing no schema for them.
 func (m *migrator) passStaging() error {
 	specs := []struct {
 		legacy, target string
@@ -1167,7 +1132,6 @@ func (m *migrator) passStaging() error {
 				"created_at", "updated_at"},
 			map[int]bool{7: true}},
 	}
-	// trophies keeps its id first like the others.
 	specs[2].columns = append([]string{"id"}, specs[2].columns...)
 
 	for _, spec := range specs {
@@ -1209,8 +1173,6 @@ func (m *migrator) passStaging() error {
 	}
 	return nil
 }
-
-// ---------------------------------------------------------------- helpers
 
 func nullable(v value) *string {
 	if v.null || v.s == "" {

@@ -1,18 +1,5 @@
 //go:build integration
 
-// Integration tests for the trigger media path: fetchAndStoreFile and
-// GetFile's success path, which had zero coverage. The media path is only
-// reachable through a CDN host allow-list, so these tests build a
-// TriggerServer over newTriggerServer(fetcher, blobs), pointing the fetcher at
-// an httptest.Server instead of the real, allow-listed CDN hosts.
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/grpc/server/...
-//
-// Reuses requireDatabase, uniqueUID, registeredCaller (from
-// reminder_integration_test.go / trigger_integration_test.go), withOriginResolver,
-// triggerCtx, cleanupInstanceRows, cleanupTriggerRow — none are redeclared
-// here.
 package server
 
 import (
@@ -32,24 +19,15 @@ import (
 	"github.com/lasikuu/GinBot/pkg/storage"
 )
 
-// pngSignature is the 8-byte PNG magic header. http.DetectContentType, which
-// storage.Fetcher sniffs with, only inspects this prefix to decide
-// "image/png" — the bytes after it need not form a valid image, so a per-test
-// payload can be appended to give otherwise-identical tests distinct content
-// hashes.
+// pngSignature is the PNG magic header. http.DetectContentType, which storage.Fetcher
+// sniffs with, inspects only this prefix, so a payload can be appended to vary the hash.
 var pngSignature = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
 
-// pngContent builds bytes that sniff as image/png, with payload appended so
-// the caller controls the content hash.
 func pngContent(payload string) []byte {
 	return append(append([]byte{}, pngSignature...), []byte(payload)...)
 }
 
-// mediaServer starts an httptest TLS server (the fetcher's allow-list check
-// requires https) serving the given bodies at their exact paths, and returns
-// the server plus the hostname to allow-list. A path with no body is a 404,
-// which the fetcher maps to a generic error, not one of the three refusal
-// codes under test elsewhere — nothing here relies on that path.
+// mediaServer serves the given bodies over httptest TLS; the allow-list requires https.
 func mediaServer(t *testing.T, bodies map[string][]byte) (server *httptest.Server, host string) {
 	t.Helper()
 
@@ -73,9 +51,7 @@ func mediaServer(t *testing.T, bodies map[string][]byte) (server *httptest.Serve
 	return server, parsed.Hostname()
 }
 
-// liveTriggerMediaHarness is liveTriggerHarness plus a TriggerServer wired to
-// fetcher and blobs instead of the real CDN allow-list and the package-level
-// storage.
+// liveTriggerMediaHarness swaps in fetcher and blobs for the real CDN allow-list.
 func liveTriggerMediaHarness(t *testing.T, fetcher *storage.Fetcher, blobs storage.Storage) (*harness, *pgxpool.Pool) {
 	t.Helper()
 	pool := requireDatabase(t)
@@ -86,8 +62,6 @@ func liveTriggerMediaHarness(t *testing.T, fetcher *storage.Fetcher, blobs stora
 	), pool
 }
 
-// newMediaFetcherAndBlobs builds a Fetcher restricted to server's own host and
-// a Local blob store rooted at a fresh temp directory.
 func newMediaFetcherAndBlobs(t *testing.T, server *httptest.Server, host string) (*storage.Fetcher, storage.Storage) {
 	t.Helper()
 
@@ -101,12 +75,8 @@ func newMediaFetcherAndBlobs(t *testing.T, server *httptest.Server, host string)
 	return fetcher, blobs
 }
 
-// deferFileCleanup schedules deletion of a file row, registered BEFORE any
-// trigger that will reference it is created. t.Cleanup is LIFO, so this runs
-// LAST — after every referencing trigger's own cleanup (registered later) has
-// already deleted the referencing row — which fk_trigger_file (NO ACTION)
-// would otherwise reject. fileID is read through the pointer at cleanup time,
-// since the id is not known until after the trigger referencing it exists.
+// deferFileCleanup runs LAST (registered before any referencing trigger), because
+// fk_trigger_file is NO ACTION; fileID is read through the pointer at cleanup time.
 func deferFileCleanup(t *testing.T, pool *pgxpool.Pool, fileID *string) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -119,10 +89,6 @@ func deferFileCleanup(t *testing.T, pool *pgxpool.Pool, fileID *string) {
 	})
 }
 
-// createTriggerWithFileVia creates a trigger from a file_url through the
-// public CreateTrigger RPC, then reads back its TriggerFile through
-// GetTrigger — proving CreateTrigger actually populated one — and schedules
-// cleanup of the trigger row.
 func createTriggerWithFileVia(t *testing.T, h *harness, pool *pgxpool.Pool, ctx context.Context, phrase, fileURL string, chance int32) (triggerID string, file *pb.TriggerFile) {
 	t.Helper()
 
@@ -153,9 +119,6 @@ func createTriggerWithFileVia(t *testing.T, h *harness, pool *pgxpool.Pool, ctx 
 	return triggerID, file
 }
 
-// TestCreateTriggerFetchesStoresAndReturnsFileMetadata is gap 7: the bytes
-// served by the test server are fetched and stored, and GetTrigger returns a
-// populated TriggerFile with the correct mime_type and byte_size.
 func TestCreateTriggerFetchesStoresAndReturnsFileMetadata(t *testing.T) {
 	body := pngContent("create-trigger-media-payload")
 	server, host := mediaServer(t, map[string][]byte{"/media.png": body})
@@ -187,9 +150,6 @@ func TestCreateTriggerFetchesStoresAndReturnsFileMetadata(t *testing.T) {
 	}
 }
 
-// TestGetFileReturnsExactStoredBytesAndMetadata is gap 8: GetFile on the
-// file id created above returns the exact bytes that were served, with
-// metadata matching the stored row.
 func TestGetFileReturnsExactStoredBytesAndMetadata(t *testing.T) {
 	body := pngContent("get-file-payload")
 	server, host := mediaServer(t, map[string][]byte{"/getfile.png": body})
@@ -229,10 +189,6 @@ func TestGetFileReturnsExactStoredBytesAndMetadata(t *testing.T) {
 	}
 }
 
-// TestCreateTriggerDedupesIdenticalBytesFromDifferentURLs is gap 9: two
-// triggers created from two different URLs serving identical bytes end up
-// referencing the same file_id, and only one file row exists for that hash —
-// asserted by querying the database directly.
 func TestCreateTriggerDedupesIdenticalBytesFromDifferentURLs(t *testing.T) {
 	body := pngContent("dedupe-payload")
 	server, host := mediaServer(t, map[string][]byte{
@@ -249,8 +205,7 @@ func TestCreateTriggerDedupesIdenticalBytesFromDifferentURLs(t *testing.T) {
 	cleanupInstanceRows(t, pool, origin.InstanceMeta())
 	ctx := triggerCtx(ownerUID, origin)
 
-	// Registered before either trigger, so it is deleted last (t.Cleanup is
-	// LIFO), after both triggers' own cleanups have released the FK.
+	// Registered before either trigger, so LIFO deletes it after both have released the FK.
 	var fileID string
 	deferFileCleanup(t, pool, &fileID)
 
@@ -279,10 +234,7 @@ func TestCreateTriggerDedupesIdenticalBytesFromDifferentURLs(t *testing.T) {
 	}
 }
 
-// TestGetFileRefusesACallerWithNoRelationToTheReferencingTrigger is gap 10:
-// GetFile authorization end to end through the RPC. db.FileVisibleToCaller
-// is already unit-tested in isolation; this proves the RPC actually applies
-// it.
+// db.FileVisibleToCaller is unit-tested in isolation; this proves the RPC applies it.
 func TestGetFileRefusesACallerWithNoRelationToTheReferencingTrigger(t *testing.T) {
 	body := pngContent("get-file-auth-payload")
 	server, host := mediaServer(t, map[string][]byte{"/auth.png": body})
@@ -309,19 +261,13 @@ func TestGetFileRefusesACallerWithNoRelationToTheReferencingTrigger(t *testing.T
 	_, file := createTriggerWithFileVia(t, h, pool, ownerCtx, phrase, server.URL+"/auth.png", 10)
 	fileID = file.GetFileId()
 
-	// Driven with drainGetFileChunks, not the triggerClient.GetFile adapter:
-	// the point here is that NOT ONE CHUNK reached the stranger, which the
-	// adapter's assembled (nil, nil, err) result would only imply, not prove —
-	// a helper bug that dropped a legitimately-sent chunk would look identical.
+	// drainGetFileChunks, not the adapter: NOT ONE CHUNK may have reached the stranger.
 	chunks, err := drainGetFileChunks(strangerCtx, h.Trigger.c, pb.GetFileReq_builder{FileId: &fileID}.Build())
 	requireCode(t, err, connect.CodeNotFound)
 	if len(chunks) != 0 {
 		t.Errorf("%d chunks arrived for a caller with no relation to the file, want 0", len(chunks))
 	}
 
-	// The owner, who created the referencing trigger, can still read it — so
-	// the refusal above is the authorization check working, not the file
-	// being broken.
 	_, ownerContent, err := h.Trigger.GetFile(ownerCtx, pb.GetFileReq_builder{FileId: &fileID}.Build())
 	if err != nil {
 		t.Fatalf("owner GetFile: %v", err)
@@ -331,23 +277,8 @@ func TestGetFileRefusesACallerWithNoRelationToTheReferencingTrigger(t *testing.T
 	}
 }
 
-// TestGetFileIsVisibleThroughTheCallersOriginInstanceAlone is the end-to-end
-// regression guard for interceptor.OriginInterceptor.WrapStreamingHandler no
-// longer being a no-op on a streaming RPC (stage 5): before that change,
-// GetFile ran with OriginFromContext never populated on its own request path
-// (a streaming handler's bootstrap was a no-op), so callerOriginInstanceID
-// always reported ok=false for it and a file scoped only to an instance —
-// never owned by the calling stranger — was NotFound regardless of where the
-// stranger was calling from. A caller who neither created nor owns the
-// trigger, calling from the SAME origin instance the trigger is scoped to,
-// must still be able to read the file.
-//
-// createTriggerWithFileVia sends an empty Instances list, which
-// resolveScopeInstances resolves to the CALLER'S OWN origin at creation time
-// (trigger.go) — so the owner's trigger ends up scoped to ownerCtx's origin
-// with no explicit instance ever named. The stranger below shares that exact
-// origin, so db.FileVisibleToCaller can only be satisfied through
-// trigger_instance.instance_id, never through trigger.user_id.
+// createTriggerWithFileVia names no instance, so the trigger is scoped to the owner's
+// origin alone: visibility can only come through trigger_instance, never trigger.user_id.
 func TestGetFileIsVisibleThroughTheCallersOriginInstanceAlone(t *testing.T) {
 	body := pngContent("origin-only-payload")
 	server, host := mediaServer(t, map[string][]byte{"/origin.png": body})
@@ -384,12 +315,7 @@ func TestGetFileIsVisibleThroughTheCallersOriginInstanceAlone(t *testing.T) {
 	}
 }
 
-// largeMediaBody builds a PNG-sniffing body of exactly n bytes, with a
-// non-repeating fill pattern (a counter mod 251, a prime comfortably larger
-// than any chunk boundary this test cares about) rather than a single
-// repeated byte — so a chunk-ordering bug that swapped or duplicated a chunk
-// changes the reassembled bytes and gets caught, where a uniformly-filled body
-// would not have noticed at all.
+// largeMediaBody's non-repeating fill makes a chunk-ordering bug change the result.
 func largeMediaBody(n int) []byte {
 	body := make([]byte, n)
 	copy(body, pngSignature)
@@ -399,15 +325,7 @@ func largeMediaBody(n int) []byte {
 	return body
 }
 
-// TestGetFileStreamsALargeFileAsOrderedChunksWithMetaFirst is gaps 3 and 4
-// together: a blob larger than GetFileChunkBytes must arrive as exactly one
-// meta chunk, FIRST, followed by more than one content chunk, in order, and
-// concatenating the content chunks must reproduce the source exactly.
-//
-// The content-chunk COUNT is asserted explicitly (> 1), not just the final
-// bytes: a server that quietly went back to sending the whole file in one
-// frame — the exact regression this stage exists to prevent — would still
-// pass a test that only compared the reassembled content.
+// The chunk count is asserted too: one-frame delivery would pass a content-only check.
 func TestGetFileStreamsALargeFileAsOrderedChunksWithMetaFirst(t *testing.T) {
 	const bodySize = GetFileChunkBytes + (256 * 1024) // over one chunk, under storage.MaxFileBytes
 	body := largeMediaBody(bodySize)
@@ -459,14 +377,7 @@ func TestGetFileStreamsALargeFileAsOrderedChunksWithMetaFirst(t *testing.T) {
 		contentChunks++
 		content = append(content, chunk.GetContent()...)
 
-		// No assertion that a non-final chunk is exactly GetFileChunkBytes.
-		// The handler reads through an io.Reader, which is permitted to return
-		// fewer bytes than the buffer holds without being at EOF; that a local
-		// *os.File usually fills it is an accident of the current Storage
-		// implementation, not a contract, and a network- or archive-backed
-		// store would short-read routinely. Asserting it would buy nothing
-		// over contentChunks > 1 below and would report a correctness failure
-		// where there is none.
+		// No assertion of exact chunk size: an io.Reader may short-read without being at EOF.
 		if len(chunk.GetContent()) > GetFileChunkBytes {
 			t.Errorf("content chunk %d is %d bytes, over the %d-byte chunk size",
 				i+1, len(chunk.GetContent()), GetFileChunkBytes)
@@ -482,15 +393,7 @@ func TestGetFileStreamsALargeFileAsOrderedChunksWithMetaFirst(t *testing.T) {
 	}
 }
 
-// TestGetFileStreamsAFileLargerThanTheBaselineMessageCap is the test that
-// would have caught TriggerService's raised message cap being deleted
-// (cmd/ginbot-server's baselineMessageBytes replacing config.MaxGRPCMessageBytes,
-// see cmd/ginbot-server/messagecap_test.go) WITHOUT GetFile's chunking having
-// landed alongside it: with every service — TriggerService included — capped
-// at harnessBaselineMessageBytes (4 MiB, matching cmd/ginbot-server's own
-// baselineMessageBytes), a file larger than that cap must still stream
-// successfully, because no single GetFileChunk message this handler sends
-// ever approaches it (GetFileChunkBytes is 1 MiB).
+// A file larger than harnessBaselineMessageBytes must still stream, chunk by chunk.
 func TestGetFileStreamsAFileLargerThanTheBaselineMessageCap(t *testing.T) {
 	const bodySize = harnessBaselineMessageBytes + (1 << 20) // over the baseline, under storage.MaxFileBytes
 	body := largeMediaBody(bodySize)

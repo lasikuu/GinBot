@@ -25,9 +25,6 @@ func NewInstanceServer() *InstanceServer {
 func (s *InstanceServer) CreateInstance(ctx context.Context, connReq *connect.Request[pb.CreateInstanceReq]) (*connect.Response[pb.CreateInstanceResp], error) {
 	req := connReq.Msg
 
-	// Clearance is enforced ahead of this handler: the requirements map holds
-	// CreateInstance at CLEARANCE_ADMINISTRATOR, so reaching here means the
-	// caller has it.
 	if !req.HasPlatformEnum() || !req.HasInstanceMeta() {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("platform_enum and instance_meta are required"))
 	}
@@ -46,8 +43,6 @@ func (s *InstanceServer) CreateInstance(ctx context.Context, connReq *connect.Re
 func (s *InstanceServer) GetInstance(ctx context.Context, connReq *connect.Request[pb.GetInstanceReq]) (*connect.Response[pb.GetInstanceResp], error) {
 	req := connReq.Msg
 
-	// Guarded at CLEARANCE_REGISTERED, so the interceptor has already parsed and
-	// validated the caller's metadata; re-parsing it here would only repeat that.
 	if !req.HasId() {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}

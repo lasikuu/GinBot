@@ -8,21 +8,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// TestMain gives this package a logger: repostIntThreshold and
-// repostMinEntropy log a warning through log.Z on a malformed value, and log.Z
-// is nil until something initialises it.
+// log.Z is nil until initialised, and the accessors warn through it.
 func TestMain(m *testing.M) {
 	log.Z = zap.NewNop()
 	log.S = log.Z.Sugar()
 	os.Exit(m.Run())
 }
 
-// unsetEnv removes a variable entirely, so a test can exercise "not set at
-// all" rather than "set to empty string" — t.Setenv can only do the latter.
+// unsetEnv exercises "not set at all"; t.Setenv can only set an empty string.
 func unsetEnv(t *testing.T, key string) {
 	t.Helper()
-	// Snapshot and restore, matching t.Setenv's own cleanup contract, so the
-	// unset does not leak into another test.
+	// Restore on cleanup, matching t.Setenv, so the unset does not leak.
 	if value, ok := os.LookupEnv(key); ok {
 		t.Cleanup(func() {
 			if err := os.Setenv(key, value); err != nil {
@@ -40,8 +36,6 @@ func unsetEnv(t *testing.T, key string) {
 		t.Fatalf("unset %s: %v", key, err)
 	}
 }
-
-// ── repostEnabled ─────────────────────────────────────────────────────────────
 
 func TestRepostEnabled(t *testing.T) {
 	tests := []struct {
@@ -72,11 +66,7 @@ func TestRepostEnabled(t *testing.T) {
 	}
 }
 
-// ── Integer thresholds: default, valid, malformed-falls-back ────────────────
-
-// intThresholdCase names one (accessor, env var, default) triple, so the
-// table below cannot silently miss checking that a given accessor reads the
-// env var it is documented to.
+// One triple per accessor, so the table cannot stop checking its env var.
 type intThresholdCase struct {
 	name     string
 	accessor func() int
@@ -118,9 +108,6 @@ func TestRepostIntThresholdsReadAValidValue(t *testing.T) {
 	}
 }
 
-// TestRepostIntThresholdsFallBackOnAMalformedValue: a tuning knob must never
-// fail startup over a bad value (internal/config/repost.go's own stated
-// contract) — it warns and falls back to the default instead.
 func TestRepostIntThresholdsFallBackOnAMalformedValue(t *testing.T) {
 	for _, tc := range intThresholdCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,18 +121,13 @@ func TestRepostIntThresholdsFallBackOnAMalformedValue(t *testing.T) {
 }
 
 func TestRepostIntThresholdsAcceptANegativeValue(t *testing.T) {
-	// Identical's floor is 0 by default, but a caller might legitimately
-	// widen or narrow bands with a negative-then-clamped value at the
-	// repost.Tiers.Normalise layer; the config accessor itself must not
-	// second-guess strconv.Atoi's own valid parse.
+	// Clamping happens in repost.Tiers.Normalise, not here.
 	t.Setenv("GINBOT_REPOST_TIER_IDENTICAL", "-1")
 
 	if got := repostTierIdentical(); got != -1 {
 		t.Errorf("repostTierIdentical() = %d, want -1 (parsed as-is; clamping is repost.Tiers.Normalise's job)", got)
 	}
 }
-
-// ── repostMinEntropy ──────────────────────────────────────────────────────────
 
 func TestRepostMinEntropyDefaultsWhenUnset(t *testing.T) {
 	unsetEnv(t, "GINBOT_REPOST_MIN_ENTROPY")
@@ -170,8 +152,6 @@ func TestRepostMinEntropyFallsBackOnAMalformedValue(t *testing.T) {
 		t.Errorf("repostMinEntropy() = %v for a malformed value, want the default 3.0", got)
 	}
 }
-
-// ── repostExcludedHosts ───────────────────────────────────────────────────────
 
 func TestRepostExcludedHosts(t *testing.T) {
 	tests := []struct {
@@ -210,8 +190,6 @@ func TestRepostExcludedHosts(t *testing.T) {
 	}
 }
 
-// ── repostFFmpegPath ──────────────────────────────────────────────────────────
-
 func TestRepostFFmpegPath(t *testing.T) {
 	unsetEnv(t, "GINBOT_REPOST_FFMPEG_PATH")
 	if got := repostFFmpegPath(); got != "" {
@@ -224,15 +202,6 @@ func TestRepostFFmpegPath(t *testing.T) {
 	}
 }
 
-// ── hostOf ────────────────────────────────────────────────────────────────────
-
-// TestHostOfExtractsABareLowercaseHost covers the whole documented contract.
-//
-// hostOf feeds the repost exclusion list, which is what stops the bot's own
-// web URL being indexed as reposted content: a value that fails to reduce to a
-// bare host silently fails to exclude anything, and the bot starts flagging
-// its own links. Every shape an operator plausibly types into GINBOT_WEB_URL
-// is therefore in the table, including the ones that must produce "".
 func TestHostOfExtractsABareLowercaseHost(t *testing.T) {
 	tests := []struct {
 		name string
@@ -260,11 +229,6 @@ func TestHostOfExtractsABareLowercaseHost(t *testing.T) {
 	}
 }
 
-// TestHostOfDoesNotStripAWWWPrefix: urlnorm.New already strips www. from
-// every host it canonicalises, on both the stored side and the lookup side.
-// Stripping it here too would be harmless but redundant; stripping it here
-// INSTEAD of there would silently move the responsibility. Pinned so the
-// division of labour is a decision rather than an accident.
 func TestHostOfDoesNotStripAWWWPrefix(t *testing.T) {
 	if got := hostOf("https://www.bot.example/"); got != "www.bot.example" {
 		t.Errorf("hostOf(%q) = %q, want %q (urlnorm.New owns www. stripping)",
@@ -272,9 +236,6 @@ func TestHostOfDoesNotStripAWWWPrefix(t *testing.T) {
 	}
 }
 
-// ── withSelfHost ──────────────────────────────────────────────────────────────
-
-// TestWithSelfHostAppendsTheSelfHostLast.
 func TestWithSelfHostAppendsTheSelfHostLast(t *testing.T) {
 	got := withSelfHost([]string{"cdn.example"}, "https://bot.example/")
 
@@ -289,10 +250,7 @@ func TestWithSelfHostAppendsTheSelfHostLast(t *testing.T) {
 	}
 }
 
-// TestWithSelfHostSkipsAnEmptySelfHost: GINBOT_WEB_URL is optional, and an
-// empty entry in the exclusion list would either match nothing (confusing) or
-// match everything (catastrophic), depending on how the comparison is written
-// downstream. Neither is acceptable, so it must not be appended at all.
+// An empty exclusion entry could match everything downstream.
 func TestWithSelfHostSkipsAnEmptySelfHost(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -321,11 +279,6 @@ func TestWithSelfHostSkipsAnEmptySelfHost(t *testing.T) {
 	}
 }
 
-// TestWithSelfHostSkipsADuplicate, including a case-insensitive one: the
-// exclusion list is compared against already-lowercased canonical hosts, so
-// "Bot.Example" and "bot.example" are the same exclusion and appending both
-// would make the list quietly grow by one entry on every restart of a
-// deployment that also listed its own host explicitly.
 func TestWithSelfHostSkipsADuplicate(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -356,15 +309,9 @@ func TestWithSelfHostSkipsADuplicate(t *testing.T) {
 	}
 }
 
-// TestWithSelfHostDoesNotMutateItsInput is the assertion that actually earns
-// its keep. repostExcludedHosts() builds its slice with `make(..., 0, len)`,
-// so appending to it in place would usually reallocate and LOOK correct —
-// right up until the capacity happens to be spare, at which point the caller's
-// slice is silently rewritten. The input's length and contents are both
-// checked after the call, not just its length.
+// An in-place append looks correct until the capacity happens to be spare.
 func TestWithSelfHostDoesNotMutateItsInput(t *testing.T) {
-	// Deliberately built with spare capacity, which is exactly the shape that
-	// makes an in-place append succeed rather than reallocate.
+	// Spare capacity is the shape that makes an in-place append succeed.
 	hosts := make([]string, 0, 8)
 	hosts = append(hosts, "cdn.example", "img.example")
 
@@ -377,14 +324,10 @@ func TestWithSelfHostDoesNotMutateItsInput(t *testing.T) {
 		t.Errorf("input = %q after withSelfHost, want [cdn.example img.example]", hosts)
 	}
 
-	// And the result must still be the extended list, so the test cannot pass
-	// by withSelfHost doing nothing at all.
 	if len(got) != 3 || got[2] != "bot.example" {
 		t.Errorf("withSelfHost() = %q, want [cdn.example img.example bot.example]", got)
 	}
 
-	// Writing through the returned slice must not reach the input either,
-	// which is the other half of "returns a new slice".
 	got[0] = "overwritten.example"
 	if hosts[0] != "cdn.example" {
 		t.Errorf("input[0] = %q after writing to the result, want cdn.example; the two slices share backing storage", hosts[0])

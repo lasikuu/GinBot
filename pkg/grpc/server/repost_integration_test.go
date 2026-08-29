@@ -1,17 +1,5 @@
 //go:build integration
 
-// Integration tests for the repost/WANHA surface, driven through the harness
-// harness with the real interceptor chain and a real database.
-//
-//	docker compose -f docker-compose.psql.yml up -d
-//	go test -tags=integration -race -count=1 ./pkg/grpc/server/...
-//
-// Reuses requireDatabase, uniqueUID, registeredCaller, withOriginResolver,
-// cleanupInstanceRows (from reminder_integration_test.go / user_integration_test.go)
-// and repostHarness's helpers from repost_test.go (repostCtx is NOT reused —
-// every test here needs its OWN unique origin, since the whole point of half
-// of these tests is what happens across two different origins or two
-// different authors) — none are redeclared here except where noted.
 package server
 
 import (
@@ -38,11 +26,8 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// liveRepostHarness wires both the caller resolver and the origin resolver to
-// the real database, exactly as liveTriggerHarness does: CheckRepost resolves
-// its calling instance from origin metadata, which needs
-// interceptor.NewOriginInterceptor to have actually bootstrapped the
-// instance row.
+// liveRepostHarness needs the origin resolver too: CheckRepost resolves its calling
+// instance from origin metadata.
 func liveRepostHarness(t *testing.T, opts ...harnessOption) (*harness, *pgxpool.Pool) {
 	t.Helper()
 	pool := requireDatabase(t)
@@ -53,17 +38,13 @@ func liveRepostHarness(t *testing.T, opts ...harnessOption) (*harness, *pgxpool.
 	return newHarness(t, allOpts...), pool
 }
 
-// liveRepostCtx attaches caller identity and a caller-chosen origin, in that
-// order. Every test in this file builds its own origin rather than reusing
-// repostCtx's fixed one, because the behaviour under test is often defined by
-// the relationship BETWEEN two calls' origins or authors.
+// liveRepostCtx: every test builds its own origin, since the behaviour under test is
+// the relationship between two calls' origins or authors.
 func liveRepostCtx(platformUID string, origin callermeta.Origin) context.Context {
 	return originCtx(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), origin)
 }
 
-// countRepostEntries counts repost_entry rows scoped to one instance, so a
-// test can assert an edit truly inserted nothing rather than merely trusting
-// the RPC's response shape.
+// countRepostEntries lets a test assert an edit inserted nothing, not merely returned.
 func countRepostEntries(t *testing.T, pool *pgxpool.Pool, instanceMeta *structpb.Struct) int {
 	t.Helper()
 	var count int
@@ -75,12 +56,6 @@ func countRepostEntries(t *testing.T, pool *pgxpool.Pool, instanceMeta *structpb
 	}
 	return count
 }
-
-// ── Excluded / unsupported / refused candidates: skipped, not failed ────────
-//
-// These need a real database even though the CANDIDATE itself never reaches
-// one, because CheckRepost resolves the calling instance from origin metadata
-// before it looks at any candidate at all (see repost_test.go's note on this).
 
 func TestCheckRepostSkipsAnExcludedLinkWithoutError(t *testing.T) {
 	h, pool := liveRepostHarness(t)
@@ -157,13 +132,7 @@ func TestCheckRepostSkipsARefusedAttachmentFetchWithoutError(t *testing.T) {
 	}
 }
 
-// ── Link matching, same-author exclusion, edits (AC 7, 12, 13) ──────────────
-
-// TestRepostLinkPostedTwiceByDifferentAuthorsMatchesOnSecondPost is the base
-// positive case every other test here is a variation of: the same canonical
-// link posted a second time, by a DIFFERENT author, must match with
-// REPOST_CONFIDENCE_IDENTICAL (a canonical-link match is never graded by
-// distance) and carry the first post's own message reference back.
+// A canonical-link match is never graded by distance, so the confidence is IDENTICAL.
 func TestRepostLinkPostedTwiceByDifferentAuthorsMatchesOnSecondPost(t *testing.T) {
 	h, pool := liveRepostHarness(t)
 
@@ -224,11 +193,6 @@ func TestRepostLinkPostedTwiceByDifferentAuthorsMatchesOnSecondPost(t *testing.T
 	}
 }
 
-// TestRepostSameAuthorRepostingThemselvesDoesNotMatch is AC12, the
-// regression test for the exact false-positive class that motivated the
-// "excludeUserID" design (docs/plans/wanha.md matching queries): the SAME
-// caller posting the same link twice must never see it flagged as a repost of
-// themselves.
 func TestRepostSameAuthorRepostingThemselvesDoesNotMatch(t *testing.T) {
 	h, pool := liveRepostHarness(t)
 
@@ -265,9 +229,7 @@ func TestRepostSameAuthorRepostingThemselvesDoesNotMatch(t *testing.T) {
 	}
 }
 
-// TestRepostEditMatchesButDoesNotInsert is AC13. The assertion that actually
-// catches the self-match bug the design calls out (W8) is the unchanged row
-// count, not merely that the RPC returned successfully.
+// The unchanged row count, not a successful return, is what catches the self-match bug.
 func TestRepostEditMatchesButDoesNotInsert(t *testing.T) {
 	h, pool := liveRepostHarness(t)
 
@@ -294,9 +256,7 @@ func TestRepostEditMatchesButDoesNotInsert(t *testing.T) {
 		t.Fatalf("repost_entry count after the original post = %d, want 1", countAfterOriginal)
 	}
 
-	// B edits their own, separate message to add the same link. edit=true must
-	// still MATCH (B is not A, so same-author exclusion does not apply) but
-	// must NOT insert a second row.
+	// B is not A, so edit=true must still match, but it must not insert a second row.
 	ctxB := liveRepostCtx(uidB, origin)
 	editResp, err := h.Repost.CheckRepost(ctxB, pb.CheckRepostReq_builder{
 		Candidates: []*pb.RepostCandidate{linkCandidate(link)},
@@ -317,9 +277,6 @@ func TestRepostEditMatchesButDoesNotInsert(t *testing.T) {
 	}
 }
 
-// TestRepostEditOfAnUnseenLinkStillDoesNotInsert covers the other half of
-// AC13: an edit that finds NO match must still not seed the index, or the
-// message would become able to match itself on a later, unrelated lookup.
 func TestRepostEditOfAnUnseenLinkStillDoesNotInsert(t *testing.T) {
 	h, pool := liveRepostHarness(t)
 
@@ -344,14 +301,7 @@ func TestRepostEditOfAnUnseenLinkStillDoesNotInsert(t *testing.T) {
 	}
 }
 
-// ── Per-instance isolation (AC 11) ───────────────────────────────────────────
-
-// TestRepostMatchingIsScopedPerInstance: the exact same link, posted by two
-// DIFFERENT authors in two DIFFERENT instances (guilds), must never match
-// across them. Using different authors as well as different instances is
-// deliberate: if this test used the same author it would be indistinguishable
-// from the same-author-exclusion test above, and would not actually prove
-// instance scoping is what is doing the work.
+// Different authors as well, or this would be the same-author-exclusion test again.
 func TestRepostMatchingIsScopedPerInstance(t *testing.T) {
 	h, pool := liveRepostHarness(t)
 
@@ -389,24 +339,12 @@ func TestRepostMatchingIsScopedPerInstance(t *testing.T) {
 	}
 }
 
-// ── Perceptual image matching (AC 8, 9) end to end through the RPC ──────────
-
-// repostFixtureImage renders a deterministic, structured, high-entropy image:
-// a gradient plus a couple of solid shapes whose layout depends on variant, so
-// two different variants are genuinely visually distinct rather than only
-// differing in noise. Mirrors the fixture-building rationale in
-// pkg/repost/fingerprint's own tests, duplicated here (rather than imported,
-// since it is unexported there) because this test needs the same property:
-// content real enough for a DCT-based perceptual hash to be meaningful about.
+// repostFixtureImage is deterministic, structured and high-entropy, so a DCT-based
+// perceptual hash has real content and two variants differ by more than noise.
 func repostFixtureImage(size, variant int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 
-	// Seeded per variant and mixed into every channel: a pure gradient with a
-	// naive R/G/B weight choice can land almost exactly on ITU-R luma's zero
-	// point (0.299R + 0.587G + 0.114B), collapsing entropy and tripping
-	// ErrLowEntropy regardless of the guard being correct. See the identical
-	// note in pkg/repost/fingerprint/confidence_test.go's distinctImage,
-	// which hit exactly this.
+	// A pure gradient can land on ITU-R luma's zero point, collapsing entropy.
 	rng := rand.New(rand.NewPCG(uint64(variant)*7919+1, uint64(variant)*104729+7))
 
 	for y := 0; y < size; y++ {
@@ -456,9 +394,6 @@ func encodeRepostJPEG(t *testing.T, img image.Image, quality int) []byte {
 	return buf.Bytes()
 }
 
-// repostImageServer starts an httptest TLS server serving fixed bodies at
-// fixed paths. Use hostOnly(t, server.URL) to get its hostname for a
-// Fetcher's allow-list.
 func repostImageServer(t *testing.T, bodies map[string][]byte) *httptest.Server {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -475,8 +410,6 @@ func repostImageServer(t *testing.T, bodies map[string][]byte) *httptest.Server 
 	return server
 }
 
-// TestRepostRecompressedImageGradesIdenticalOrHigh is AC8, exercised through
-// the full RPC: fetch, guard, fingerprint, index, look up.
 func TestRepostRecompressedImageGradesIdenticalOrHigh(t *testing.T) {
 	guards := fingerprint.DefaultGuards()
 	size := guards.MinWidth * 3
@@ -530,9 +463,6 @@ func TestRepostRecompressedImageGradesIdenticalOrHigh(t *testing.T) {
 	}
 }
 
-// TestRepostUnrelatedImageProducesNoMatch is AC9 through the full RPC: two
-// visually distinct images, fetched, guarded, hashed and indexed for real,
-// must not match each other.
 func TestRepostUnrelatedImageProducesNoMatch(t *testing.T) {
 	guards := fingerprint.DefaultGuards()
 	size := guards.MinWidth * 3
@@ -576,7 +506,6 @@ func TestRepostUnrelatedImageProducesNoMatch(t *testing.T) {
 	}
 }
 
-// hostOnly extracts the bare hostname from a URL, for the fetcher's allow-list.
 func hostOnly(t *testing.T, rawURL string) string {
 	t.Helper()
 	u, err := url.Parse(rawURL)

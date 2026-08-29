@@ -8,9 +8,6 @@ import (
 	"testing"
 )
 
-// countingLoader wraps a Loader and counts how many times it was actually
-// invoked, so tests can assert on cache hits vs misses rather than only on the
-// returned value.
 type countingLoader struct {
 	calls atomic.Int32
 	fn    func(ctx context.Context, instanceID int64) ([]Candidate, error)
@@ -27,7 +24,6 @@ func (l *countingLoader) count() int {
 
 var errLoadFailed = errors.New("simulated load failure")
 
-// TestCacheMissCallsLoaderHitDoesNot.
 func TestCacheMissCallsLoaderHitDoesNot(t *testing.T) {
 	loader := &countingLoader{fn: func(context.Context, int64) ([]Candidate, error) {
 		return []Candidate{{ID: "t1"}}, nil
@@ -49,8 +45,6 @@ func TestCacheMissCallsLoaderHitDoesNot(t *testing.T) {
 	}
 }
 
-// TestCacheLoadErrorIsNotCached: a failed load must be retried on the next
-// call, not remembered as a permanent failure.
 func TestCacheLoadErrorIsNotCached(t *testing.T) {
 	loader := &countingLoader{fn: func(context.Context, int64) ([]Candidate, error) {
 		return nil, errLoadFailed
@@ -68,8 +62,6 @@ func TestCacheLoadErrorIsNotCached(t *testing.T) {
 	}
 }
 
-// TestCacheEmptyResultIsCached: an instance with no triggers must not hit the
-// database on every message.
 func TestCacheEmptyResultIsCached(t *testing.T) {
 	loader := &countingLoader{fn: func(context.Context, int64) ([]Candidate, error) {
 		return []Candidate{}, nil
@@ -90,7 +82,6 @@ func TestCacheEmptyResultIsCached(t *testing.T) {
 	}
 }
 
-// TestCacheInvalidateDropsOneInstanceLeavesOthers.
 func TestCacheInvalidateDropsOneInstanceLeavesOthers(t *testing.T) {
 	loader := &countingLoader{fn: func(_ context.Context, instanceID int64) ([]Candidate, error) {
 		return []Candidate{{ID: "t-" + string(rune('0'+instanceID))}}, nil
@@ -124,7 +115,6 @@ func TestCacheInvalidateDropsOneInstanceLeavesOthers(t *testing.T) {
 	}
 }
 
-// TestCacheInvalidateAllDropsEverything.
 func TestCacheInvalidateAllDropsEverything(t *testing.T) {
 	loader := &countingLoader{fn: func(context.Context, int64) ([]Candidate, error) {
 		return []Candidate{{ID: "t"}}, nil
@@ -152,12 +142,8 @@ func TestCacheInvalidateAllDropsEverything(t *testing.T) {
 	}
 }
 
-// TestCacheConcurrentCandidatesAndInvalidate hammers the cache from many
-// goroutines so `go test -race` exercises its shared state. It does not assert
-// on the loader call count, which is inherently racy against concurrent
-// Invalidate calls by design; it asserts that no call ever errors or panics,
-// which is the only safe, deterministic thing to check under this much
-// simultaneous mutation.
+// TestCacheConcurrentCandidatesAndInvalidate cannot assert the loader count,
+// which is racy against concurrent Invalidate by design.
 func TestCacheConcurrentCandidatesAndInvalidate(t *testing.T) {
 	loader := &countingLoader{fn: func(context.Context, int64) ([]Candidate, error) {
 		return []Candidate{{ID: "t"}}, nil

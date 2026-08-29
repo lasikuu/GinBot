@@ -2,9 +2,6 @@ package config
 
 import "testing"
 
-// Tests for internal/config/storage.go. TestMain and unsetEnv come from
-// repost_test.go.
-
 func TestStoragePath(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -15,10 +12,7 @@ func TestStoragePath(t *testing.T) {
 		{"unset defaults to ./storage", false, "", "./storage"},
 		{"an empty value defaults to ./storage", true, "", "./storage"},
 		{"an absolute path is used as given", true, "/var/lib/ginbot/storage", "/var/lib/ginbot/storage"},
-		// Not normalised: the accessor hands the string straight to the blob
-		// store, so a trailing slash or a relative path is the operator's to
-		// get right, and pinning that here stops a well-meant filepath.Clean
-		// from being added without a decision.
+		// Not normalised: the string goes straight to the blob store.
 		{"a relative path is not normalised", true, "blobs/", "blobs/"},
 	}
 

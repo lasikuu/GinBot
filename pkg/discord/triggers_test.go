@@ -22,18 +22,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// triggerID and triggerFileID are fixed so that an assertion about a rendering
-// can name the string it expects to see in it.
 const (
 	triggerID     = "0192f000-0000-7000-8000-000000000001"
 	triggerFileID = "0192f000-0000-7000-8000-0000000000ff"
 )
 
-// triggerFor builds a Trigger as GetTrigger returns one.
-//
-// chance is the STORED value, which is the whole point of the rendering
-// assertions below: the stored column doubles as "unset", so it is not what a
-// user should be shown.
+// stored is the raw chance column, which doubles as "unset".
 func triggerFor(stored int32, mode pb.TriggerMode, reply string, file *pb.TriggerFile) *pb.Trigger {
 	id := triggerID
 	phrase := "gm"
@@ -49,10 +43,7 @@ func triggerFor(stored int32, mode pb.TriggerMode, reply string, file *pb.Trigge
 		CreatedAt: timestamppb.New(time.Date(2026, 8, 1, 6, 0, 0, 0, time.UTC)),
 		UpdatedAt: timestamppb.New(time.Date(2026, 8, 20, 9, 30, 0, 0, time.UTC)),
 	}
-	// chk_reply_or_file is an OR, NOT an exclusive one, so a row genuinely can
-	// carry both a reply and a file. Passing both here is therefore a legitimate
-	// fixture, and TestTriggerRenderingPrefersTheReplyWhenBothAreSet depends on
-	// it being possible.
+	// chk_reply_or_file is a non-exclusive OR, so both at once is a valid row.
 	if reply != "" {
 		b.Reply = &reply
 	}
@@ -60,7 +51,6 @@ func triggerFor(stored int32, mode pb.TriggerMode, reply string, file *pb.Trigge
 	return b.Build()
 }
 
-// triggerFileFor builds the TriggerFile the server attaches to a fired trigger.
 func triggerFileFor(fileID string, filename string, mimeType string) *pb.TriggerFile {
 	byteSize := int64(16)
 
@@ -72,7 +62,6 @@ func triggerFileFor(fileID string, filename string, mimeType string) *pb.Trigger
 	}.Build()
 }
 
-// statFor builds one leaderboard row as GetTriggerStats returns it.
 func statFor(id string, phrase string, count int64) *pb.TriggerStat {
 	mode := pb.TriggerMode_TRIGGER_MODE_ANY
 	chance := int32(0)
@@ -86,13 +75,8 @@ func statFor(id string, phrase string, count int64) *pb.TriggerStat {
 	}.Build()
 }
 
-// invokeTrigger binds named arguments and runs a trigger command's handler.
-//
-// The context is deliberately bare: it carries no origin and no client.Clients.
-// Every case that uses this must be refused by argument validation alone — a
-// handler that resolved the instance first would answer FailedPrecondition
-// instead of the message the user needs, and one that reached the RPC would
-// nil-panic on clientsFrom(ctx), which is nil for a bare context.
+// The context is bare, so every case here must be refused by argument
+// validation alone; reaching the RPC nil-panics on clientsFrom(ctx).
 func invokeTrigger(t *testing.T, cmd command.Command, args map[string]any) error {
 	t.Helper()
 
@@ -106,12 +90,6 @@ func invokeTrigger(t *testing.T, cmd command.Command, args map[string]any) error
 	return handlerErr
 }
 
-// asConnectError extracts the *connect.Error errorMessage needs to read a
-// message off err. errorMessage (pkg/discord/respond.go) only ever reads
-// through connect.CodeOf/(*connect.Error).Message, so an err that is not one
-// at this boundary would reach the user as the generic fallback regardless of
-// what it says — the same failure mode requireInvalidArgument and its callers
-// exist to catch.
 func asConnectError(t *testing.T, err error) *connect.Error {
 	t.Helper()
 
@@ -123,12 +101,8 @@ func asConnectError(t *testing.T, err error) *connect.Error {
 	return connErr
 }
 
-// requireInvalidArgument asserts a refusal the user can act on.
-//
-// The code matters as much as the wording: errorMessage passes only
-// InvalidArgument and FailedPrecondition through verbatim, so a validation
-// failure returned as any other code reaches the channel as "Something went
-// wrong." and the user never learns what to type instead.
+// errorMessage passes only InvalidArgument and FailedPrecondition through
+// verbatim; any other code reaches the user as "Something went wrong."
 func requireInvalidArgument(t *testing.T, err error, mustMention ...string) {
 	t.Helper()
 
@@ -148,15 +122,8 @@ func requireInvalidArgument(t *testing.T, err error, mustMention ...string) {
 	}
 }
 
-// ── declaration ──────────────────────────────────────────────────────────────
-
-// TestTriggerCommandsAreGroupedUnderTrigger pins the Group/Sub assignment and
-// the aliases. The Discord parent and every subcommand name are derived from
-// Group and Sub, and the flat Name is what a chat invocation resolves — seven
-// unrelated top-level commands is exactly what the group exists to avoid.
-//
-// The aliases are the names the previous bot used. An unknown chat command is
-// ignored without a reply, so dropping one fails silently.
+// An unknown chat command is ignored without a reply, so a dropped alias fails
+// silently.
 func TestTriggerCommandsAreGroupedUnderTrigger(t *testing.T) {
 	tests := []struct {
 		wantName    string
@@ -187,9 +154,6 @@ func TestTriggerCommandsAreGroupedUnderTrigger(t *testing.T) {
 			if !slices.Equal(tt.cmd.Aliases, tt.wantAliases) {
 				t.Errorf("Aliases = %q, want %q", tt.cmd.Aliases, tt.wantAliases)
 			}
-			// Creating a trigger is not an anonymous action: it is attributed to
-			// a user account and only its creator may edit or delete it, so
-			// there has to be one.
 			if tt.cmd.Clearance != pb.Clearance_CLEARANCE_REGISTERED {
 				t.Errorf("Clearance = %v, want %v", tt.cmd.Clearance, pb.Clearance_CLEARANCE_REGISTERED)
 			}
@@ -203,13 +167,8 @@ func TestTriggerCommandsAreGroupedUnderTrigger(t *testing.T) {
 	}
 }
 
-// TestTriggerCommandArguments pins the declared arguments, in order.
-//
-// Order is not cosmetic. Chat arguments bind POSITIONALLY, so ??triggeradd gm
-// "good morning" only works while phrase is first, and Registry.Register refuses
-// a required argument declared after an optional one — which is a log.Z.Fatal at
-// boot, not a test failure. mode and chance are a string and an int because
-// command.ArgType has no enum kind; the handler validates them.
+// Order matters: chat arguments bind positionally, and Registry.Register
+// log.Z.Fatals at boot on a required argument declared after an optional one.
 func TestTriggerCommandArguments(t *testing.T) {
 	type wantArg struct {
 		name     string
@@ -299,8 +258,7 @@ func TestTriggerCommandArguments(t *testing.T) {
 				if arg.Required != want.required {
 					t.Errorf("%q required = %v, want %v", arg.Name, arg.Required, want.required)
 				}
-				// The description is the only place a user learns what to type,
-				// and Discord rejects an empty one at boot.
+				// Discord rejects an empty description at boot.
 				if arg.Description == "" {
 					t.Errorf("%q has no description", arg.Name)
 				}
@@ -309,8 +267,6 @@ func TestTriggerCommandArguments(t *testing.T) {
 	}
 }
 
-// TestTriggerAliasesResolve is the chat half of the aliases: they only do
-// anything if the registry actually resolves them, folded like every other name.
 func TestTriggerAliasesResolve(t *testing.T) {
 	registry := newTestRegistry(t)
 
@@ -339,10 +295,6 @@ func TestTriggerAliasesResolve(t *testing.T) {
 	}
 }
 
-// TestTriggerCommandsGenerateOneGroupedCommand is the /trigger shape: seven
-// registered commands, ONE top-level Discord command, seven subcommands. A
-// member escaping back to top level is the regression to catch, since that is
-// what the pre-group world looked like.
 func TestTriggerCommandsGenerateOneGroupedCommand(t *testing.T) {
 	registry := newTestRegistry(t)
 	byName := generatedByName(t, registry)
@@ -363,8 +315,7 @@ func TestTriggerCommandsGenerateOneGroupedCommand(t *testing.T) {
 	gotSubs := make([]string, 0, len(parent.Options))
 	for _, option := range parent.Options {
 		gotSubs = append(gotSubs, option.Name)
-		// A group parent is purely a container: Discord rejects a command that
-		// mixes subcommands with ordinary options.
+		// Discord rejects a command mixing subcommands with ordinary options.
 		if option.Type != discordgo.ApplicationCommandOptionSubCommand {
 			t.Errorf("%q option %q has type %v, want SubCommand", triggerGroup, option.Name, option.Type)
 		}
@@ -386,10 +337,7 @@ func TestTriggerCommandsGenerateOneGroupedCommand(t *testing.T) {
 	}
 }
 
-// TestTriggerSubCommandsCarryTheirOwnArguments: a slash invocation delivers a
-// subcommand's arguments as the SUBCOMMAND's options, so that is where they have
-// to be declared. On the parent they would both be rejected by Discord and leave
-// the handler with nothing bound.
+// A slash invocation delivers arguments as the subcommand's own options.
 func TestTriggerSubCommandsCarryTheirOwnArguments(t *testing.T) {
 	byName := generatedByName(t, newTestRegistry(t))
 
@@ -422,8 +370,6 @@ func TestTriggerSubCommandsCarryTheirOwnArguments(t *testing.T) {
 					triggerGroup, tt.sub, len(sub.Options), len(tt.cmd.Args))
 			}
 
-			// Name, type and requiredness are derived from the declared Arg, so
-			// a slash option and a chat positional cannot disagree.
 			for i, arg := range tt.cmd.Args {
 				option := sub.Options[i]
 				if option.Name != arg.Name {
@@ -441,9 +387,6 @@ func TestTriggerSubCommandsCarryTheirOwnArguments(t *testing.T) {
 	}
 }
 
-// TestChatResolvesEveryTriggerSubcommand ties the generated slash surface back to
-// the chat one: /trigger add and ??trigger add must reach the same handler, and
-// the flat names must keep working alongside both.
 func TestChatResolvesEveryTriggerSubcommand(t *testing.T) {
 	registry := newTestRegistry(t)
 
@@ -469,8 +412,6 @@ func TestChatResolvesEveryTriggerSubcommand(t *testing.T) {
 			if cmd.Name != tt.want {
 				t.Errorf("??%s %s resolved to %q, want %q", triggerGroup, tt.sub, cmd.Name, tt.want)
 			}
-			// The subcommand token is consumed, so binding sees the same
-			// arguments the flat invocation would.
 			if !slices.Equal(rest, []string{"gm", "good morning"}) {
 				t.Errorf("remaining arguments = %q, want the two after the subcommand", rest)
 			}
@@ -478,14 +419,8 @@ func TestChatResolvesEveryTriggerSubcommand(t *testing.T) {
 	}
 }
 
-// ── mode and kind vocabularies ───────────────────────────────────────────────
-
-// TestParseTriggerMode pins the user-facing vocabulary for mode.
-//
-// The empty string is the load-bearing case: command.ArgType has no enum kind,
-// so an unsupplied optional string argument is indistinguishable from an empty
-// one, and "" must therefore mean "not specified" rather than being refused —
-// otherwise /triggeradd without a mode could never be run at all.
+// An unsupplied optional string argument is indistinguishable from an empty
+// one, so "" must mean "not specified" rather than be refused.
 func TestParseTriggerMode(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -503,9 +438,6 @@ func TestParseTriggerMode(t *testing.T) {
 		{name: "surrounding space", value: " any ", want: pb.TriggerMode_TRIGGER_MODE_ANY, wantOK: true},
 		{name: "nonsense", value: "sometimes", wantOK: false},
 		{
-			// The accepted words are a user-facing vocabulary, not the wire
-			// enum. Accepting the enum name would document one spelling in the
-			// error message and silently honour another.
 			name:   "the wire enum name is not a mode word",
 			value:  "TRIGGER_MODE_EXACT",
 			wantOK: false,
@@ -526,9 +458,6 @@ func TestParseTriggerMode(t *testing.T) {
 	}
 }
 
-// TestTriggerModeNamesListsEveryAcceptedMode: the list is what a refusal shows
-// the user, so a mode that parses but is not named leaves them guessing, and a
-// name that does not parse sends them in circles.
 func TestTriggerModeNamesListsEveryAcceptedMode(t *testing.T) {
 	got := triggerModeNames()
 
@@ -542,10 +471,6 @@ func TestTriggerModeNamesListsEveryAcceptedMode(t *testing.T) {
 	}
 }
 
-// TestParseStatsKind pins the vocabulary for the leaderboard kind. "" defaults to
-// the occurred board, because that is the one a bare /triggerstats means: an
-// organic fire is the interesting statistic, a forced one is somebody poking the
-// bot.
 func TestParseStatsKind(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -561,8 +486,6 @@ func TestParseStatsKind(t *testing.T) {
 		{name: "surrounding space", value: " occurred ", want: pb.ActionType_ACTION_TYPE_TRIGGER_OCCURRED, wantOK: true},
 		{name: "nonsense", value: "everything", wantOK: false},
 		{
-			// The server refuses anything but the two trigger action types, so a
-			// reminder action must not be reachable from here either.
 			name:   "another action type is not a kind word",
 			value:  "reminder_created",
 			wantOK: false,
@@ -583,8 +506,6 @@ func TestParseStatsKind(t *testing.T) {
 	}
 }
 
-// TestStatsKindNamesListsEveryAcceptedKind is TestTriggerModeNamesListsEveryAcceptedMode
-// for the leaderboard, and exists for the same reason.
 func TestStatsKindNamesListsEveryAcceptedKind(t *testing.T) {
 	got := statsKindNames()
 
@@ -598,15 +519,7 @@ func TestStatsKindNamesListsEveryAcceptedKind(t *testing.T) {
 	}
 }
 
-// ── rendering ────────────────────────────────────────────────────────────────
-
-// TestTriggerRenderingShowsTheEffectiveChance is ADR-0021 made visible.
-//
-// The stored chance column doubles as "unset": a stored 0 means the default, and
-// exact mode is weighted on top of that. Rendering the stored value therefore
-// tells the user something that is actively false — "0%" for a trigger that fires
-// one message in twenty, and "40%" for one that always fires. Both views share
-// the assertion because both are read by the same user in the same session.
+// See ADR-0021: a stored 0 means the default, and exact mode weights on top.
 func TestTriggerRenderingShowsTheEffectiveChance(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -653,9 +566,7 @@ func TestTriggerRenderingShowsTheEffectiveChance(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Guard the premise: if the engine's weighting changed, the
-			// assertion below would be pinning a stale number rather than the
-			// rule.
+			// Guards against pinning a stale number if the weighting changes.
 			if premise := fmt.Sprintf("%d%%", trigger.EffectiveChance(tt.stored, tt.mode)); premise != tt.want {
 				t.Fatalf("test premise drifted: EffectiveChance(%d, %v) renders as %q, want %q",
 					tt.stored, tt.mode, premise, tt.want)
@@ -683,10 +594,6 @@ func TestTriggerRenderingShowsTheEffectiveChance(t *testing.T) {
 	}
 }
 
-// TestTriggerRenderingCarriesTheIdentifyingFields: the id is what /triggerinfo,
-// /triggermod, /triggerdel and /triggerexec are all given by hand afterwards, so
-// a list line without one is a dead end, and the phrase is the only way to tell
-// two lines apart.
 func TestTriggerRenderingCarriesTheIdentifyingFields(t *testing.T) {
 	trg := triggerFor(10, pb.TriggerMode_TRIGGER_MODE_ANY, "good morning", nil)
 
@@ -706,10 +613,6 @@ func TestTriggerRenderingCarriesTheIdentifyingFields(t *testing.T) {
 	}
 }
 
-// TestFormatTriggerInfoShowsTheModeAndWhetherThereIsAFile: mode and chance
-// together are what explain why a trigger did or did not fire, and "does this
-// thing post a file into my guild" is the other question the detail view exists
-// to answer.
 func TestFormatTriggerInfoShowsTheModeAndWhetherThereIsAFile(t *testing.T) {
 	for _, mode := range []pb.TriggerMode{
 		pb.TriggerMode_TRIGGER_MODE_EXACT,
@@ -725,8 +628,6 @@ func TestFormatTriggerInfoShowsTheModeAndWhetherThereIsAFile(t *testing.T) {
 		})
 	}
 
-	// Everything but the file is identical, so the two renderings can only
-	// differ if the file is actually reported.
 	withFile := formatTriggerInfo(triggerFor(10, pb.TriggerMode_TRIGGER_MODE_ANY, "",
 		triggerFileFor(triggerFileID, "cat.png", "image/png")))
 	withoutFile := formatTriggerInfo(triggerFor(10, pb.TriggerMode_TRIGGER_MODE_ANY, "", nil))
@@ -736,10 +637,8 @@ func TestFormatTriggerInfoShowsTheModeAndWhetherThereIsAFile(t *testing.T) {
 	}
 }
 
-// TestTriggerRenderingIsNilSafe. Both renderers walk a protobuf the server built
-// row by row, and discordgo dispatches handlers without a recover(), so a nil
-// deref in a renderer takes the process down rather than failing one command.
-// The assertion is that these return at all.
+// discordgo dispatches handlers without a recover(), so a nil deref here would
+// take the process down. The assertion is that these return at all.
 func TestTriggerRenderingIsNilSafe(t *testing.T) {
 	formatTriggerInfo(nil)
 	renderTriggerLine(nil)
@@ -747,15 +646,7 @@ func TestTriggerRenderingIsNilSafe(t *testing.T) {
 	formatTriggerStats([]*pb.TriggerStat{nil}, pb.ActionType_ACTION_TYPE_TRIGGER_CALLED)
 }
 
-// TestFormatTriggerStatsNamesTheKindAndRendersEveryRow: the two leaderboards are
-// different questions — what fired on its own versus what somebody made fire —
-// and they are rendered by the same function from the same shape, so a board that
-// does not say which one it is is unreadable. One line per row, because a
-// leaderboard that collapses or repeats rows is worse than none.
-//
-// The wording is deliberately not pinned: the reply may name the counter in the
-// user's words rather than the enum's. What it may not do is render the two
-// boards identically.
+// The wording is not pinned, only that the two boards do not render identically.
 func TestFormatTriggerStatsNamesTheKindAndRendersEveryRow(t *testing.T) {
 	stats := []*pb.TriggerStat{
 		statFor(triggerID, "gm", 41),
@@ -802,10 +693,6 @@ func TestFormatTriggerStatsNamesTheKindAndRendersEveryRow(t *testing.T) {
 	}
 }
 
-// TestFormatTriggerStatsSaysWhenNothingIsRecorded: a fresh guild has no rows, and
-// a bare title with nothing under it reads as a broken command rather than as an
-// empty leaderboard. The same applies to the nil slice, which is what a
-// GetTriggerStats response with no rows actually decodes to.
 func TestFormatTriggerStatsSaysWhenNothingIsRecorded(t *testing.T) {
 	for _, empty := range []struct {
 		name  string
@@ -820,14 +707,11 @@ func TestFormatTriggerStatsSaysWhenNothingIsRecorded(t *testing.T) {
 				t.Fatal("an empty leaderboard rendered nothing at all")
 			}
 
-			// The exact wording is not pinned, only that the absence is stated.
 			lower := strings.ToLower(got)
 			if !strings.Contains(lower, "no") && !strings.Contains(lower, "nothing") {
 				t.Errorf("an empty leaderboard does not say it is empty: %q", got)
 			}
 
-			// And it has to say which counter is empty, for the same reason the
-			// populated board does.
 			if other := formatTriggerStats(empty.stats, pb.ActionType_ACTION_TYPE_TRIGGER_CALLED); got == other {
 				t.Errorf("both empty leaderboards read identically: %q", got)
 			}
@@ -835,15 +719,8 @@ func TestFormatTriggerStatsSaysWhenNothingIsRecorded(t *testing.T) {
 	}
 }
 
-// ── the file reply ───────────────────────────────────────────────────────────
-
-// TestTriggerFileResponseNamesAndCarriesTheAttachment is the playback half of a
-// file trigger.
-//
-// The server never stores an original filename, so every name here is derived:
-// the display name it computed, else the file id, else a constant. Nothing may
-// fall through to an empty name, because Discord rejects a nameless attachment
-// and the trigger would then fire as silence.
+// Every name is derived, and none may be empty: Discord rejects a nameless
+// attachment.
 func TestTriggerFileResponseNamesAndCarriesTheAttachment(t *testing.T) {
 	content := []byte("\x89PNG not really")
 
@@ -883,8 +760,6 @@ func TestTriggerFileResponseNamesAndCarriesTheAttachment(t *testing.T) {
 				t.Errorf("Content = %q, want %q", resp.File.Content, content)
 			}
 
-			// It has to survive the Discord renderer too: a name or type that is
-			// dropped between the two is the same bug as never setting it.
 			files := responseFiles(resp)
 			if len(files) != 1 {
 				t.Fatalf("responseFiles produced %d attachments, want 1", len(files))
@@ -899,12 +774,6 @@ func TestTriggerFileResponseNamesAndCarriesTheAttachment(t *testing.T) {
 	}
 }
 
-// TestTriggerFileResponseAlwaysNamesTheAttachment: Discord rejects an attachment
-// with a blank filename outright, and the file IS the reply, so an unnamed
-// attachment means the trigger fires as silence. The server always sends at
-// least an id, so this is the last resort — but the last resort is the one
-// nobody exercises by hand.
-//
 // Which constant it lands on is not pinned; that it is never blank is.
 func TestTriggerFileResponseAlwaysNamesTheAttachment(t *testing.T) {
 	resp := triggerFileResponse(triggerFileFor("", "", "image/png"), []byte("some bytes"))
@@ -924,26 +793,14 @@ func TestTriggerFileResponseAlwaysNamesTheAttachment(t *testing.T) {
 	}
 }
 
-// TestTriggerFileResponseIsNilSafe: TryTriggerResp's reply is a oneof and its
-// file case is unset both when nothing fired and when the server could not
-// explain the row it selected. This runs on the gateway path, where discordgo
-// recovers nothing, so neither may panic and neither may post an empty file.
 func TestTriggerFileResponseIsNilSafe(t *testing.T) {
 	if files := responseFiles(triggerFileResponse(nil, nil)); len(files) != 0 {
 		t.Errorf("a nil file produced %d attachments, want none", len(files))
 	}
 }
 
-// ── the current instance ─────────────────────────────────────────────────────
-
-// TestCurrentTriggerInstanceCarriesThePlatformAndTheGuild.
-//
-// Every trigger RPC is scoped to an instance, and the server refuses one whose
-// platform_enum or instance_meta is absent — with InvalidArgument, which reaches
-// the user verbatim. So presence is asserted, not just the values. The jsonb
-// shape is compared against callermeta's own builder because instance rows are
-// looked up by jsonb equality: a differently keyed struct silently creates a
-// second instance row for the same guild.
+// Compared against callermeta's own builder: instance rows are looked up by
+// jsonb equality, so a differently keyed struct silently duplicates the guild.
 func TestCurrentTriggerInstanceCarriesThePlatformAndTheGuild(t *testing.T) {
 	ctx := withOrigin(context.Background(), "guild-1", "chan-1")
 
@@ -991,21 +848,13 @@ func TestCurrentTriggerInstanceRefusesAContextWithNoOrigin(t *testing.T) {
 	}
 }
 
-// ── handler-level validation ─────────────────────────────────────────────────
-
-// TestTriggerAddRefusesATriggerWithNothingToSay is acceptance criterion 3. The
-// server enforces it too, but a round trip to be told an obvious thing is poor
-// UX — and the message has to name BOTH ways out, or the user is left guessing
-// which of the two optional arguments they were supposed to fill in.
 func TestTriggerAddRefusesATriggerWithNothingToSay(t *testing.T) {
 	err := invokeTrigger(t, triggerAddCommand(), map[string]any{"phrase": "gm"})
 	requireInvalidArgument(t, err, "reply", "file")
 }
 
-// TestTriggerCommandsRefuseAnUnknownMode is acceptance criterion 5 for mode.
-// Both commands take one, and both must list the accepted words: "invalid mode"
-// on its own leaves the user to guess a vocabulary that exists nowhere in the
-// Discord UI, since command.ArgType cannot render a choice list.
+// The refusal must list the accepted words: command.ArgType cannot render a
+// choice list, so the vocabulary appears nowhere in the Discord UI.
 func TestTriggerCommandsRefuseAnUnknownMode(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1032,17 +881,11 @@ func TestTriggerCommandsRefuseAnUnknownMode(t *testing.T) {
 	}
 }
 
-// TestTriggerStatsRefusesAnUnknownKind is acceptance criterion 5 for kind, and
-// exists for the same reason.
 func TestTriggerStatsRefusesAnUnknownKind(t *testing.T) {
 	err := invokeTrigger(t, triggerStatsCommand(), map[string]any{"kind": "everything"})
 	requireInvalidArgument(t, err, "occurred", "called")
 }
 
-// TestTriggerCommandsRefuseAnOutOfRangeChance: the column has a CHECK and the
-// server validates it, so an out-of-range chance can only ever come back as an
-// error — but the message must name the range, because "chance" has no visible
-// bounds in the Discord UI and 0 already means something non-obvious.
 func TestTriggerCommandsRefuseAnOutOfRangeChance(t *testing.T) {
 	overMax := int64(trigger.MaxChance) + 1
 	bounds := []string{"0", fmt.Sprint(trigger.MaxChance)}
@@ -1082,19 +925,8 @@ func TestTriggerCommandsRefuseAnOutOfRangeChance(t *testing.T) {
 	}
 }
 
-// fakeTriggerClient captures the request a handler built, so the SHAPE of an
-// outgoing request can be asserted without a server.
-//
-// It exists for one reason: UpdateTriggerReq is patch-shaped, the server branches
-// on HasX(), and "sent a defaulted value for an argument the caller omitted" is
-// the named worst-bug class in this codebase — editing a trigger's reply must not
-// silently reset its chance. Nothing else can observe that but the request.
-//
-// It embeds ginbotv1connect.TriggerServiceClient (the Connect-generated
-// interface) rather than the deleted grpc-go pb.TriggerServiceClient, and its
-// methods carry the Connect signature — (context.Context,
-// *connect.Request[Req]) (*connect.Response[Resp], error) — so it plugs
-// directly into a *client.Clients literal via the Trigger field.
+// fakeTriggerClient captures the request a handler built, so an outgoing
+// request's shape can be asserted without a server.
 type fakeTriggerClient struct {
 	ginbotv1connect.TriggerServiceClient
 
@@ -1103,10 +935,6 @@ type fakeTriggerClient struct {
 	list   *pb.ListTriggersReq
 	stats  *pb.GetTriggerStatsReq
 
-	// listCalls counts ListTriggers invocations. It exists for
-	// TestListTriggersWithMineMakesExactlyOneRPC: the payoff of deleting
-	// ListTriggersReq.user_id is a round trip that no longer happens, and a
-	// count is the only thing that can observe a round trip's absence.
 	listCalls int
 
 	err error
@@ -1151,19 +979,12 @@ func (f *fakeTriggerClient) GetTriggerStats(_ context.Context, in *connect.Reque
 	return connect.NewResponse(pb.GetTriggerStatsResp_builder{}.Build()), nil
 }
 
-// guildContext is the context a handler receives for a command typed in a
-// guild, carrying clients the way commandContext does in production —
-// through the context (withClients), never through a package-level global.
-// Passing a bare context here would nil-panic the moment a handler reached
-// clientsFrom(ctx).Trigger, exactly as an unset client.TriggerServiceClient
-// global used to.
+// Clients travel through the context, as commandContext does in production.
 func guildContext(clients *client.Clients) context.Context {
 	ctx := withOrigin(context.Background(), "guild-1", "channel-1")
 	return withClients(ctx, clients)
 }
 
-// invokeNamed runs a command's handler with named arguments, the way a slash
-// invocation delivers them.
 func invokeNamed(t *testing.T, cmd command.Command, ctx context.Context, args map[string]any) (*command.Response, error) {
 	t.Helper()
 
@@ -1175,14 +996,8 @@ func invokeNamed(t *testing.T, cmd command.Command, ctx context.Context, args ma
 	return cmd.Handler(ctx, inv)
 }
 
-// TestModifyTriggerSendsOnlyTheSuppliedFields is the test the patch shape exists
-// for.
-//
-// UpdateTriggerReq is patch-shaped: the server leaves a field alone when HasX()
-// is false. So an omitted chance must arrive UNSET, not as 0 — and 0 is not even
-// a neutral value here, it is the stored sentinel meaning "use the default"
-// (ADR-0021), so sending it would rewrite a tuned 80% trigger to the default 5%
-// every time somebody edited its reply.
+// An omitted chance must arrive unset: 0 is the stored "use the default"
+// sentinel, so sending it would rewrite a tuned trigger (ADR-0021).
 func TestModifyTriggerSendsOnlyTheSuppliedFields(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1227,11 +1042,8 @@ func TestModifyTriggerSendsOnlyTheSuppliedFields(t *testing.T) {
 			wantFile: true,
 		},
 		{
-			// Chat arguments bind positionally, so changing a later argument
-			// means typing "" for the earlier ones. An empty placeholder is not
-			// a request to clear the field — and for reply it MUST not be, because
-			// the server writes NULL and then chk_reply_or_file fails as a bare
-			// codes.Internal.
+			// Chat arguments bind positionally, so "" is a placeholder for an
+			// earlier argument, not a request to clear the field.
 			name:     "empty placeholders are not changes",
 			args:     map[string]any{"id": triggerID, "phrase": "", "reply": "", "file": "", "mode": "regex"},
 			wantMode: true,
@@ -1276,9 +1088,7 @@ func TestModifyTriggerSendsOnlyTheSuppliedFields(t *testing.T) {
 	}
 }
 
-// An id with nothing to change must be refused rather than sent. The server
-// would accept it, change nothing and report success, which reads to the user as
-// an edit that did not stick.
+// The server would accept an empty patch, change nothing and report success.
 func TestModifyTriggerRefusesAnEmptyPatch(t *testing.T) {
 	for _, args := range []map[string]any{
 		{"id": triggerID},
@@ -1297,9 +1107,7 @@ func TestModifyTriggerRefusesAnEmptyPatch(t *testing.T) {
 	}
 }
 
-// A trigger answers with a reply or a file. Both at once is storable —
-// chk_reply_or_file is an OR — and the server fires the REPLY, so the file would
-// be paid for and never played. Refused before the RPC, so no CDN fetch happens.
+// Refused before the RPC, so no CDN fetch happens.
 func TestAddTriggerRefusesBothAReplyAndAFile(t *testing.T) {
 	fake := &fakeTriggerClient{}
 	ctx := guildContext(&client.Clients{Trigger: fake})
@@ -1317,9 +1125,7 @@ func TestAddTriggerRefusesBothAReplyAndAFile(t *testing.T) {
 	}
 }
 
-// The mode is only sent when the caller chose one: UNSPECIFIED is what "did not
-// choose" looks like, and the server applies its own default for it. Sending it
-// explicitly would work today but pins a default the server owns.
+// Sending UNSPECIFIED explicitly would pin a default the server owns.
 func TestAddTriggerLeavesAnUnchosenModeUnset(t *testing.T) {
 	fake := &fakeTriggerClient{}
 	ctx := guildContext(&client.Clients{Trigger: fake})
@@ -1344,13 +1150,6 @@ func TestAddTriggerLeavesAnUnchosenModeUnset(t *testing.T) {
 	}
 }
 
-// explainRegexRefusal is the only client-side error REWRITING in this surface,
-// and it is what makes acceptance criterion 4 readable: errorMessage flattens
-// PermissionDenied to "You are not allowed to do that." but passes a
-// FailedPrecondition message through verbatim.
-//
-// The guard matters as much as the rewrite. It must not explain an unrelated
-// refusal as a clearance problem, and it must not touch a non-regex request.
 func TestExplainRegexRefusal(t *testing.T) {
 	denied := connect.NewError(connect.CodePermissionDenied, errors.New("regex triggers require CLEARANCE_MODERATOR clearance"))
 
@@ -1400,7 +1199,6 @@ func TestExplainRegexRefusal(t *testing.T) {
 					t.Errorf("message %q does not name %q", connErr.Message(), tt.wantText)
 				}
 			}
-			// Whatever the outcome, the user must never see a raw code name.
 			if message := errorMessage(got); message == "" {
 				t.Error("errorMessage produced nothing")
 			}
@@ -1408,9 +1206,6 @@ func TestExplainRegexRefusal(t *testing.T) {
 	}
 }
 
-// The explained refusal has to survive errorMessage, which is the only thing
-// standing between a Connect error and the channel. A PermissionDenied would be
-// flattened to a message that names no requirement at all.
 func TestExplainedRegexRefusalReachesTheUser(t *testing.T) {
 	denied := connect.NewError(connect.CodePermissionDenied, errors.New("regex triggers require CLEARANCE_MODERATOR clearance"))
 
@@ -1425,18 +1220,12 @@ func TestExplainedRegexRefusalReachesTheUser(t *testing.T) {
 	}
 }
 
-// The clearance word is derived from the enum rather than typed out, so it cannot
-// drift from the floor the server actually enforces.
 func TestRegexClearanceRequirementMatchesTheEnum(t *testing.T) {
 	if want := "moderator"; regexClearanceRequirement != want {
 		t.Errorf("regexClearanceRequirement = %q, want %q", regexClearanceRequirement, want)
 	}
 }
 
-// clampTriggerLimit clamps rather than refuses, because someone typing 1000 means
-// "as many as you can". The maximum has to fit inside maxChatContent, or asking
-// for the advertised maximum produces the truncated reply the cap exists to
-// avoid.
 func TestClampTriggerLimit(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1478,15 +1267,8 @@ func TestTriggerListMaxLimitFitsOneMessage(t *testing.T) {
 	}
 }
 
-// mine narrows the list to the caller's own triggers, and is only sent when it
-// was asked for.
-//
-// It replaced a user_id the client had to go and fetch. Sending it
-// unconditionally would be worse than useless: an always-set `mine` silently
-// turns /trigger list into "your triggers", which is the same regression
-// TestListTriggersScopesToTheOriginInstanceRatherThanTheCaller guards from the
-// server side, and it looks correct from the client because the caller's own
-// triggers are still in the answer.
+// An always-set mine would silently turn the listing into "your triggers", and
+// still look correct because the caller's own triggers are in the answer.
 func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
 	t.Run("omitted", func(t *testing.T) {
 		fake := &fakeTriggerClient{}
@@ -1509,8 +1291,6 @@ func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
 		}
 	})
 
-	// The negative above only means something if the positive is reachable:
-	// without this, a handler that never set the field would pass.
 	t.Run("supplied", func(t *testing.T) {
 		fake := &fakeTriggerClient{}
 		ctx := guildContext(&client.Clients{Trigger: fake})
@@ -1526,9 +1306,6 @@ func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
 		}
 	})
 
-	// An explicit false is the same as omitting it: the server treats the field
-	// as a plain bool, so sending mine=false must not narrow anything. Pinned
-	// because `--mine=false` is spellable in Discord's UI.
 	t.Run("explicitly false", func(t *testing.T) {
 		fake := &fakeTriggerClient{}
 		ctx := guildContext(&client.Clients{Trigger: fake})
@@ -1545,12 +1322,6 @@ func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
 	})
 }
 
-// countingUserClient counts GetUser calls so that a round trip which no longer
-// happens can be asserted to not happen.
-//
-// A *client.Clients with a nil User field would also catch a regression, by
-// panicking, but as an unrelated-looking crash rather than a named failure —
-// and only for as long as nothing else in the package installs one.
 type countingUserClient struct {
 	ginbotv1connect.UserServiceClient
 
@@ -1564,20 +1335,8 @@ func (c *countingUserClient) GetUser(_ context.Context, _ *connect.Request[pb.Ge
 	return connect.NewResponse(pb.GetUserResp_builder{User: pb.User_builder{Id: &id}.Build()}.Build()), nil
 }
 
-// TestListTriggersWithMineMakesExactlyOneRPC is the user-visible payoff of
-// deleting ListTriggersReq.user_id, and the only thing that will ever notice if
-// it regresses.
-//
-// `--mine` used to cost two RPCs: a UserService.GetUser purely to learn the
-// caller's own UUID, then ListTriggers carrying it back. The server resolves the
-// caller from metadata on every call, so the first round trip was asking the
-// server to tell the client something the server already knew — and it doubled
-// the latency of the command as well as failing it outright whenever GetUser
-// failed.
-//
-// Nothing about the RESULT changes if that round trip comes back, which is why
-// this is asserted by counting calls rather than by inspecting the request: a
-// reintroduced GetUser would produce exactly the same listing.
+// Counted rather than inspected: a reintroduced GetUser round trip would
+// produce exactly the same listing.
 func TestListTriggersWithMineMakesExactlyOneRPC(t *testing.T) {
 	fake := &fakeTriggerClient{}
 	users := &countingUserClient{}
@@ -1595,8 +1354,6 @@ func TestListTriggersWithMineMakesExactlyOneRPC(t *testing.T) {
 			"the caller's own id is resolved from metadata server-side, so fetching it first is a round trip for nothing",
 			users.getUserCalls)
 	}
-	// The request still has to ASK for the narrowing, or "one RPC" was achieved
-	// by dropping the feature rather than by dropping the lookup.
 	if fake.list == nil {
 		t.Fatal("no ListTriggers request was sent")
 	}
@@ -1605,9 +1362,6 @@ func TestListTriggersWithMineMakesExactlyOneRPC(t *testing.T) {
 	}
 }
 
-// The stats request must name the caller's own instance and the parsed counter.
-// The server refuses a leaderboard for any other instance, so an unset one is a
-// FailedPrecondition rather than a wrong answer.
 func TestTriggerStatsScopesToTheCallersInstance(t *testing.T) {
 	fake := &fakeTriggerClient{}
 	ctx := guildContext(&client.Clients{Trigger: fake})
@@ -1629,10 +1383,6 @@ func TestTriggerStatsScopesToTheCallersInstance(t *testing.T) {
 	}
 }
 
-// A trigger command used in a direct message is refused before the RPC. The
-// refusal has to be a FailedPrecondition, which errorMessage passes through
-// verbatim, so the user is told to use it in a server rather than shown
-// "Something went wrong."
 func TestTriggerCommandsRefuseADirectMessage(t *testing.T) {
 	commands := map[string]command.Command{
 		"add":   triggerAddCommand(),
@@ -1649,7 +1399,7 @@ func TestTriggerCommandsRefuseADirectMessage(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeTriggerClient{}
 
-			// An origin with no guild is exactly what a DM delivers.
+			// An origin with no guild is what a DM delivers.
 			ctx := withOrigin(context.Background(), "", "dm-channel")
 			ctx = withClients(ctx, &client.Clients{Trigger: fake})
 
@@ -1664,9 +1414,7 @@ func TestTriggerCommandsRefuseADirectMessage(t *testing.T) {
 	}
 }
 
-// A trigger carrying BOTH a reply and a file is storable, and the server fires
-// the reply. So the rendering must show the reply — showing the file would tell
-// the user their trigger does the opposite of what it does.
+// A row can hold both, and the server fires the reply.
 func TestTriggerRenderingPrefersTheReplyWhenBothAreSet(t *testing.T) {
 	file := triggerFileFor(triggerFileID, "cat.png", "image/png")
 	both := triggerFor(0, pb.TriggerMode_TRIGGER_MODE_ANY, "good morning", file)
@@ -1686,10 +1434,8 @@ func TestTriggerRenderingPrefersTheReplyWhenBothAreSet(t *testing.T) {
 	}
 }
 
-// Slow is what keeps a command whose server side fetches from a CDN inside
-// Discord's three-second interaction deadline. Marking it is the only thing that
-// makes runInteraction acknowledge before running the handler, so the flag is
-// load-bearing and easy to lose in a refactor.
+// Slow makes runInteraction acknowledge within Discord's 3s deadline before
+// running a handler whose server side fetches from a CDN.
 func TestCommandsWhoseServerFetchesMediaAreMarkedSlow(t *testing.T) {
 	slow := map[string]bool{
 		"triggeradd": true,

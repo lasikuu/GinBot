@@ -16,41 +16,13 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// repostOrigin is a fixed, valid call origin: an instance and a destination,
-// so every test below is exercising the SAME "this call has a real guild and
-// channel" shape unless it deliberately omits the origin.
 var repostOrigin = callermeta.Origin{InstanceUID: "repost-instance", DestinationUID: "repost-destination"}
 
-// repostCtx attaches both caller identity and call origin, in that order —
-// originCtx must run after callerCtx, matching triggerCtx in
-// trigger_integration_test.go.
 func repostCtx(platformUID string) context.Context {
 	return originCtx(callerCtx(pb.Platform_PLATFORM_DISCORD, platformUID), repostOrigin)
 }
 
-// ── Assumed symbols from pkg/grpc/server/repost.go (spec §3.7) ───────────────
-//
-// Recorded because these are the symbols the tests depend on; the tests below
-// were originally written against the
-// specified interface reproduced in the test-authoring brief:
-//
-//	type RepostServer struct { pb.UnimplementedRepostServiceServer; /* unexported */ }
-//	func NewRepostServer() *RepostServer
-//	func newRepostServer(fetcher *storage.Fetcher, hasher *fingerprint.Hasher, norm *urlnorm.Canonicaliser, tiers repost.Tiers) *RepostServer
-//	func (s *RepostServer) CheckRepost(ctx context.Context, req *pb.CheckRepostReq) (*pb.CheckRepostResp, error)
-//
-// Any path that reaches pkg/db needs a live Postgres, so these tests are
-// deliberately confined to paths that are refused before the handler ever
-// resolves an instance: origin/clearance rejection and protovalidate
-// rejection. Everything that reaches the handler body — including candidates
-// that are merely skipped, like an excluded link or a refused attachment
-// fetch — needs a database, because CheckRepost resolves the calling
-// instance from origin metadata before it looks at any candidate at all. Those
-// live in repost_integration_test.go.
-
-// repostHarness registers one Discord identity at CLEARANCE_REGISTERED, the
-// floor every other guarded RPC in this package requires, mirroring
-// triggerHarness in trigger_test.go.
+// repostHarness registers one Discord identity at CLEARANCE_REGISTERED.
 func repostHarness(t *testing.T, opts ...harnessOption) (*harness, string) {
 	t.Helper()
 
@@ -63,9 +35,7 @@ func repostHarness(t *testing.T, opts ...harnessOption) (*harness, string) {
 	return h, platformUID
 }
 
-// linkCandidate builds a minimally valid link candidate, so tests about a
-// DIFFERENT field's validation are not accidentally rejected for missing an
-// unrelated required field.
+// linkCandidate is minimally valid, so a test about another field is not rejected for it.
 func linkCandidate(url string) *pb.RepostCandidate {
 	kind := pb.RepostKind_REPOST_KIND_LINK
 	return pb.RepostCandidate_builder{Kind: &kind, Url: &url}.Build()
@@ -76,9 +46,7 @@ func imageCandidate(url string) *pb.RepostCandidate {
 	return pb.RepostCandidate_builder{Kind: &kind, Url: &url}.Build()
 }
 
-// baseCheckRepostReq builds an otherwise-valid CheckRepostReq around the given
-// candidates, so a test about one field does not have to restate every other
-// required field.
+// baseCheckRepostReq is otherwise valid, so a test about one field restates nothing else.
 func baseCheckRepostReq(candidates ...*pb.RepostCandidate) *pb.CheckRepostReq {
 	messageUID := "message-1"
 	authorUID := "author-1"
@@ -89,11 +57,6 @@ func baseCheckRepostReq(candidates ...*pb.RepostCandidate) *pb.CheckRepostReq {
 	}.Build()
 }
 
-// ── No resolvable origin ──────────────────────────────────────────────────────
-
-// TestCheckRepostRequiresAResolvableOrigin: a call with caller identity but no
-// origin metadata (a direct message, in Discord terms) must be refused with
-// FailedPrecondition, per the spec's explicit statement of this behaviour.
 func TestCheckRepostRequiresAResolvableOrigin(t *testing.T) {
 	h, uid := repostHarness(t)
 
@@ -104,15 +67,9 @@ func TestCheckRepostRequiresAResolvableOrigin(t *testing.T) {
 	requireCode(t, err, connect.CodeFailedPrecondition)
 }
 
-// ── Clearance / caller resolution ────────────────────────────────────────────
-
-// TestCheckRepostRefusesAnUnregisteredCaller: a caller whose platform identity
-// the directory does not know must be refused by the clearance interceptor,
-// before the handler ever runs. dir.resolveCount() proves the interceptor
-// actually attempted resolution, distinguishing this from any other reason
-// the call might fail.
+// dir.resolveCount() proves the clearance interceptor actually attempted resolution.
 func TestCheckRepostRefusesAnUnregisteredCaller(t *testing.T) {
-	dir := newDirectory() // nobody registered
+	dir := newDirectory()
 	h := newHarness(t, withDirectory(dir))
 
 	ctx := repostCtx("someone-not-registered")
@@ -126,9 +83,6 @@ func TestCheckRepostRefusesAnUnregisteredCaller(t *testing.T) {
 	}
 }
 
-// TestCheckRepostRefusesAnAnonymousCaller: a call carrying no caller identity
-// metadata at all must never be treated as OK, matching the convention in
-// TestAllTriggerRPCsRefuseAnAnonymousCaller.
 func TestCheckRepostRefusesAnAnonymousCaller(t *testing.T) {
 	h, _ := repostHarness(t)
 
@@ -138,14 +92,7 @@ func TestCheckRepostRefusesAnAnonymousCaller(t *testing.T) {
 	}
 }
 
-// ── Validation, before the handler runs ──────────────────────────────────────
-
-// TestCheckRepostValidationRejectsEmptyCandidates covers
-// (buf.validate.field).repeated.min_items = 1. An anonymous context is used
-// deliberately: validation runs before clearance in the interceptor chain, so
-// a malformed request must be rejected regardless of who is calling — and
-// dir.resolveCount() staying at 0 is the proof that clearance was never
-// reached.
+// Covers repeated.min_items = 1; resolveCount 0 proves validation ran before clearance.
 func TestCheckRepostValidationRejectsEmptyCandidates(t *testing.T) {
 	dir := newDirectory()
 	h := newHarness(t, withDirectory(dir))
@@ -158,8 +105,7 @@ func TestCheckRepostValidationRejectsEmptyCandidates(t *testing.T) {
 	}
 }
 
-// TestCheckRepostValidationRejectsTooManyCandidates covers
-// (buf.validate.field).repeated.max_items = 20.
+// Covers (buf.validate.field).repeated.max_items = 20.
 func TestCheckRepostValidationRejectsTooManyCandidates(t *testing.T) {
 	h := newHarness(t, withDirectory(newDirectory()))
 
@@ -172,8 +118,7 @@ func TestCheckRepostValidationRejectsTooManyCandidates(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestCheckRepostValidationRejectsMissingMessageUID covers message_uid's
-// required + min_len constraint.
+// Covers message_uid's required + min_len constraint.
 func TestCheckRepostValidationRejectsMissingMessageUID(t *testing.T) {
 	h := newHarness(t, withDirectory(newDirectory()))
 
@@ -187,8 +132,7 @@ func TestCheckRepostValidationRejectsMissingMessageUID(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestCheckRepostValidationRejectsMissingAuthorUID covers author_uid's
-// required + min_len constraint.
+// Covers author_uid's required + min_len constraint.
 func TestCheckRepostValidationRejectsMissingAuthorUID(t *testing.T) {
 	h := newHarness(t, withDirectory(newDirectory()))
 
@@ -202,8 +146,7 @@ func TestCheckRepostValidationRejectsMissingAuthorUID(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestCheckRepostValidationRejectsACandidateWithNoURL covers url's required +
-// min_len constraint on RepostCandidate.
+// Covers url's required + min_len constraint on RepostCandidate.
 func TestCheckRepostValidationRejectsACandidateWithNoURL(t *testing.T) {
 	h := newHarness(t, withDirectory(newDirectory()))
 
@@ -214,7 +157,7 @@ func TestCheckRepostValidationRejectsACandidateWithNoURL(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// TestCheckRepostValidationRejectsAnOverlongURL covers url's max_len = 2048.
+// Covers url's max_len = 2048.
 func TestCheckRepostValidationRejectsAnOverlongURL(t *testing.T) {
 	h := newHarness(t, withDirectory(newDirectory()))
 
@@ -225,38 +168,15 @@ func TestCheckRepostValidationRejectsAnOverlongURL(t *testing.T) {
 	requireCode(t, err, connect.CodeInvalidArgument)
 }
 
-// Excluded links, unparseable URLs and refused attachment fetches are all
-// "skipped silently" cases per the spec — but CheckRepost resolves the
-// calling instance from origin metadata BEFORE it looks at any candidate
-// (mirroring trigger.go's callerOriginInstanceID, which calls
-// db.GetInstanceByMeta), so exercising any of them through the RPC needs a
-// real database even though the candidate itself never reaches one. Those
-// tests live in repost_integration_test.go
-// (TestCheckRepostSkipsAnExcludedLinkWithoutError,
-// TestCheckRepostSkipsAnUnsupportedURLWithoutError,
-// TestCheckRepostSkipsARefusedAttachmentFetchWithoutError), not here.
+// CheckRepost resolves its instance from origin metadata before looking at any
+// candidate, so even the skipped cases need a database: repost_integration_test.go.
 
-// newRepostServerForTest is a thin wrapper around the unexported constructor
-// so every repost test in this package has one clearly-named call site if the
-// constructor's argument order or name needs reconciling against the real
-// implementation.
 func newRepostServerForTest(fetcher *storage.Fetcher, hasher *fingerprint.Hasher, norm *urlnorm.Canonicaliser, tiers repost.Tiers) *RepostServer {
 	return newRepostServer(fetcher, hasher, norm, tiers)
 }
 
-// ── posted_at is client-supplied and therefore not trusted ──────────────────
-
-// TestClampPostedAtRejectsImplausibleValues covers a value that is
-// load-bearing twice: posted_at is the tie-break deciding which of two equally
-// close matches counts as "the original", and it is what the retention sweep
-// measures age against.
-//
-// The unset-Timestamp case is the one that actually bites. A zero
-// google.protobuf.Timestamp still reports HasPostedAt, and it decodes to year
-// 1 — which would make that entry permanently the oldest "original" in every
-// future tie-break AND immediately eligible for deletion under any configured
-// retention. Discord sends an unset timestamp on some partial MESSAGE_UPDATE
-// payloads, so this is a real path, not a hypothetical one.
+// posted_at is client-supplied: a zero Timestamp still reports HasPostedAt and decodes
+// to year 1, and Discord sends one on partial MESSAGE_UPDATE payloads.
 func TestClampPostedAtRejectsImplausibleValues(t *testing.T) {
 	now := time.Now().UTC()
 

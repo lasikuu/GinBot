@@ -20,21 +20,16 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// The interceptor logs on its failure paths, and log.Z stays nil until a
-	// binary calls log.InitializeLogger — which tests never do.
+	// log.Z stays nil until a binary calls log.InitializeLogger.
 	log.Z = zap.NewNop()
 	log.S = log.Z.Sugar()
 	m.Run()
 }
 
-// Procedures used by the pure tests. They are the generated
-// ginbotv1connect.*Procedure constants rather than string literals so a proto
-// rename breaks compilation here instead of silently turning a guarded method
-// into a public one.
+// Procedures used by the pure tests, keyed as in testRequirements.
 const (
-	// registeredMethod needs at least CLEARANCE_REGISTERED in testRequirements.
 	registeredMethod = ginbotv1connect.UserServiceGetUserProcedure
-	// moderatorMethod needs exactly CLEARANCE_MODERATOR.
+	// moderatorMethod needs CLEARANCE_MODERATOR.
 	moderatorMethod = ginbotv1connect.TriggerServiceDeleteTriggerProcedure
 	// adminMethod needs CLEARANCE_ADMINISTRATOR.
 	adminMethod = ginbotv1connect.InstanceServiceCreateInstanceProcedure
@@ -42,8 +37,7 @@ const (
 	publicMethod = ginbotv1connect.UtilityServicePingProcedure
 )
 
-// testRequirements mirrors the shape of the production map without depending
-// on it: some public methods (absent) and three tiers of guarded method.
+// testRequirements mirrors the shape of the production map without depending on it.
 func testRequirements() Requirements {
 	return Requirements{
 		registeredMethod: pb.Clearance_CLEARANCE_REGISTERED,
@@ -52,9 +46,8 @@ func testRequirements() Requirements {
 	}
 }
 
-// callerAt builds a user_account row at a clearance level. Clearance is an
-// int32 on the row, so out-of-band values (a level that is not a declared enum
-// member) are representable and are worth testing.
+// callerAt builds a user_account row at a clearance level; the column is int32,
+// so values that are not declared enum members are representable.
 func callerAt(clearance int32) *model.User {
 	return &model.User{
 		ID:        "018f0000-0000-7000-8000-000000000001",
@@ -64,8 +57,7 @@ func callerAt(clearance int32) *model.User {
 }
 
 // recordingResolver is a CallerResolver with a fixed outcome that records how
-// it was called, so tests can assert both that public methods resolve nobody
-// and that the header identity reaches the resolver intact.
+// it was called.
 type recordingResolver struct {
 	user *model.User
 	err  error
@@ -99,7 +91,6 @@ func (r *recordingResolver) lastCall() (pb.Platform, string) {
 	return r.lastPlatform, r.lastUID
 }
 
-// callResult is everything one trip through the clearance interceptor produced.
 type callResult struct {
 	reached  bool
 	caller   *model.User
@@ -107,8 +98,6 @@ type callResult struct {
 	err      error
 }
 
-// call runs a request for procedure, carrying header, through the clearance
-// interceptor.
 func call(procedure string, header http.Header, reqs Requirements, resolve CallerResolver) callResult {
 	var result callResult
 
@@ -127,8 +116,6 @@ func call(procedure string, header http.Header, reqs Requirements, resolve Calle
 	return result
 }
 
-// wellFormedHeader builds the header a real platform client sends, via
-// callermeta itself so the test cannot disagree with the production encoding.
 func wellFormedHeader(platform pb.Platform, platformUID string) http.Header {
 	header := make(http.Header)
 	header.Set(callermeta.HeaderPlatformEnum, platform.String())
@@ -138,7 +125,6 @@ func wellFormedHeader(platform pb.Platform, platformUID string) http.Header {
 	return header
 }
 
-// requireCode asserts the exact Connect code carried by err.
 func requireCode(t *testing.T, err error, want connect.Code) {
 	t.Helper()
 
@@ -152,8 +138,8 @@ func requireCode(t *testing.T, err error, want connect.Code) {
 	}
 }
 
-// The error mapping is the contract platform clients render to users: an
-// unregistered caller must be told to register, not shown a permissions error.
+// Platform clients render these codes to users: an unregistered caller must be
+// told to register, not shown a permissions error.
 func TestClearanceErrorMapping(t *testing.T) {
 	rawHeader := func(pairs ...string) http.Header {
 		header := make(http.Header)
@@ -182,7 +168,7 @@ func TestClearanceErrorMapping(t *testing.T) {
 			want:     connect.CodeInvalidArgument,
 		},
 		{
-			// The pre-callermeta client sent the enum number; the server reads names.
+			// The server reads enum names, not numbers.
 			name:     "platform_enum sent as a number",
 			method:   registeredMethod,
 			header:   rawHeader(callermeta.HeaderPlatformEnum, "1", callermeta.HeaderUserID, "platform-uid"),
@@ -218,7 +204,6 @@ func TestClearanceErrorMapping(t *testing.T) {
 			want:     connect.CodeInvalidArgument,
 		},
 		{
-			// A guarded method cannot run without knowing who is calling.
 			name:     "clearance required but no user_id header",
 			method:   registeredMethod,
 			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, ""),
@@ -226,8 +211,6 @@ func TestClearanceErrorMapping(t *testing.T) {
 			want:     connect.CodeInvalidArgument,
 		},
 		{
-			// db.GetUserByPlatformUID is the production resolver and reports a
-			// missing row with ErrNotFound.
 			name:     "caller has no user_account row",
 			method:   registeredMethod,
 			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"),
@@ -242,8 +225,7 @@ func TestClearanceErrorMapping(t *testing.T) {
 			want:     connect.CodePermissionDenied,
 		},
 		{
-			// A resolver failure is the server's problem, not the caller's; it
-			// must not masquerade as "you are not registered".
+			// A resolver failure must not masquerade as "you are not registered".
 			name:     "resolver fails",
 			method:   registeredMethod,
 			header:   wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"),
@@ -264,7 +246,7 @@ func TestClearanceErrorMapping(t *testing.T) {
 	}
 }
 
-// The client turns this into "run /register first", so the message has to say so.
+// The client turns this into "run /register first", so the message must say so.
 func TestUnregisteredCallerIsToldToRegister(t *testing.T) {
 	resolver := &recordingResolver{err: db.ErrNotFound}
 
@@ -276,8 +258,8 @@ func TestUnregisteredCallerIsToldToRegister(t *testing.T) {
 	}
 }
 
-// A public method that resolves the caller anyway defeats the point of the map:
-// /ping would start failing for anyone who has not registered.
+// A public method that resolved the caller anyway would start failing /ping for
+// anyone who has not registered.
 func TestPublicMethodNeedsNoHeaderAndResolvesNobody(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
@@ -313,8 +295,6 @@ func TestPublicMethodWithHeaderStillSucceeds(t *testing.T) {
 	}
 }
 
-// A method nobody declared must not be guarded by accident, and equally must
-// not blow up: Connect rejects unknown procedures itself.
 func TestUnknownMethodIsTreatedAsPublic(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
@@ -331,9 +311,7 @@ func TestUnknownMethodIsTreatedAsPublic(t *testing.T) {
 	}
 }
 
-// An empty map declares nothing, so nothing is guarded. Worth pinning: the
-// alternative reading — "unknown means deny" — would lock every client out if
-// the map were ever dropped from the server options.
+// An empty map declares nothing, so nothing is guarded.
 func TestNilRequirementsMakesEverythingPublic(t *testing.T) {
 	resolver := &recordingResolver{user: callerAt(int32(pb.Clearance_CLEARANCE_OWNER))}
 
@@ -392,8 +370,7 @@ func TestCallerFromContextOnABareContext(t *testing.T) {
 }
 
 // Clearance values are non-contiguous (0, 1, 10, 20, 50, 100), so a comparison
-// written against enum ordering rather than the numeric value would let MEMBER
-// through a MODERATOR gate.
+// against enum ordering rather than value would let MEMBER through a MODERATOR gate.
 func TestClearanceBoundaries(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -419,13 +396,10 @@ func TestClearanceBoundaries(t *testing.T) {
 		{"owner meets moderator", pb.Clearance_CLEARANCE_MODERATOR, int32(pb.Clearance_CLEARANCE_OWNER), true},
 		{"owner meets administrator", pb.Clearance_CLEARANCE_ADMINISTRATOR, int32(pb.Clearance_CLEARANCE_OWNER), true},
 		{"owner meets owner exactly", pb.Clearance_CLEARANCE_OWNER, int32(pb.Clearance_CLEARANCE_OWNER), true},
-		// The column is a plain int, so rows can hold values that are not
-		// declared enum members. They must compare numerically, not be treated
-		// as unknown-and-therefore-denied or unknown-and-therefore-allowed.
+		// The column is a plain int, so undeclared values must compare numerically.
 		{"between registered and member meets registered", pb.Clearance_CLEARANCE_REGISTERED, 5, true},
 		{"between registered and member fails member", pb.Clearance_CLEARANCE_MEMBER, 5, false},
 		{"above owner meets owner", pb.Clearance_CLEARANCE_OWNER, 1000, true},
-		// A corrupt or negative row must never satisfy anything.
 		{"negative clearance fails registered", pb.Clearance_CLEARANCE_REGISTERED, -1, false},
 	}
 
@@ -454,9 +428,7 @@ func TestClearanceBoundaries(t *testing.T) {
 	}
 }
 
-// A nil user with a nil error is not the same as an error, and the obvious
-// implementation — read user.Clearance straight after resolving — panics on it,
-// taking the whole server process down.
+// Reading user.Clearance straight after resolving would panic on (nil, nil).
 func TestResolverReturningNoUserAndNoErrorIsRejectedWithoutPanicking(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -475,10 +447,8 @@ func TestResolverReturningNoUserAndNoErrorIsRejectedWithoutPanicking(t *testing.
 		t.Error("handler ran without a resolved caller")
 	}
 
-	// The exact code is deliberately not pinned: "no user and no error" is a
-	// resolver contract violation that the specification does not map, and both
-	// FailedPrecondition (treat as unregistered) and Internal (treat as a bug)
-	// are defensible. What matters is that it is neither a success nor a panic.
+	// The exact code is not pinned; what matters is that it is neither a success
+	// nor a panic.
 	switch code := connect.CodeOf(got.err); code {
 	case connect.CodeFailedPrecondition, connect.CodeInternal:
 	default:
@@ -486,19 +456,8 @@ func TestResolverReturningNoUserAndNoErrorIsRejectedWithoutPanicking(t *testing.
 	}
 }
 
-// TestNilResolverFailsClosedOnAGuardedMethod.
-//
-// A nil CallerResolver on a guarded method is a wiring bug — the server was
-// constructed without one — and the only two possible behaviours are "deny
-// everything" and "dereference nil on the first guarded request". This is the
-// one interceptor failure path the rest of this file did not reach: the
-// resolver-returns-an-error and resolver-returns-(nil, nil) cases both supply
-// a resolver, so neither exercises the guard at all.
-//
-// The public path is asserted alongside it, because failing closed must not
-// mean failing closed for /ping too: health checks and latency probes have to
-// keep answering while identity is broken, which is precisely when someone is
-// looking at them.
+// Failing closed must not extend to public methods: probes have to keep
+// answering while identity is broken.
 func TestNilResolverFailsClosedOnAGuardedMethod(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -508,8 +467,7 @@ func TestNilResolverFailsClosedOnAGuardedMethod(t *testing.T) {
 
 	guarded := call(registeredMethod, wellFormedHeader(pb.Platform_PLATFORM_DISCORD, "platform-uid"), testRequirements(), nil)
 
-	// Internal, not PermissionDenied or FailedPrecondition: the caller did
-	// nothing wrong and must not be told to register or to ask for access.
+	// Internal: the caller did nothing wrong and must not be told to register.
 	requireCode(t, guarded.err, connect.CodeInternal)
 	if guarded.reached {
 		t.Error("handler ran on a guarded method with no caller resolver configured")

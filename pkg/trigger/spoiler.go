@@ -2,16 +2,11 @@ package trigger
 
 import "strings"
 
-// spoilerMarker is Discord's spoiler-span delimiter.
 const spoilerMarker = "||"
 
-// StripSpoilers removes Discord-style ||spoiler|| spans so that hidden text
-// cannot fire a trigger, and normalises the surrounding whitespace.
-//
-// Scanning is left to right and greedy on the opening marker: the leftmost
-// pair of markers is always removed as one span, even when a later marker
-// would pair differently. An opening marker with no closing marker after it is
-// left untouched, literal "||" included, and scanning stops there.
+// StripSpoilers removes Discord ||spoiler|| spans so hidden text cannot fire a
+// trigger, and collapses whitespace. Markers pair leftmost-first; an unclosed
+// opening marker and everything after it is left verbatim.
 func StripSpoilers(s string) string {
 	var b strings.Builder
 
@@ -27,8 +22,6 @@ func StripSpoilers(s string) string {
 		searchFrom := start + len(spoilerMarker)
 		relEnd := strings.Index(s[searchFrom:], spoilerMarker)
 		if relEnd == -1 {
-			// No closing marker: leave the remainder, including this opening
-			// marker, exactly as it is.
 			b.WriteString(s[i:])
 			break
 		}
@@ -39,6 +32,5 @@ func StripSpoilers(s string) string {
 		i = end
 	}
 
-	// strings.Fields both collapses whitespace runs and trims the ends.
 	return strings.Join(strings.Fields(b.String()), " ")
 }
