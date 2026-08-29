@@ -1,14 +1,7 @@
 // Package client holds the platform clients' half of the Connect boundary to
-// ginbot-server: the generated service clients, the transport they share, and
-// the reverse action stream's reconnect loop.
-//
-// It is deliberately isolated from internal/config, internal/auth, pkg/db and
-// pkg/grpc/interceptor. internal/config -> pkg/grpc/interceptor -> pkg/db ->
-// internal/config is already a cycle on the server side; this package sits on
-// the client side of the same boundary and importing any of those four would
-// either recreate the cycle or drag the database into every platform binary.
-// The platform packages (pkg/discord, pkg/matrix) build an Options value from
-// config and auth themselves and pass it in.
+// ginbot-server. It must not import internal/config, internal/auth, pkg/db or
+// pkg/grpc/interceptor: that recreates an import cycle and drags the database
+// into every platform binary. Callers pass an Options value in instead.
 package client
 
 import (
@@ -28,29 +21,22 @@ import (
 
 // Options configures the Connect transport to ginbot-server.
 type Options struct {
-	// BaseURL is "http://host:port" or "https://host:port". TLS is decided by
-	// whether TLS below is set, not by this scheme, but the two have to agree —
-	// see Dial.
+	// BaseURL is "http://host:port" or "https://host:port". The scheme must
+	// agree with whether TLS below is set, but does not decide it.
 	BaseURL string
-	// TLS is the client's mutual TLS configuration. nil dials plaintext h2c,
-	// matching the server: cmd/ginbot-server only ever terminates one of the
-	// two, controlled by the same GINBOT_GRPC_TLS switch on both sides.
+	// TLS is the client's mutual TLS configuration; nil dials plaintext h2c.
 	TLS *tls.Config
-	// MaxRecvBytes and MaxSendBytes bound a single Connect message on every
-	// client this package builds.
+	// MaxRecvBytes and MaxSendBytes bound a single Connect message.
 	MaxRecvBytes int
 	MaxSendBytes int
-	// DefaultTimeout is applied to a call that arrives with no deadline of its
-	// own. Zero means "use the package default" — see defaultCallTimeout.
+	// DefaultTimeout applies to a call with no deadline of its own; zero means
+	// defaultCallTimeout.
 	DefaultTimeout time.Duration
 }
 
 // Clients holds every generated Connect client a platform process needs,
-// sharing one underlying transport.
-//
-// Every field is exported and every unexported field is safe at its zero
-// value, so a test can build a Clients{} literal with only the service
-// fields it needs set and skip Dial entirely.
+// sharing one underlying transport. Every unexported field is safe at its zero
+// value, so a test can build a literal with only the fields it needs.
 type Clients struct {
 	User          ginbotv1connect.UserServiceClient
 	Utility       ginbotv1connect.UtilityServiceClient
@@ -60,40 +46,22 @@ type Clients struct {
 	Trigger       ginbotv1connect.TriggerServiceClient
 	Repost        ginbotv1connect.RepostServiceClient
 
-	// transport is closed by Close. nil on a struct literal built by a test,
-	// where Close is still safe to call — see Close.
+	// transport is closed by Close; nil on a struct literal built by a test.
 	transport *http2.Transport
 }
 
-// defaultCallTimeout is applied to a call that supplied no deadline of its
-// own.
-//
-// 30s, chosen so every explicit per-command budget in pkg/discord still wins:
-// triggerCallTimeout (20s), triggerAttemptTimeout and repostAttemptTimeout
-// (15s each), triggerFileTimeout and confirmDeliveryTimeout (10s each) are all
-// strictly tighter. This is a backstop for a call site that forgets one, not a
-// replacement for choosing a tighter budget deliberately.
+// defaultCallTimeout is a backstop, deliberately looser than every explicit
+// per-command budget in pkg/discord so those still win.
 const defaultCallTimeout = 30 * time.Second
 
-// keepaliveReadIdleTimeout and keepaliveTimeout configure HTTP/2 ping-based
-// keepalive on the transport.
-//
-// cmd/ginbot-server sets http2.Server.IdleTimeout to 2 minutes (see the
-// comment there), which closes a connection with no open stream for that
-// long. A reverse action stream is exactly such a connection whenever it has
-// no action to deliver — it is parked in Receive with nothing else in
-// flight — so without a ping keeping the connection active from this side, it
-// would be silently dropped by the server well before any real idleness
-// problem, and the platform client would not notice until the next Send or
-// Receive failed. 30s pings comfortably beat the server's 2-minute window.
+// HTTP/2 ping keepalive. A parked reverse stream has no open stream to keep the
+// connection alive, so these must beat the server's 2-minute idle timeout.
 const (
 	keepaliveReadIdleTimeout = 30 * time.Second
 	keepaliveTimeout         = 15 * time.Second
 )
 
 // Dial builds the shared HTTP/2 transport and every generated service client.
-// It owns keepalive, the default-deadline interceptor and the retry
-// interceptor; callers only supply Options.
 func Dial(opts Options) (*Clients, error) {
 	if err := validateBaseURL(opts.BaseURL); err != nil {
 		return nil, err
@@ -105,19 +73,10 @@ func Dial(opts Options) (*Clients, error) {
 	}
 
 	if opts.TLS == nil {
-		// Plaintext h2c. AllowHTTP tells the transport an "http://" URL is not a
-		// mistake, and DialTLSContext — despite the name, which is x/net's, not
-		// a claim about this dial — is what actually makes it skip the
-		// handshake: http2.Transport.dialTLS calls this hook when it is set and
-		// performs a real TLS handshake when it is not.
-		//
-		// Note this is http2.Transport DIRECTLY, not http.Transport with
-		// ForceAttemptHTTP2. That is deliberate and it removes the trap this
-		// port's plan warns about at length: there is no HTTP/1.1 path to fall
-		// back to, so getting h2c wrong fails loudly with
-		// "http2: unencrypted HTTP/2 not enabled" on the first call, rather
-		// than silently downgrading and passing every unary RPC while only
-		// bidi streaming breaks.
+		// Plaintext h2c: AllowHTTP accepts the "http://" URL, and setting
+		// DialTLSContext is what makes http2.Transport skip the handshake.
+		// http2.Transport directly, not http.Transport with ForceAttemptHTTP2:
+		// there is no HTTP/1.1 path to silently downgrade to.
 		transport.AllowHTTP = true
 		transport.DialTLSContext = func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 			var dialer net.Dialer
@@ -134,11 +93,8 @@ func Dial(opts Options) (*Clients, error) {
 		timeout = defaultCallTimeout
 	}
 
-	// Order matters, outermost first: callermeta writes the identity and
-	// origin headers before anything else runs, so a retried call carries them
-	// on every attempt; the deadline interceptor then establishes the budget a
-	// retry has to fit inside; the retry interceptor itself is innermost, so it
-	// sees — and can act on — the deadline the layer above it just set.
+	// Outermost first: callermeta writes the headers so every retried attempt
+	// carries them, the deadline sets the budget, and retry runs inside it.
 	clientOpts := []connect.ClientOption{
 		connect.WithInterceptors(
 			callermeta.NewClientInterceptor(),
@@ -165,23 +121,9 @@ func Dial(opts Options) (*Clients, error) {
 	}, nil
 }
 
-// validateBaseURL rejects a base URL the generated clients would accept and
-// then fail on, one call at a time.
-//
-// connect.NewClient parses the URL and stores any failure on the client
-// itself, surfacing it per call rather than at construction
-// (connect@v1.20.0/client.go). Without this check Dial reports success,
-// cmd/ginbot-discord logs a connected client, and every RPC afterwards fails
-// with no indication of why. grpc.NewClient, which this replaced, reported the
-// same class of mistake at dial time and main went Fatal on it; this keeps
-// that.
-//
-// The realistic mistake is a scheme in GINBOT_GRPC_HOST: config's
-// GRPCServerOptions.ClientBaseURL builds the URL with net.JoinHostPort, which
-// brackets a host containing a colon, so GINBOT_GRPC_HOST="http://x" yields
-// "http://[http://x]:50051" and fails the parse below. Note the checks here
-// are a sanity floor, not a parser — a hand-concatenated "http://http://x"
-// parses with Host "http:" and would pass. Nothing builds one that way today.
+// validateBaseURL fails at dial time instead of per call: connect.NewClient
+// stores a URL parse failure on the client and only surfaces it on each RPC.
+// This is a sanity floor, not a parser.
 func validateBaseURL(baseURL string) error {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {

@@ -22,33 +22,24 @@ import (
 	"go.uber.org/zap"
 )
 
-// healthCheckTimeout bounds the outgoing HealthCheck call below. The sync
-// context it would otherwise inherit carries no deadline of its own — it is
-// mautrix's own sync loop context, not a request-scoped one — so without this
-// an unresponsive server would hold the sync dispatch goroutine open
-// indefinitely.
+// healthCheckTimeout bounds the call below: the inherited mautrix sync context
+// has no deadline, so an unresponsive server would pin the dispatch goroutine.
 const healthCheckTimeout = 10 * time.Second
 
-// matrixClient is written once by InitializeMatrix and then read from several
-// goroutines (mautrix's sync dispatch, and the reverse action stream). Nothing
-// synchronises it, so it must be assigned BEFORE any of those readers is
-// started — see startActionStream.
+// matrixClient is written once here and then read from the sync dispatch and the
+// action stream goroutines with nothing synchronising it, so it must be assigned
+// before either is started.
 var matrixClient *mautrix.Client
 
-// InitializeMatrix brings up the Matrix client and blocks until the process is
-// signalled to stop.
-//
-// ctx bounds the reverse action stream, which is started from here rather than
-// alongside the Connect clients precisely because its handlers may read
-// matrixClient. clients are the service clients dialed by NewMatrixClient.
+// InitializeMatrix blocks until the process is signalled to stop. ctx bounds the
+// reverse action stream, started here because its handlers may read matrixClient.
 func InitializeMatrix(ctx context.Context, clients *client.Clients) {
 	var err error
 	if matrixClient, err = mautrix.NewClient(config.Options.Matrix.HomeServerURL, id.UserID(config.Options.Matrix.UserID), config.Options.Matrix.AccessToken); err != nil {
 		log.Z.Fatal("cannot create a new session.", zap.Error(err))
 	}
 
-	// Only now: matrixClient is assigned, so an action arriving on the first tick
-	// has a client to post through.
+	// Only once matrixClient is assigned; see the note on the variable.
 	startActionStream(ctx, clients)
 
 	selfID := id.UserID(config.Options.Matrix.UserID)
@@ -67,8 +58,8 @@ func InitializeMatrix(ctx context.Context, clients *client.Clients) {
 		)
 
 		if evt.Content.AsMessage().Body == "!healthcheck" {
-			// Caller identity has to be attached explicitly; the sync context
-			// carries no identity of its own, so any RPC requiring it would fail.
+			// The sync context carries no caller identity, so any guarded RPC
+			// would be refused without this.
 			rpcCtx := callermeta.NewOutgoingContext(ctx, pb.Platform_PLATFORM_MATRIX_PROTOCOL, evt.Sender.String())
 			rpcCtx, cancel := context.WithTimeout(rpcCtx, healthCheckTimeout)
 			defer cancel()

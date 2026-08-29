@@ -12,25 +12,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// errorMessage maps a failed command onto a message for the caller.
-//
-// InvalidArgument and FailedPrecondition carry a message meant for the caller;
-// anything else is internal and gets a generic reply so implementation detail
-// does not leak into a channel.
-//
-// Both invocation paths share this mapping: a slash command and a chat command
-// must not explain the same failure differently.
-//
-// connect.CodeOf(nil) reports CodeUnknown, which falls through to the generic
-// message below like any other unrecognised code — so errorMessage(nil), which
-// respondDeferred calls deliberately, still answers sensibly.
+// errorMessage maps a failed command onto a message for the caller. Only
+// InvalidArgument and FailedPrecondition pass through verbatim; anything else
+// is generic, so implementation detail cannot leak into a channel.
 func errorMessage(err error) string {
 	message := "Something went wrong."
 
-	// A *connect.Error's own Error() string is prefixed with its code (e.g.
-	// "invalid_argument: ..."), so the two message-bearing cases below read
-	// connectErr.Message() rather than err.Error() — showing the caller the
-	// prefix would leak wire-protocol vocabulary into a chat reply.
+	// Message() not Error(): the latter is prefixed with the wire code name.
 	switch connect.CodeOf(err) {
 	case connect.CodeInvalidArgument, connect.CodeFailedPrecondition:
 		if connectErr, ok := errors.AsType[*connect.Error](err); ok {
@@ -43,31 +31,21 @@ func errorMessage(err error) string {
 	case connect.CodeUnimplemented:
 		message = "That is not implemented yet."
 	case connect.CodeUnavailable:
-		// Distinct from the generic message on purpose, and the distinction is
-		// the whole point of the case: a backend the bot cannot reach is the
-		// one failure here that is both transient and the caller's to act on,
-		// so telling them to retry is actionable where "something went wrong"
-		// invites a bug report about a working command. It leaks no
-		// implementation detail — that ginbot-server exists and can be down is
-		// not a secret the chat reply is keeping.
+		// The one failure that is transient and actionable by the caller.
 		message = "The bot's backend is unreachable right now. Try again in a moment."
 	}
 
 	return message
 }
 
-// respondError answers an interaction with an error message.
-//
-// Every interaction must be answered within three seconds or Discord shows
-// "the application did not respond". Bailing out after only logging leaves the
-// user staring at that, so a failed command reports why instead.
+// Every interaction must be answered within three seconds, or Discord shows
+// "the application did not respond".
 func respondError(s *discordgo.Session, i *discordgo.InteractionCreate, err error) {
 	respondErr := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: errorMessage(err),
-			// Only the invoking user sees the error.
-			Flags: discordgo.MessageFlagsEphemeral,
+			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
 	if respondErr != nil {
@@ -75,29 +53,18 @@ func respondError(s *discordgo.Session, i *discordgo.InteractionCreate, err erro
 	}
 }
 
-// maxChatContent caps an outgoing chat message. Discord rejects a send above
-// 2000 characters outright, which would turn a long echoed argument into no
-// reply at all.
+// Discord rejects a send above 2000 characters outright.
 const maxChatContent = 2000
 
-// noMentions stops Discord parsing any mention in an outgoing chat message.
-//
-// Error messages echo the caller's own argument back (`got "..."`), and a chat
-// reply is a plain channel message, so without this a member can make the bot
-// post @everyone or a role ping on their behalf: `??number @everyone`. An empty
-// Parse list is not the same as omitting the field — omitting it means "parse
-// everything", which is discordgo's default for ChannelMessageSend*.
-//
-// It also suppresses the reply ping, which would otherwise fire on every chat
-// command because replied_user defaults to true.
+// noMentions stops Discord parsing mentions in an outgoing message: error
+// replies echo the caller's argument, so `??number @everyone` would otherwise
+// ping on their behalf. An empty Parse list is not the same as omitting it.
 func noMentions() *discordgo.MessageAllowedMentions {
 	return &discordgo.MessageAllowedMentions{
 		Parse: []discordgo.AllowedMentionType{},
 	}
 }
 
-// truncateContent keeps a message inside Discord's limit, preferring a visibly
-// cut message over a send that fails.
 func truncateContent(content string) string {
 	if len(content) <= maxChatContent {
 		return content
@@ -113,20 +80,11 @@ func truncateContent(content string) string {
 	return content[:cut] + ellipsis
 }
 
-// fallbackAttachmentName names an attachment whose own name is blank. Discord
-// rejects a file with an empty filename, which would fail the whole send rather
-// than just the attachment.
+// Discord rejects a file with an empty filename, failing the whole send.
 const fallbackAttachmentName = "attachment"
 
-// responseFiles builds the discordgo attachments for a response.
-//
-// No size cap is applied here. storage.MaxFileBytes is enforced server-side on
-// both write and read, and it is set to Discord's own 8 MiB baseline, so a
-// second cap in this direction could only ever refuse a file Discord would have
-// accepted.
-//
-// A FRESH reader is built on every call, deliberately: a reader is consumed by
-// the send, so a shared one would put an empty file on any second use.
+// A fresh reader every call: the send consumes it, so a shared one would put an
+// empty file on any second use.
 func responseFiles(resp *command.Response) []*discordgo.File {
 	if resp == nil || resp.File == nil || len(resp.File.Content) == 0 {
 		return nil
@@ -144,9 +102,7 @@ func responseFiles(resp *command.Response) []*discordgo.File {
 	}}
 }
 
-// respondChatError answers a failed chat command. A chat message is not an
-// interaction, so there is no ephemeral flag to hide the reply behind; it goes
-// to the channel as a reply to the invoking message.
+// A chat message is not an interaction, so there is no ephemeral flag.
 func respondChatError(s *discordgo.Session, m *discordgo.MessageCreate, err error) {
 	_, respondErr := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
 		Content:         truncateContent(errorMessage(err)),
@@ -158,9 +114,8 @@ func respondChatError(s *discordgo.Session, m *discordgo.MessageCreate, err erro
 	}
 }
 
-// respondStale answers an interaction the bot can no longer service, such as a
-// button on a message posted by an older version. Silence would show the user
-// "the application did not respond" with no explanation.
+// Answers an interaction the bot can no longer service, such as a button on a
+// message posted by an older version.
 func respondStale(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -183,26 +138,18 @@ const (
 	sourceReRoll
 )
 
-// interactionNone marks a plan with no interaction to answer. Discord numbers
-// its callback types from 1, so zero is free to mean "not an interaction".
+// Discord numbers its callback types from 1, so zero is free to mean "not an
+// interaction".
 const interactionNone discordgo.InteractionResponseType = 0
 
-// responsePlan is how one command result reaches the channel. Splitting the
-// decision out from the calls it drives is what makes it verifiable: those
-// calls need a discordgo.Session and there is no fake for one.
+// responsePlan is how one command result reaches the channel.
 type responsePlan struct {
-	// interactionResponse is the callback that answers the interaction, sent
-	// before anything else. interactionNone for a chat command, which is not an
-	// interaction.
 	interactionResponse discordgo.InteractionResponseType
-	// replyInChannel says the content goes out as its own channel message,
-	// replying to the message that invoked it, rather than riding along in the
-	// interaction callback.
+	// replyInChannel sends the content as its own channel message rather than
+	// in the interaction callback.
 	replyInChannel bool
-	// components is what that outgoing message carries.
-	components []discordgo.MessageComponent
-	// files is what that outgoing message attaches.
-	files []*discordgo.File
+	components     []discordgo.MessageComponent
+	files          []*discordgo.File
 }
 
 // planResponse decides how a command result is delivered.
