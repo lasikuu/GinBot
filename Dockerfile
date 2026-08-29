@@ -5,7 +5,7 @@
 # running the build and lets Go cross-compile to the target itself. Without it
 # buildx runs the whole compiler under QEMU for every non-native architecture,
 # which turns the arm64 image from seconds into minutes.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build-base
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build-base
 WORKDIR /src
 
 # Cache module downloads separately from the source tree.
