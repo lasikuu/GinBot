@@ -1,4 +1,6 @@
-# Required variable (core stack): POSTGRES_PASSWORD.
+# Required variable (core stack): GINBOT_DB_PASSWORD. It is the one name for
+#   that secret: the psql service maps it onto the POSTGRES_PASSWORD its image
+#   demands, so example.env never has to document two spellings of it.
 # Needed only when the discord profile is on: DISCORD_OWNER_ID,
 #   DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID.
 # Needed only when the matrix profile is on: MATRIX_HOMESERVER_URL,
@@ -12,12 +14,18 @@
 # or per-command with `--profile discord --profile matrix`.
 #
 # Usage:
-#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
 #
-# Each binary is its own image (ginbot-server / -discord / -matrix), built from
-# a dedicated stage in the Dockerfile. A client's secrets are only needed when
-# its profile is active; unset vars fall back to empty and the client itself
-# fails fast on missing config.
+# Each binary is its own published image — ghcr.io/lasikuu/ginbot-server,
+# -discord and -matrix — built for linux/amd64 and linux/arm64 by
+# .github/workflows/publish.yml from a dedicated Dockerfile stage. There is
+# deliberately no `build:` block here, so `up --build` does nothing; to run a
+# locally compiled image instead, add one in a compose override file. See
+# ADR 0036 for the tags, and why :main and :edge are not release tags.
+#
+# A client's secrets are only needed when its profile is active; unset vars
+# fall back to empty and the client itself fails fast on missing config.
 
 x-ginbot-env: &ginbot-env
   GINBOT_ENV: production
@@ -42,11 +50,32 @@ x-ginbot-env: &ginbot-env
   # purpose. DNS:ginbot-server is in there for exactly this reason; change one
   # and change the other.
   GINBOT_GRPC_TLS: ${GINBOT_GRPC_TLS:-false}
+  # The bot's own public address, if it has one. Its host — and every
+  # subdomain of it — is excluded from the repost index, so linking the bot
+  # never counts as a repost. Set nothing broader than the bot's own host.
+  GINBOT_WEB_URL: ${GINBOT_WEB_URL:-}
+  # Repost detection is off by default and needed on BOTH sides: the server
+  # fingerprints, and the Discord client requests the privileged
+  # MESSAGE_CONTENT intent when this is on (ADR 0024). Hence the anchor.
+  #
+  # Video and animated GIF fingerprinting additionally needs ffmpeg on PATH,
+  # and the published images do not carry one — ADR 0006 keeps it a system
+  # dependency of whoever deploys rather than something GinBot redistributes.
+  # Its absence degrades those formats to exact-hash-only; still images are
+  # unaffected and nothing crashes. To get it, either point
+  # GINBOT_REPOST_FFMPEG_PATH at a binary mounted into the container, or build
+  # a derived image that installs one.
+  GINBOT_REPOST: ${GINBOT_REPOST:-false}
+  GINBOT_REPOST_EXCLUDED_HOSTS: ${GINBOT_REPOST_EXCLUDED_HOSTS:-}
+  GINBOT_REPOST_FFMPEG_PATH: ${GINBOT_REPOST_FFMPEG_PATH:-}
+  # The numeric repost knobs (GINBOT_REPOST_TIER_*, _MIN_WIDTH, _MIN_HEIGHT,
+  # _MIN_ENTROPY) keep the defaults in internal/config; add them here only if a
+  # deployment needs to move them.
   GINBOT_DB_HOST: psql
   GINBOT_DB_PORT: "5432"
   GINBOT_DB_NAME: ginbot
   GINBOT_DB_USERNAME: ginbot
-  GINBOT_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  GINBOT_DB_PASSWORD: ${GINBOT_DB_PASSWORD:?GINBOT_DB_PASSWORD is required}
 
 services:
   psql:
@@ -56,7 +85,11 @@ services:
     environment:
       POSTGRES_USER: ginbot
       POSTGRES_DB: ginbot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # The KEY has to be POSTGRES_PASSWORD — the postgres image reads that
+      # name and nothing else. The VALUE comes from GINBOT_DB_PASSWORD so that
+      # .env carries the secret once, under the same name example.env
+      # documents and internal/config reads.
+      POSTGRES_PASSWORD: ${GINBOT_DB_PASSWORD:?GINBOT_DB_PASSWORD is required}
     volumes:
       - ginbot_prod_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -84,8 +117,18 @@ services:
       # compose network. The clients keep dialling the service name from the
       # anchor. cmd/ginbot-server/compose_test.go pins the pairing.
       GINBOT_GRPC_HOST: "0.0.0.0"
+      # Trigger media is persistent state, not cache. The server fetches and
+      # stores the bytes itself (ADR 0007) while the `file` row that points at
+      # them lives in Postgres, so an unmounted storage path does not merely
+      # lose files — it leaves surviving rows referencing blobs that are gone,
+      # and every trigger that replies with a file starts failing. The default
+      # is ./storage relative to the working directory, which is the
+      # container's writable layer and dies with the container on every image
+      # update. Named so it is mounted below.
+      GINBOT_STORAGE_PATH: /app/storage
     volumes:
       - ./cert:/app/cert:ro
+      - ginbot_prod_storage:/app/storage
     depends_on:
       psql:
         condition: service_healthy
@@ -137,6 +180,9 @@ services:
       DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
       DISCORD_COMMAND_PREFIXES: ${DISCORD_COMMAND_PREFIXES:-}
       DISCORD_REMOVE_COMMANDS: ${DISCORD_REMOVE_COMMANDS:-false}
+      # Separate from GINBOT_REPOST and from the chat prefixes, and opt-in on
+      # purpose: it asks Discord for a privileged intent. See ADR 0024.
+      DISCORD_MESSAGE_CONTENT: ${DISCORD_MESSAGE_CONTENT:-false}
     volumes:
       - ./cert:/app/cert:ro
     depends_on:
@@ -168,3 +214,6 @@ services:
 
 volumes:
   ginbot_prod_pgdata:
+  # Only ginbot-server mounts this: the platform clients never touch storage,
+  # and cmd/ginbot-migrate is an operator tool run outside the stack.
+  ginbot_prod_storage:

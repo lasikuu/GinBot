@@ -83,6 +83,55 @@ func TestComposeHealthcheckProbesAnAddressTheServerBinds(t *testing.T) {
 	// No port assertion: both read GINBOT_GRPC_PORT from the same environment.
 }
 
+// Trigger media is persistent state whose index lives in Postgres, so losing
+// the blobs leaves `file` rows pointing at nothing. See ADR 0007.
+func TestComposeStoragePathIsMountedOnANamedVolume(t *testing.T) {
+	compose := readCompose(t)
+
+	declared := regexp.MustCompile(`(?m)^\s*GINBOT_STORAGE_PATH:\s*"?([^"\s]+)"?\s*$`).FindStringSubmatch(compose)
+	if declared == nil {
+		t.Fatalf("no GINBOT_STORAGE_PATH found in %s; without it the server writes trigger media to "+
+			"./storage in the container's writable layer, which dies with the container on every "+
+			"image update while the file rows referencing it survive in Postgres", composePath)
+	}
+	path := declared[1]
+
+	// Named volume only: a bind mount would be host-path-dependent, and the
+	// short syntax puts the source before the colon either way.
+	mount := regexp.MustCompile(`(?m)^\s*-\s*([A-Za-z0-9_][A-Za-z0-9_.-]*):` + regexp.QuoteMeta(path) + `(?::[a-z,]+)?\s*$`).
+		FindStringSubmatch(compose)
+	if mount == nil {
+		t.Fatalf("GINBOT_STORAGE_PATH is %q but no named volume is mounted there in %s", path, composePath)
+	}
+	name := mount[1]
+
+	// Top-level `volumes:` entries are the only ones at two-space indent.
+	if !regexp.MustCompile(`(?m)^\s{2}` + regexp.QuoteMeta(name) + `:\s*$`).MatchString(compose) {
+		t.Errorf("volume %q is mounted at %s but never declared in the top-level volumes block of %s",
+			name, path, composePath)
+	}
+}
+
+// The postgres image reads POSTGRES_PASSWORD and nothing else, but .env should
+// spell the secret once, under the name internal/config and example.env use.
+func TestComposeReadsTheDatabasePasswordUnderOneName(t *testing.T) {
+	compose := readCompose(t)
+
+	// Every ${...} interpolation naming a password, whatever key it feeds.
+	sources := regexp.MustCompile(`\$\{([A-Za-z0-9_]*PASSWORD[A-Za-z0-9_]*)[:?\-}]`).FindAllStringSubmatch(compose, -1)
+	if len(sources) == 0 {
+		t.Fatalf("no interpolated password variable found in %s", composePath)
+	}
+
+	for _, source := range sources {
+		if source[1] != "GINBOT_DB_PASSWORD" {
+			t.Errorf("%s reads the database password from ${%s}; want ${GINBOT_DB_PASSWORD}, the name "+
+				"internal/config reads and example.env documents. A second spelling means `cp example.env .env` "+
+				"produces a stack that refuses to start.", composePath, source[1])
+		}
+	}
+}
+
 // auth.ClientTLSConfig sets no ServerName, so a missing SAN fails every
 // handshake with nothing hinting at why.
 func TestComposeServerCertSANCoversTheDialledHost(t *testing.T) {
