@@ -45,7 +45,7 @@ services:
       # from GINBOT_DB_PASSWORD so .env carries the secret once.
       POSTGRES_PASSWORD: ${GINBOT_DB_PASSWORD:?GINBOT_DB_PASSWORD is required}
     volumes:
-      - ginbot_prod_pgdata:/var/lib/postgresql/data
+      - ginbot_prod_pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ginbot -d ginbot"]
       interval: 10s

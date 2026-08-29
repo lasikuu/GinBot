@@ -9,7 +9,9 @@ services:
       - POSTGRES_PASSWORD=gin123
       - POSTGRES_USER=ginbot
     volumes:
-      - ginbot_dev_pgdata:/var/lib/postgresql/data
+      # PG18+ images store data in a version-specific subdirectory and expect the
+      # mount at /var/lib/postgresql, not .../data (docker-library/postgres#1259).
+      - ginbot_dev_pgdata:/var/lib/postgresql
 
 volumes:
   ginbot_dev_pgdata:
