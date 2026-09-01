@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -26,8 +27,9 @@ import (
 // runOnce classifies a wire-transmitted ResourceExhausted from the actual
 // registry cap as streamRejected and backs off from it.
 
-// realStreamCap mirrors pkg/grpc/server's unexported maxStreamClients; it must
-// match production exactly since this package cannot read it.
+// realStreamCap mirrors pkg/grpc/server's unexported maxStreamClients. It is a
+// fill target only: overshooting it is what fills the registry, and the exact
+// value is asserted by that package's own tests, not from here.
 const realStreamCap = 64
 
 // reverseH2CCallerUserID must be a UUID for schema validation consistency.
@@ -76,6 +78,11 @@ func newRealReverseH2CServer(t *testing.T) *httptest.Server {
 	srv.Config.Protocols = &protocols
 	srv.Start()
 	t.Cleanup(srv.Close)
+	// Registered after srv.Close so LIFO runs it first, the ordering
+	// cmd/ginbot-server also depends on: httptest's Close waits for in-flight
+	// handlers without cancelling their contexts, and nothing else unparks a
+	// stream handler blocked in Receive.
+	t.Cleanup(reverseServer.Shutdown)
 
 	return srv
 }
@@ -93,97 +100,87 @@ func newH2CClient() *http.Client {
 	}
 }
 
-// admissionWindow bounds how long to wait for a refusal before concluding a
-// stream was admitted. Admission is only the absence of a refusal, so a too-short
-// window can only under-count admissions, never mistake a refusal for one; 300ms
-// is generous for a loopback round trip.
-const admissionWindow = 300 * time.Millisecond
-
-// openAndCheckAdmission opens one real stream, sends its hello, and reports
-// whether the server refused it within admissionWindow. An admitted stream is
-// returned open and left parked in Receive until cleanup.
-func openAndCheckAdmission(ctx context.Context, reverseClient ginbotv1connect.ReverseServiceClient) (entry actionStream, refusalErr error) {
+// parkStream opens one stream, sends the hello that makes connect issue the
+// request, and leaves it parked. The cleanup is registered before anything can
+// fail, and from every attempt including refused ones: a stream left open by an
+// abandoned attempt keeps its handler in-flight, and httptest's Close then
+// blocks until the test binary's own timeout kills the package, discarding the
+// failure that caused it. Safe to call concurrently; testing.T.Cleanup is.
+func parkStream(t *testing.T, ctx context.Context, reverseClient ginbotv1connect.ReverseServiceClient) {
 	stream := reverseClient.OpenClientActionStream(ctx)
-
-	// Empty hello; the server takes the platform from the ginbot-platform-enum
-	// header ctx carries.
-	hello := pb.OpenClientActionStreamReq_builder{}.Build()
-	if err := stream.Send(hello); err != nil {
-		return nil, err
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := stream.Receive()
-		errCh <- err
-	}()
-
-	select {
-	case err := <-errCh:
+	t.Cleanup(func() {
 		_ = stream.CloseRequest()
 		_ = stream.CloseResponse()
-		return nil, err
-	case <-time.After(admissionWindow):
-		return stream, nil
-	}
+	})
+
+	// A refusal surfaces on Receive, not here, and this helper does not care
+	// which streams were admitted.
+	_ = stream.Send(pb.OpenClientActionStreamReq_builder{}.Build())
 }
 
-// fillRealRegistryToCap opens fillAttempts streams concurrently, more than
-// realStreamCap so some are refused, and discovers the admitted count
-// empirically. It asserts that count equals realStreamCap.
-func fillRealRegistryToCap(t *testing.T, ctx context.Context, reverseClient ginbotv1connect.ReverseServiceClient) []actionStream {
+// fillRealRegistry opens more streams than the server's cap, so the registry
+// ends up full whichever ones it admitted. Admission is silent on the wire, so
+// a client cannot tell its own streams apart; only a refusal is observable.
+func fillRealRegistry(t *testing.T, ctx context.Context, reverseClient ginbotv1connect.ReverseServiceClient) {
 	t.Helper()
 
 	const fillAttempts = realStreamCap + 16
 
-	type attemptResult struct {
-		stream actionStream
-		err    error
-	}
-
-	results := make([]attemptResult, fillAttempts)
 	var wg sync.WaitGroup
 	wg.Add(fillAttempts)
-	for i := range fillAttempts {
-		go func(i int) {
+	for range fillAttempts {
+		go func() {
 			defer wg.Done()
-			stream, err := openAndCheckAdmission(ctx, reverseClient)
-			results[i] = attemptResult{stream: stream, err: err}
-		}(i)
+			parkStream(t, ctx, reverseClient)
+		}()
 	}
 	wg.Wait()
+}
 
-	admitted := make([]actionStream, 0, realStreamCap)
-	refused := 0
-	for i, r := range results {
-		if r.err != nil {
-			if connect.CodeOf(r.err) != connect.CodeResourceExhausted {
-				t.Fatalf("attempt %d was refused with code %v, want %v", i, connect.CodeOf(r.err), connect.CodeResourceExhausted)
-			}
-			refused++
+const (
+	// probeTimeout bounds one probe attempt. A probe admitted because the fill
+	// has not landed yet parks in Receive, so this is how long that costs.
+	probeTimeout = 2 * time.Second
+	// fullRegistryDeadline bounds the retries; only a machine that never gets
+	// the registry full needs it.
+	fullRegistryDeadline = 30 * time.Second
+)
+
+// probeUntilRefused returns the first runOnce attempt the server actually
+// refused. An attempt that only ran out of time is retried rather than read as
+// a refusal or an admission: inferring either from a timeout is what makes this
+// shape of test flaky on a loaded machine, and a probe wrongly counted as
+// admitted used to fail an assertion while its stream stayed parked.
+func probeUntilRefused(t *testing.T, ctx context.Context, open actionStreamOpener) (streamOutcome, error) {
+	t.Helper()
+
+	deadline := time.Now().Add(fullRegistryDeadline)
+	for time.Now().Before(deadline) {
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		outcome, err := runOnce(probeCtx, open, alwaysEnsure, testIdentity, nil)
+		cancel()
+
+		// The probe's own deadline, not an answer from the server.
+		if errors.Is(err, context.DeadlineExceeded) {
 			continue
 		}
-		admitted = append(admitted, r.stream)
+
+		return outcome, err
 	}
 
-	if len(admitted) != realStreamCap {
-		t.Fatalf("registry admitted %d of %d concurrent streams, want exactly %d (pkg/grpc/server's maxStreamClients)",
-			len(admitted), fillAttempts, realStreamCap)
-	}
-	if refused != fillAttempts-realStreamCap {
-		t.Fatalf("registry refused %d of %d concurrent streams, want exactly %d", refused, fillAttempts, fillAttempts-realStreamCap)
-	}
+	t.Fatalf("no probe was refused within %v: the registry never reached its %d-stream cap, so this test never reached its subject",
+		fullRegistryDeadline, realStreamCap)
 
-	return admitted
+	return streamUnreachable, nil
 }
 
 func TestARefusedClientBacksOffRatherThanRetryingEverySecond(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	// Inherited by every stream: without it ClearanceInterceptor has no headers
-	// to resolve a caller from and refuses every stream with InvalidArgument.
-	ctx = callermeta.NewOutgoingContext(ctx, testIdentity.Platform, testIdentity.PlatformUID)
+	// t.Context is cancelled before any cleanup runs, so every parked handler is
+	// already unwinding by the time httptest waits for them.
+	// The caller metadata is inherited by every stream: without it
+	// ClearanceInterceptor has no headers to resolve a caller from and refuses
+	// every stream with InvalidArgument.
+	ctx := callermeta.NewOutgoingContext(t.Context(), testIdentity.Platform, testIdentity.PlatformUID)
 
 	srv := newRealReverseH2CServer(t)
 
@@ -194,21 +191,11 @@ func TestARefusedClientBacksOffRatherThanRetryingEverySecond(t *testing.T) {
 	// request headers ClearanceInterceptor reads; Dial installs it in production.
 	reverseClient := ginbotv1connect.NewReverseServiceClient(httpClient, srv.URL, connect.WithInterceptors(callermeta.NewClientInterceptor()))
 
-	admitted := fillRealRegistryToCap(t, ctx, reverseClient)
-	t.Cleanup(func() {
-		for _, stream := range admitted {
-			_ = stream.CloseRequest()
-			_ = stream.CloseResponse()
-		}
-	})
+	fillRealRegistry(t, ctx, reverseClient)
 
 	opener := func(ctx context.Context) actionStream { return reverseClient.OpenClientActionStream(ctx) }
 
-	// Bounded so a wrongly admitted probe fails rather than blocking in Receive.
-	probeCtx, cancelProbe := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelProbe()
-
-	outcome, err := runOnce(probeCtx, opener, alwaysEnsure, testIdentity, nil)
+	outcome, err := probeUntilRefused(t, ctx, opener)
 	if outcome != streamRejected {
 		t.Fatalf("a client refused by a full registry was classified %s (err %v), want streamRejected",
 			outcome, err)
