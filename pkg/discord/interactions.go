@@ -92,14 +92,18 @@ func commandContext(clients *client.Clients, user *discordgo.User, guildID strin
 	return withInvoker(ctx, user)
 }
 
-func interactionContext(i *discordgo.InteractionCreate, clients *client.Clients) (context.Context, error) {
-	var user *discordgo.User
-	// Member.User is populated for guild interactions, User for DMs.
+// Member.User is populated for guild interactions, User for DMs.
+func interactionUser(i *discordgo.InteractionCreate) *discordgo.User {
 	if i.Member != nil && i.Member.User != nil {
-		user = i.Member.User
-	} else if i.User != nil {
-		user = i.User
-	} else {
+		return i.Member.User
+	}
+
+	return i.User
+}
+
+func interactionContext(i *discordgo.InteractionCreate, clients *client.Clients) (context.Context, error) {
+	user := interactionUser(i)
+	if user == nil {
 		log.Z.Error("cannot get user id.")
 		return context.Background(), errors.New("cannot get discord user id")
 	}

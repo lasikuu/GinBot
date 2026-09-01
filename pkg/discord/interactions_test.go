@@ -137,7 +137,7 @@ func TestReRollButtonStaysClickable(t *testing.T) {
 		t.Run(roll.name, func(t *testing.T) {
 			resp := &command.Response{Content: "444", ReRollID: reRollID(roll.name)}
 
-			if !hasReRollButton(planResponse(sourceSlash, resp).components, resp.ReRollID) {
+			if !hasReRollButton(planResponse(sourceSlash, resp, "").components, resp.ReRollID) {
 				t.Fatalf("a first %s roll carries no button bound to %q", roll.name, resp.ReRollID)
 			}
 
@@ -160,8 +160,55 @@ func TestLegacyClickProducesNoNewButton(t *testing.T) {
 			}
 
 			resp := &command.Response{Content: "44", ReRollID: reRollID(name)}
-			if hasReRollButton(planResponse(sourceReRoll, resp).components, resp.ReRollID) {
+			if hasReRollButton(planResponse(sourceReRoll, resp, "").components, resp.ReRollID) {
 				t.Error("a legacy re-roll produced another button, which would chain")
+			}
+		})
+	}
+}
+
+// TestInteractionUser: Member.User is set in a guild and User in a DM, and a
+// re-roll reply names whoever this resolves.
+func TestInteractionUser(t *testing.T) {
+	member := &discordgo.User{ID: "1", Username: "in-guild"}
+	direct := &discordgo.User{ID: "2", Username: "in-dm"}
+
+	tests := []struct {
+		name        string
+		interaction *discordgo.Interaction
+		want        *discordgo.User
+	}{
+		{
+			name:        "a guild interaction carries its user under Member",
+			interaction: &discordgo.Interaction{Member: &discordgo.Member{User: member}},
+			want:        member,
+		},
+		{
+			name:        "a DM carries it directly",
+			interaction: &discordgo.Interaction{User: direct},
+			want:        direct,
+		},
+		{
+			name:        "Member wins when both are set",
+			interaction: &discordgo.Interaction{Member: &discordgo.Member{User: member}, User: direct},
+			want:        member,
+		},
+		{
+			name:        "a Member with no User falls back",
+			interaction: &discordgo.Interaction{Member: &discordgo.Member{}, User: direct},
+			want:        direct,
+		},
+		{
+			name:        "neither is set",
+			interaction: &discordgo.Interaction{},
+			want:        nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := interactionUser(&discordgo.InteractionCreate{Interaction: tt.interaction}); got != tt.want {
+				t.Errorf("interactionUser() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
