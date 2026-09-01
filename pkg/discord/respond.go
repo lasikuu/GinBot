@@ -3,6 +3,7 @@ package discord
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
@@ -145,6 +146,7 @@ const interactionNone discordgo.InteractionResponseType = 0
 // responsePlan is how one command result reaches the channel.
 type responsePlan struct {
 	interactionResponse discordgo.InteractionResponseType
+	content             string
 	// replyInChannel sends the content as its own channel message rather than
 	// in the interaction callback.
 	replyInChannel bool
@@ -152,20 +154,34 @@ type responsePlan struct {
 	files          []*discordgo.File
 }
 
+// A re-roll reply is an ordinary channel message, so it carries none of the
+// "used /doubles" attribution Discord puts above a slash response and is not a
+// reply to the clicker: without the name beside the number, nothing says who
+// rolled. A backtick in the name would escape the code span.
+func attributeRoll(content string, invokerName string) string {
+	if content == "" || invokerName == "" {
+		return content
+	}
+
+	return content + " `" + strings.ReplaceAll(invokerName, "`", "") + "`"
+}
+
 // A re-roll is the odd one out: an interaction callback carries no
 // message_reference, so it can never be a reply. The click is acknowledged and
 // the new roll follows as a separate reply, without a button of its own.
-func planResponse(source commandSource, resp *command.Response) responsePlan {
+func planResponse(source commandSource, resp *command.Response, invokerName string) responsePlan {
 	switch source {
 	case sourceReRoll:
 		return responsePlan{
 			interactionResponse: discordgo.InteractionResponseDeferredMessageUpdate,
+			content:             attributeRoll(resp.Content, invokerName),
 			replyInChannel:      true,
 			files:               responseFiles(resp),
 		}
 	case sourceChat:
 		return responsePlan{
 			interactionResponse: interactionNone,
+			content:             resp.Content,
 			replyInChannel:      true,
 			components:          reRollComponents(resp),
 			files:               responseFiles(resp),
@@ -174,6 +190,7 @@ func planResponse(source commandSource, resp *command.Response) responsePlan {
 
 	return responsePlan{
 		interactionResponse: discordgo.InteractionResponseChannelMessageWithSource,
+		content:             resp.Content,
 		components:          reRollComponents(resp),
 		files:               responseFiles(resp),
 	}
@@ -186,15 +203,19 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 	}
 
 	source := sourceSlash
+	invokerName := ""
 	if i.Type == discordgo.InteractionMessageComponent {
 		source = sourceReRoll
+		if user := interactionUser(i); user != nil {
+			invokerName = user.Username
+		}
 	}
-	plan := planResponse(source, resp)
+	plan := planResponse(source, resp, invokerName)
 
 	response := &discordgo.InteractionResponse{Type: plan.interactionResponse}
 	if !plan.replyInChannel {
 		response.Data = &discordgo.InteractionResponseData{
-			Content:         truncateContent(resp.Content),
+			Content:         truncateContent(plan.content),
 			Components:      plan.components,
 			Files:           plan.files,
 			AllowedMentions: noMentions(),
@@ -221,7 +242,7 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 
 	// Ephemeral is dropped: a plain channel message has no such flag.
 	_, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
-		Content:         truncateContent(resp.Content),
+		Content:         truncateContent(plan.content),
 		Components:      plan.components,
 		Files:           plan.files,
 		Reference:       reference,
@@ -305,10 +326,10 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 		return
 	}
 
-	plan := planResponse(sourceChat, resp)
+	plan := planResponse(sourceChat, resp, "")
 
 	_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
-		Content:         truncateContent(resp.Content),
+		Content:         truncateContent(plan.content),
 		Components:      plan.components,
 		Files:           plan.files,
 		Reference:       m.Reference(),

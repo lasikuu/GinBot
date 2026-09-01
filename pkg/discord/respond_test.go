@@ -186,7 +186,9 @@ func TestPlanResponse(t *testing.T) {
 		name           string
 		source         commandSource
 		resp           *command.Response
+		invokerName    string
 		wantResponse   discordgo.InteractionResponseType
+		wantContent    string
 		wantReply      bool
 		wantComponents int
 	}{
@@ -195,6 +197,7 @@ func TestPlanResponse(t *testing.T) {
 			source:         sourceSlash,
 			resp:           rolled,
 			wantResponse:   discordgo.InteractionResponseChannelMessageWithSource,
+			wantContent:    "444",
 			wantReply:      false,
 			wantComponents: 1,
 		},
@@ -203,6 +206,7 @@ func TestPlanResponse(t *testing.T) {
 			source:         sourceChat,
 			resp:           rolled,
 			wantResponse:   interactionNone,
+			wantContent:    "444",
 			wantReply:      true,
 			wantComponents: 1,
 		},
@@ -210,7 +214,9 @@ func TestPlanResponse(t *testing.T) {
 			name:           "a button click is acknowledged without editing the clicked message",
 			source:         sourceReRoll,
 			resp:           rolled,
+			invokerName:    "kohana",
 			wantResponse:   discordgo.InteractionResponseDeferredMessageUpdate,
+			wantContent:    "444 `kohana`",
 			wantReply:      true,
 			wantComponents: 0,
 		},
@@ -219,6 +225,7 @@ func TestPlanResponse(t *testing.T) {
 			source:         sourceSlash,
 			resp:           &command.Response{Content: "7"},
 			wantResponse:   discordgo.InteractionResponseChannelMessageWithSource,
+			wantContent:    "7",
 			wantReply:      false,
 			wantComponents: 0,
 		},
@@ -226,7 +233,7 @@ func TestPlanResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan := planResponse(tt.source, tt.resp)
+			plan := planResponse(tt.source, tt.resp, tt.invokerName)
 
 			if plan.interactionResponse == discordgo.InteractionResponseUpdateMessage {
 				t.Error("plan edits the clicked message in place")
@@ -234,11 +241,58 @@ func TestPlanResponse(t *testing.T) {
 			if plan.interactionResponse != tt.wantResponse {
 				t.Errorf("interactionResponse = %d, want %d", plan.interactionResponse, tt.wantResponse)
 			}
+			if plan.content != tt.wantContent {
+				t.Errorf("content = %q, want %q", plan.content, tt.wantContent)
+			}
 			if plan.replyInChannel != tt.wantReply {
 				t.Errorf("replyInChannel = %v, want %v", plan.replyInChannel, tt.wantReply)
 			}
 			if len(plan.components) != tt.wantComponents {
 				t.Errorf("components = %d, want %d", len(plan.components), tt.wantComponents)
+			}
+		})
+	}
+}
+
+// TestAttributeRollNamesTheClicker: a re-roll reply is a plain channel message
+// with no attribution of its own, so the name is the only trace of who clicked.
+func TestAttributeRollNamesTheClicker(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		invokerName string
+		want        string
+	}{
+		{
+			name:        "the name follows the number in a code span",
+			content:     "**44**",
+			invokerName: "kohana",
+			want:        "**44** `kohana`",
+		},
+		{
+			name:        "a backtick cannot escape the code span",
+			content:     "**44**",
+			invokerName: "ko`hana",
+			want:        "**44** `kohana`",
+		},
+		{
+			name:        "an unidentified clicker leaves the content alone",
+			content:     "**44**",
+			invokerName: "",
+			want:        "**44**",
+		},
+		{
+			name:        "an attachment-only response stays empty",
+			content:     "",
+			invokerName: "kohana",
+			want:        "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := attributeRoll(tt.content, tt.invokerName); got != tt.want {
+				t.Errorf("attributeRoll(%q, %q) = %q, want %q", tt.content, tt.invokerName, got, tt.want)
 			}
 		})
 	}
@@ -261,7 +315,7 @@ func TestReRollButtonStopsAfterOneHop(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := hasReRollButton(planResponse(tt.source, resp).components, resp.ReRollID)
+			got := hasReRollButton(planResponse(tt.source, resp, "").components, resp.ReRollID)
 			if got != tt.wantButton {
 				t.Errorf("re-roll button present = %v, want %v", got, tt.wantButton)
 			}
@@ -427,7 +481,7 @@ func TestPlanResponseCarriesTheFileOnEveryPath(t *testing.T) {
 		{name: "re-roll", source: sourceReRoll},
 	} {
 		t.Run(source.name, func(t *testing.T) {
-			plan := planResponse(source.source, responseWithFile("cat.png", content))
+			plan := planResponse(source.source, responseWithFile("cat.png", content), "")
 			if len(plan.files) != 1 {
 				t.Fatalf("plan carries %d attachments, want 1", len(plan.files))
 			}
@@ -438,7 +492,7 @@ func TestPlanResponseCarriesTheFileOnEveryPath(t *testing.T) {
 				t.Errorf("attachment content = %q, want %q", got, content)
 			}
 
-			textOnly := planResponse(source.source, &command.Response{Content: "444"})
+			textOnly := planResponse(source.source, &command.Response{Content: "444"}, "")
 			if len(textOnly.files) != 0 {
 				t.Errorf("a text-only response planned %d attachments, want 0", len(textOnly.files))
 			}
