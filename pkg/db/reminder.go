@@ -416,14 +416,19 @@ func SoftDeleteReminderByUser(ctx context.Context, id string, userID string) err
 	return nil
 }
 
-// ReminderUpdate is a full replace of every field except the repeat schedule.
+// ReminderUpdate is a full replace of every field except the patch-shaped
+// message and repeat schedule.
 type ReminderUpdate struct {
 	ID            string
 	UserID        string
 	Datetime      time.Time
 	Timezone      string
-	Message       string
 	DestinationID int64
+
+	// UpdateMessage says whether Message is written at all: false leaves the
+	// stored text untouched, true writes it, and an empty Message clears it.
+	UpdateMessage bool
+	Message       string
 
 	// UpdateRepeat says whether RepeatCron is written at all: false leaves the
 	// stored schedule untouched, true writes it, and an empty RepeatCron clears it.
@@ -438,16 +443,17 @@ func UpdateReminderByUser(ctx context.Context, update ReminderUpdate) error {
 		`UPDATE reminder
 		    SET datetime = $1,
 		        timezone = $2,
-		        message = $3,
-		        destination_id = $4,
-		        repeat_cron = CASE WHEN $5::boolean THEN $6::text ELSE repeat_cron END,
-		        status = $7,
+		        message = CASE WHEN $3::boolean THEN $4::text ELSE message END,
+		        destination_id = $5,
+		        repeat_cron = CASE WHEN $6::boolean THEN $7::text ELSE repeat_cron END,
+		        status = $8,
 		        claimed_at = NULL,
 		        delivery_attempts = 0
-		  WHERE id = $8
-		    AND user_id = $9
+		  WHERE id = $9
+		    AND user_id = $10
 		    AND deleted = FALSE`,
-		update.Datetime.UTC(), update.Timezone, nullStr(update.Message), update.DestinationID,
+		update.Datetime.UTC(), update.Timezone,
+		update.UpdateMessage, nullStr(update.Message), update.DestinationID,
 		update.UpdateRepeat, nullStr(update.RepeatCron),
 		int32(pb.ReminderStatus_REMINDER_STATUS_PENDING.Number()),
 		update.ID, update.UserID,

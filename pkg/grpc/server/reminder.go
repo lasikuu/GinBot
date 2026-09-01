@@ -231,8 +231,12 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, connReq *connect.Re
 		UserID:        caller.ID,
 		Datetime:      req.GetDatetime().AsTime(),
 		Timezone:      req.GetTimezone(),
-		Message:       req.GetMessage(),
 		DestinationID: destinationID,
+		// message is patch-shaped like repeat_cron: absent keeps the stored
+		// text, empty clears it. Writing it unconditionally would NULL the text
+		// on a datetime-only update.
+		UpdateMessage: req.HasMessage(),
+		Message:       req.GetMessage(),
 		UpdateRepeat:  updateRepeat,
 		RepeatCron:    repeatCron,
 	})

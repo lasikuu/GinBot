@@ -257,6 +257,7 @@ func TestUpdateReminderRefusesOtherUsersRow(t *testing.T) {
 		UserID:        attacker.userID,
 		Datetime:      time.Now().Add(time.Hour),
 		Timezone:      "Europe/Helsinki",
+		UpdateMessage: true,
 		Message:       newMsg,
 		DestinationID: owner.destinationID,
 	})
@@ -285,6 +286,7 @@ func TestUpdateReminderLeavesAnUnsuppliedRepeatAlone(t *testing.T) {
 		UserID:        f.userID,
 		Datetime:      time.Now().Add(2 * time.Hour),
 		Timezone:      "Europe/Helsinki",
+		UpdateMessage: true,
 		Message:       "only the message changed",
 		DestinationID: f.destinationID,
 		UpdateRepeat:  false,
@@ -307,6 +309,83 @@ func TestUpdateReminderLeavesAnUnsuppliedRepeatAlone(t *testing.T) {
 	}
 }
 
+func TestUpdateReminderLeavesAnUnsuppliedMessageAlone(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "keep-message")
+
+	id := f.create(t, time.Now().Add(time.Hour), "")
+	seeded := "msg-" + f.suffix
+
+	// A datetime-only edit must not NULL the stored text.
+	if err := UpdateReminderByUser(ctx, ReminderUpdate{
+		ID:            id,
+		UserID:        f.userID,
+		Datetime:      time.Now().Add(2 * time.Hour),
+		Timezone:      "Europe/Helsinki",
+		DestinationID: f.destinationID,
+		UpdateMessage: false,
+	}); err != nil {
+		t.Fatalf("UpdateReminderByUser: %v", err)
+	}
+
+	got, err := GetReminder(ctx, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if got.Message == nil {
+		t.Fatal("a datetime-only edit destroyed the message")
+	}
+	if *got.Message != seeded {
+		t.Errorf("message = %q, want %q untouched", *got.Message, seeded)
+	}
+}
+
+func TestUpdateReminderWritesAndClearsTheMessage(t *testing.T) {
+	ctx := context.Background()
+	f := newReminderFixture(t, "set-message")
+
+	id := f.create(t, time.Now().Add(time.Hour), "")
+
+	if err := UpdateReminderByUser(ctx, ReminderUpdate{
+		ID:            id,
+		UserID:        f.userID,
+		Datetime:      time.Now().Add(2 * time.Hour),
+		Timezone:      "Europe/Helsinki",
+		DestinationID: f.destinationID,
+		UpdateMessage: true,
+		Message:       "replaced",
+	}); err != nil {
+		t.Fatalf("UpdateReminderByUser (replace): %v", err)
+	}
+	got, err := GetReminder(ctx, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if got.Message == nil || *got.Message != "replaced" {
+		t.Fatalf("message = %v, want the replacement", got.Message)
+	}
+
+	// Empty string with UpdateMessage is the clear sentinel.
+	if err := UpdateReminderByUser(ctx, ReminderUpdate{
+		ID:            id,
+		UserID:        f.userID,
+		Datetime:      time.Now().Add(3 * time.Hour),
+		Timezone:      "Europe/Helsinki",
+		DestinationID: f.destinationID,
+		UpdateMessage: true,
+		Message:       "",
+	}); err != nil {
+		t.Fatalf("UpdateReminderByUser (clear): %v", err)
+	}
+	got, err = GetReminder(ctx, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if got.Message != nil {
+		t.Errorf("message = %q, want NULL after the clear sentinel", *got.Message)
+	}
+}
+
 func TestUpdateReminderWritesAndClearsTheRepeat(t *testing.T) {
 	ctx := context.Background()
 	f := newReminderFixture(t, "set-repeat")
@@ -318,6 +397,7 @@ func TestUpdateReminderWritesAndClearsTheRepeat(t *testing.T) {
 		UserID:        f.userID,
 		Datetime:      time.Now().Add(2 * time.Hour),
 		Timezone:      "Europe/Helsinki",
+		UpdateMessage: true,
 		Message:       "m",
 		DestinationID: f.destinationID,
 		UpdateRepeat:  true,
@@ -338,6 +418,7 @@ func TestUpdateReminderWritesAndClearsTheRepeat(t *testing.T) {
 		UserID:        f.userID,
 		Datetime:      time.Now().Add(3 * time.Hour),
 		Timezone:      "Europe/Helsinki",
+		UpdateMessage: true,
 		Message:       "m",
 		DestinationID: f.destinationID,
 		UpdateRepeat:  true,
@@ -380,6 +461,7 @@ func TestUpdateReminderReArmsATerminalReminder(t *testing.T) {
 				UserID:        f.userID,
 				Datetime:      time.Now().Add(2 * time.Hour),
 				Timezone:      "Europe/Helsinki",
+				UpdateMessage: true,
 				Message:       "moved",
 				DestinationID: f.destinationID,
 			}); err != nil {

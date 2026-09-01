@@ -587,6 +587,45 @@ func TestUpdateReminderKeepsAnUnsuppliedRepeat(t *testing.T) {
 	}
 }
 
+func TestUpdateReminderKeepsAnUnsuppliedMessage(t *testing.T) {
+	h, pool := liveReminderHarness(t)
+
+	ownerUID, keepmsgID := registeredCaller(t, h, pool, "keep-message")
+	cleanupActionRecords(t, pool, keepmsgID)
+
+	suffix := uniqueUID("keepmsg")
+	id := createReminderVia(t, h, pool, ownerUID, suffix, "")
+	seeded := "reminder-" + suffix
+
+	future := time.Now().Add(3 * time.Hour).UTC()
+	tz := "Europe/Helsinki"
+	// No Message field: a datetime-only edit must not NULL the stored text.
+	if _, err := h.Reminder.UpdateReminder(
+		callerCtx(pb.Platform_PLATFORM_DISCORD, ownerUID),
+		pb.UpdateReminderReq_builder{
+			Id:          &id,
+			Datetime:    timestamppb.New(future),
+			Timezone:    &tz,
+			Destination: destinationFor(t, pool, uniqueUID("keepmsg-dest")),
+		}.Build(),
+	); err != nil {
+		t.Fatalf("UpdateReminder: %v", err)
+	}
+
+	var message *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT message FROM reminder WHERE id = $1`, id,
+	).Scan(&message); err != nil {
+		t.Fatalf("read message: %v", err)
+	}
+	if message == nil {
+		t.Fatal("a datetime-only edit destroyed the message")
+	}
+	if *message != seeded {
+		t.Errorf("message = %q, want %q untouched", *message, seeded)
+	}
+}
+
 // The clear sentinel is an explicitly set empty repeat_cron, which validation must admit.
 func TestUpdateReminderClearsTheRepeatWithTheEmptySentinel(t *testing.T) {
 	h, pool := liveReminderHarness(t)
