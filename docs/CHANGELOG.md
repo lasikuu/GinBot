@@ -63,6 +63,9 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
   release tags.
 - A `.dockerignore`. The build context is the repository root and the Dockerfile copies all of it,
   so `.env`, `cert/*.pem` and the `/rin` export were previously baked into any image built by hand.
+- A roll from the die button names whoever clicked it, in a code span after the number. The reply is
+  an ordinary channel message with no "used /doubles" attribution of its own, so nothing else said
+  who rolled.
 
 ### Fixed
 
