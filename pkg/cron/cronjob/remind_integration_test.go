@@ -383,3 +383,28 @@ func TestRemindPushesEveryClaimedValueAsATypedDelivery(t *testing.T) {
 		}
 	})
 }
+
+// remind must claim against the injected instant, not the wall clock: a reminder
+// due after that instant stays unclaimed. The pre-fix code read time.Now()
+// directly and would push it regardless of what is injected.
+func TestRemindClaimsAgainstTheInjectedInstant(t *testing.T) {
+	pool := requireDatabase(t)
+
+	origin := callermeta.Origin{DestinationUID: "channel-" + uniqueSuffix("past")}
+	id, _ := dueReminder(t, pool, "past",
+		pb.Platform_PLATFORM_DISCORD, pb.Platform_PLATFORM_DISCORD,
+		origin.DestinationMeta(), "not yet")
+
+	// dueReminder fires a minute ago; an hour before that the reminder is not due.
+	remind(context.Background(), time.Now().Add(-time.Hour))
+
+	var claimedAt *time.Time
+	if err := pool.QueryRow(context.Background(),
+		`SELECT claimed_at FROM reminder WHERE id = $1`, id,
+	).Scan(&claimedAt); err != nil {
+		t.Fatalf("read claimed_at: %v", err)
+	}
+	if claimedAt != nil {
+		t.Error("reminder was claimed against the wall clock, not the injected instant")
+	}
+}

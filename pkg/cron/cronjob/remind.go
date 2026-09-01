@@ -14,7 +14,15 @@ import (
 // Remind reclaims lost reminders, claims the due ones and pushes each over the
 // reverse stream. ClaimDueReminders' atomic PENDING -> SENT prevents doubles.
 func Remind(ctx context.Context) {
-	if outcome, err := db.ReclaimStaleReminders(ctx, time.Now()); err != nil {
+	remind(ctx, time.Now())
+}
+
+// remind takes now as a parameter so the reclaim cutoff and the claim cutoff
+// are the same instant: reading time.Now() twice would let a reminder due
+// between the two reads slip the reclaim but be claimed, and breaks tests that
+// inject a clock.
+func remind(ctx context.Context, now time.Time) {
+	if outcome, err := db.ReclaimStaleReminders(ctx, now); err != nil {
 		log.Z.Error("failed to reclaim stale reminders", zap.Error(err))
 	} else {
 		if outcome.Retried > 0 {
@@ -26,7 +34,7 @@ func Remind(ctx context.Context) {
 		}
 	}
 
-	claimed, err := db.ClaimDueReminders(ctx, time.Now())
+	claimed, err := db.ClaimDueReminders(ctx, now)
 	if err != nil {
 		log.Z.Error("failed to claim due reminders", zap.Error(err))
 		return
