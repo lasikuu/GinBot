@@ -311,6 +311,11 @@ func handleMessage(s *discordgo.Session, m *discordgo.MessageCreate, clients *cl
 		return
 	}
 
+	// An undo is consumed whole: it is neither a command nor trigger input.
+	if handleTriggerUndo(s, m) {
+		return
+	}
+
 	// Before the prefix branch: a prefixed or attachment-only message can still
 	// carry a repost. Its own goroutine so a CDN fetch cannot delay commands.
 	if config.Options.Repost.Enabled {
@@ -422,7 +427,7 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 		return
 	}
 
-	respondChat(s, m, out)
+	armTriggerUndo(m, respondChat(s, m, out))
 }
 
 func isHuman(s *discordgo.Session, m *discordgo.MessageCreate) bool {

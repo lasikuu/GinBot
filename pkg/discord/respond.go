@@ -319,16 +319,17 @@ func clickedMessageReference(i *discordgo.InteractionCreate) *discordgo.MessageR
 	return i.Message.Reference()
 }
 
-// Ephemeral has no chat equivalent and is ignored.
-func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command.Response) {
+// Ephemeral has no chat equivalent and is ignored. The posted message is
+// returned for the undo window (ADR-0037), and is nil when nothing was sent.
+func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command.Response) *discordgo.Message {
 	if resp == nil {
 		log.Z.Error("chat command returned no response.")
-		return
+		return nil
 	}
 
 	plan := planResponse(sourceChat, resp, "")
 
-	_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+	sent, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
 		Content:         truncateContent(plan.content),
 		Components:      plan.components,
 		Files:           plan.files,
@@ -337,7 +338,10 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 	})
 	if err != nil {
 		log.Z.Error("failed to respond to chat command.", zap.Error(err))
+		return nil
 	}
+
+	return sent
 }
 
 // Only a first roll reaches this: planResponse withholds the button from a

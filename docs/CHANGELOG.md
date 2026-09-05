@@ -66,6 +66,12 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
 - A roll from the die button names whoever clicked it, in a code span after the number. The reply is
   an ordinary channel message with no "used /doubles" attribution of its own, so nothing else said
   who rolled.
+- **A fired trigger can be taken back.** Whoever's message fired it has seven seconds to answer
+  `no`, `ei` or `del` in the same channel; the bot's response and the undo message are both deleted.
+  Only that author, only that channel, only once. Deleting the undo message needs
+  `MANAGE_MESSAGES`; without it that delete simply fails and the response is removed anyway. This
+  is Discord-only and the fire is still counted in `triggerstats` — see
+  [ADR 0037](adr/0037-the-trigger-undo-window-is-discord-only.md).
 - Colloquial Finnish chat aliases for the digit rolls: `??tuplilla` and `??tuplil` alongside
   `??tuplat`, and the same for `triples`, `quads`, `quints` and `sexts`. Discord allows one name per
   locale, so these are chat-only; the slash commands are unchanged.
