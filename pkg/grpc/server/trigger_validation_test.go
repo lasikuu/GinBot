@@ -112,36 +112,38 @@ func TestOversizedInstanceListIsRejectedByTheChain(t *testing.T) {
 	})
 }
 
-// Without string.uuid a malformed id reaches db.GetTrigger and is paid for anyway.
+// Without the id pattern a malformed id reaches db.GetTrigger and is paid for
+// anyway. A ref is well formed since ADR-0039, so it must reach clearance
+// rather than be refused at the edge.
 func TestMalformedTriggerIdIsRejectedByTheChain(t *testing.T) {
-	const malformed = "12345"
-	const wellFormed = "018f0000-0000-7000-8000-000000000001"
+	tests := []struct {
+		name string
+		id   string
+		code connect.Code
+		// resolves is 0 when validation refused the request before clearance.
+		resolves int
+	}{
+		{"malformed", "not-an-id", connect.CodeInvalidArgument, 0},
+		{"braced uuid", "{018f0000-0000-7000-8000-000000000001}", connect.CodeInvalidArgument, 0},
+		{"zero ref", "0", connect.CodeInvalidArgument, 0},
+		{"well formed uuid", "018f0000-0000-7000-8000-000000000001", connect.CodeFailedPrecondition, 1},
+		{"well formed ref", "12345", connect.CodeFailedPrecondition, 1},
+	}
 
-	t.Run("malformed", func(t *testing.T) {
-		dir := newDirectory()
-		h := newHarness(t, withDirectory(dir))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := newDirectory()
+			h := newHarness(t, withDirectory(dir))
 
-		id := malformed
-		_, err := h.Trigger.GetTrigger(unregisteredCtx(), pb.GetTriggerReq_builder{Id: &id}.Build())
-		requireCode(t, err, connect.CodeInvalidArgument)
+			id := tt.id
+			_, err := h.Trigger.GetTrigger(unregisteredCtx(), pb.GetTriggerReq_builder{Id: &id}.Build())
+			requireCode(t, err, tt.code)
 
-		if n := dir.resolveCount(); n != 0 {
-			t.Errorf("the caller was resolved %d times for a malformed id, want 0", n)
-		}
-	})
-
-	t.Run("well formed", func(t *testing.T) {
-		dir := newDirectory()
-		h := newHarness(t, withDirectory(dir))
-
-		id := wellFormed
-		_, err := h.Trigger.GetTrigger(unregisteredCtx(), pb.GetTriggerReq_builder{Id: &id}.Build())
-		requireCode(t, err, connect.CodeFailedPrecondition)
-
-		if n := dir.resolveCount(); n != 1 {
-			t.Errorf("the caller was resolved %d times, want 1: a valid id did not reach clearance", n)
-		}
-	})
+			if n := dir.resolveCount(); n != tt.resolves {
+				t.Errorf("the caller was resolved %d times, want %d", n, tt.resolves)
+			}
+		})
+	}
 }
 
 // pkg/db clamps limit and offset rather than refusing them; a future lte rule fails here.

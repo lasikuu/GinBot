@@ -333,7 +333,7 @@ func TestCreateAndReadReminder(t *testing.T) {
 		Destination: destination,
 	}.Build()
 
-	reminderID, err := CreateReminder(ctx, req, userID, destinationID, fixtureReminderCap)
+	reminderID, _, err := CreateReminder(ctx, req, userID, destinationID, fixtureReminderCap)
 	if err != nil {
 		t.Fatalf("CreateReminder: %v", err)
 	}

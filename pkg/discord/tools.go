@@ -38,12 +38,14 @@ func pingCommand() command.Command {
 	return command.Command{
 		Name:        "ping",
 		Description: "Check that the bot is responding, and how quickly",
+		Slow:        true,
 		Handler:     ping,
 	}
 }
 
 // ping measures the round trip entirely on this side, so no clock agreement
-// with the server is needed.
+// with the server is needed. Deferring adds a round trip of its own, but a
+// Ping call is still an RPC that could genuinely outlast the 3s deadline.
 func ping(ctx context.Context, _ *command.Invocation) (*command.Response, error) {
 	start := time.Now()
 
@@ -123,7 +125,8 @@ func helpCommand() command.Command {
 				Type:        command.ArgString,
 			},
 		},
-		Handler: help,
+		Ephemeral: true,
+		Handler:   help,
 	}
 }
 
@@ -242,6 +245,8 @@ func registerCommand() command.Command {
 	return command.Command{
 		Name:        "register",
 		Description: "Create your GinBot account",
+		Slow:        true,
+		Ephemeral:   true,
 		Handler:     register,
 	}
 }
@@ -281,6 +286,8 @@ func userInfoCommand() command.Command {
 		Name:        "userinfo",
 		Description: "Show your GinBot account",
 		Clearance:   pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:        true,
+		Ephemeral:   true,
 		Handler:     userInfo,
 	}
 }
@@ -342,6 +349,8 @@ func localeCommand() command.Command {
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   setLocale,
 	}
 }
@@ -380,6 +389,8 @@ func timezoneCommand() command.Command {
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   setTimezone,
 	}
 }

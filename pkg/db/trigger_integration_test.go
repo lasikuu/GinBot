@@ -49,7 +49,7 @@ func (f *triggerFixture) createOn(t *testing.T, phrase string, mode pb.TriggerMo
 	t.Helper()
 	ctx := context.Background()
 
-	id, err := CreateTrigger(ctx, CreateTriggerParams{
+	id, _, err := CreateTrigger(ctx, CreateTriggerParams{
 		Phrase:      phrase,
 		Reply:       "auto-reply-" + f.suffix,
 		UserID:      f.userID,
@@ -123,7 +123,7 @@ func TestExactPhraseUniqueConstraintIsCaseInsensitiveAndLiveOnly(t *testing.T) {
 
 	f.create(t, upper, pb.TriggerMode_TRIGGER_MODE_EXACT, 10)
 
-	_, err := CreateTrigger(ctx, CreateTriggerParams{
+	_, _, err := CreateTrigger(ctx, CreateTriggerParams{
 		Phrase:      lower,
 		Reply:       "second attempt",
 		UserID:      f.userID,
@@ -526,7 +526,7 @@ func (f *triggerFixture) createTriggerWithFile(t *testing.T, phrase string, file
 	t.Helper()
 	ctx := context.Background()
 
-	id, err := CreateTrigger(ctx, CreateTriggerParams{
+	id, _, err := CreateTrigger(ctx, CreateTriggerParams{
 		Phrase:      phrase,
 		FileID:      fileID,
 		UserID:      f.userID,

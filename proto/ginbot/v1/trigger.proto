@@ -59,6 +59,8 @@ message Trigger {
   TriggerMode mode = 10;
   // Stored file reply, unset when the trigger replies with text.
   TriggerFile file = 11;
+  // Display/input alias for id, global and never reused. See ADR-0039.
+  int64 ref = 12;
 }
 
 message TriggerInstance {
@@ -104,17 +106,17 @@ message TryTriggerResp {
 }
 
 message ExecTriggerReq {
-  // string.uuid so a malformed id is refused at the edge rather than costing a
-  // query that returns NotFound (indistinguishable from a deleted trigger).
+  // Accepts a canonical uuid or a positive decimal ref. See ADR-0039.
   string id = 1 [
-    (buf.validate.field).string.uuid = true
+    (buf.validate.field).string.pattern = "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[1-9][0-9]{0,17})$"
   ];
   TriggerInstance instance = 2;
 }
 
 message GetTriggerReq {
+  // Accepts a canonical uuid or a positive decimal ref. See ADR-0039.
   string id = 1 [
-    (buf.validate.field).string.uuid = true
+    (buf.validate.field).string.pattern = "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[1-9][0-9]{0,17})$"
   ];
 }
 
@@ -191,11 +193,14 @@ message CreateTriggerReq {
 
 message CreateTriggerResp {
   string id = 1;
+  // Newly allocated ref, echoed so the caller can use the short form next.
+  int64 ref = 2;
 }
 
 message UpdateTriggerReq {
+  // Accepts a canonical uuid or a positive decimal ref. See ADR-0039.
   string id = 1 [
-    (buf.validate.field).string.uuid = true
+    (buf.validate.field).string.pattern = "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[1-9][0-9]{0,17})$"
   ];
   string phrase = 2 [
     (buf.validate.field).string.max_len = 200
@@ -229,8 +234,9 @@ message UpdateTriggerReq {
 message UpdateTriggerResp {}
 
 message DeleteTriggerReq {
+  // Accepts a canonical uuid or a positive decimal ref. See ADR-0039.
   string id = 1 [
-    (buf.validate.field).string.uuid = true
+    (buf.validate.field).string.pattern = "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[1-9][0-9]{0,17})$"
   ];
 }
 

@@ -71,6 +71,8 @@ func remindCommand() command.Command {
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   remind,
 	}
 }
@@ -127,6 +129,8 @@ func remindersCommand() command.Command {
 		Group:       reminderGroup,
 		Sub:         reminderSubList,
 		Clearance:   pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:        true,
+		Ephemeral:   true,
 		Handler:     listReminders,
 	}
 }
@@ -158,7 +162,7 @@ func listReminders(ctx context.Context, _ *command.Invocation) (*command.Respons
 		b.WriteByte('\n')
 	}
 
-	return &command.Response{Content: b.String(), Ephemeral: true}, nil
+	return &command.Response{Content: b.String(), Ephemeral: true, DirectWhenLong: true}, nil
 }
 
 func reminderInfoCommand() command.Command {
@@ -172,12 +176,14 @@ func reminderInfoCommand() command.Command {
 		Args: []command.Arg{
 			{
 				Name:        "id",
-				Description: "Reminder id",
+				Description: "Reminder id or ref",
 				Type:        command.ArgString,
 				Required:    true,
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   reminderInfo,
 	}
 }
@@ -202,10 +208,12 @@ func reminderInfo(ctx context.Context, inv *command.Invocation) (*command.Respon
 }
 
 // Every timestamp is a Discord tag, so the view reads on the viewer's clock.
+// Shows the full uuid, not just the ref: this is where a caller obtains it.
 func formatReminderInfo(r *pb.Reminder) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "**Reminder** `%s`\n", r.GetId())
+	fmt.Fprintf(&b, "**Reminder** `%d`\n", r.GetRef())
+	fmt.Fprintf(&b, "Id: `%s`\n", r.GetId())
 	fmt.Fprintf(&b, "When: %s\n", renderReminderTime(r))
 	fmt.Fprintf(&b, "Status: %s\n", reminderStatusName(r.GetStatus()))
 	fmt.Fprintf(&b, "Message: %s\n", emptyDash(r.GetMessage()))
@@ -259,12 +267,14 @@ func reminderDelCommand() command.Command {
 		Args: []command.Arg{
 			{
 				Name:        "ids",
-				Description: "Reminder ids, space-separated",
+				Description: "Reminder ids or refs, space-separated",
 				Type:        command.ArgString,
 				Required:    true,
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   deleteReminders,
 	}
 }
@@ -319,7 +329,7 @@ func reminderModCommand() command.Command {
 		Args: []command.Arg{
 			{
 				Name:        "id",
-				Description: "Reminder id",
+				Description: "Reminder id or ref",
 				Type:        command.ArgString,
 				Required:    true,
 			},
@@ -344,6 +354,8 @@ func reminderModCommand() command.Command {
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   modifyReminder,
 	}
 }
@@ -455,10 +467,10 @@ func renderReminderLine(r *pb.Reminder) string {
 		repeat = " (repeats)"
 	}
 
-	return fmt.Sprintf("`%s` — %s — %s%s",
-		r.GetId(),
+	return fmt.Sprintf("`%d` — %s — %s%s",
+		r.GetRef(),
 		renderReminderTime(r),
-		emptyDash(r.GetMessage()),
+		emptyDash(truncateLineField(r.GetMessage(), maxLineFieldRunes)),
 		repeat,
 	)
 }

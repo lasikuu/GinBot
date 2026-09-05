@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"connectrpc.com/connect"
@@ -27,6 +28,33 @@ func NewReminderServer() *ReminderServer {
 	return s
 }
 
+// resolveReminderID accepts either a canonical uuid or a positive decimal ref
+// (see ADR-0039), scoped to the caller since a reminder's ref is per owner. A
+// ref that resolves to nothing returns the same NotFound an ordinary missing
+// id would, so resolution itself cannot enumerate another caller's refs.
+func resolveReminderID(ctx context.Context, raw string) (string, error) {
+	ref, convErr := strconv.ParseInt(raw, 10, 64)
+	if convErr != nil || ref <= 0 {
+		return raw, nil
+	}
+
+	caller, err := callerUser(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	row, err := db.GetReminderByRef(ctx, caller.ID, ref)
+	if errors.Is(err, db.ErrNotFound) {
+		return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
+	}
+	if err != nil {
+		log.Z.Error("failed to resolve reminder ref", zap.Error(err))
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve reminder"))
+	}
+
+	return row.ID, nil
+}
+
 func (s *ReminderServer) GetReminder(ctx context.Context, connReq *connect.Request[pb.GetReminderReq]) (*connect.Response[pb.GetReminderResp], error) {
 	req := connReq.Msg
 
@@ -39,7 +67,12 @@ func (s *ReminderServer) GetReminder(ctx context.Context, connReq *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	reminderRow, err := db.GetReminder(ctx, req.GetId())
+	id, err := resolveReminderID(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+
+	reminderRow, err := db.GetReminder(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
@@ -143,7 +176,7 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, connReq *connect.Re
 	}
 
 	// The cap is enforced inside the insert's transaction; check-then-insert would race.
-	reminderID, err := db.CreateReminder(ctx, req, caller.ID, destinationID, maxActiveRemindersPerUser)
+	reminderID, ref, err := db.CreateReminder(ctx, req, caller.ID, destinationID, maxActiveRemindersPerUser)
 	if errors.Is(err, db.ErrReminderCapReached) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("you already have the maximum of %d active reminders", maxActiveRemindersPerUser))
 	}
@@ -157,7 +190,8 @@ func (s *ReminderServer) CreateReminder(ctx context.Context, connReq *connect.Re
 	}
 
 	return connect.NewResponse(pb.CreateReminderResp_builder{
-		Id: &reminderID,
+		Id:  &reminderID,
+		Ref: &ref,
 	}.Build()), nil
 }
 
@@ -173,8 +207,13 @@ func (s *ReminderServer) DeleteReminder(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
+	id, err := resolveReminderID(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+
 	// ErrNotFound covers another user's reminder, so it cannot be probed.
-	err = db.SoftDeleteReminderByUser(ctx, req.GetId(), caller.ID)
+	err = db.SoftDeleteReminderByUser(ctx, id, caller.ID)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reminder not found"))
 	}
@@ -211,6 +250,11 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, connReq *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("datetime must be in the future"))
 	}
 
+	id, err := resolveReminderID(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+
 	// repeat_cron is patch-shaped: absent keeps the schedule, empty clears it.
 	updateRepeat := req.HasRepeatCron()
 	repeatCron := req.GetRepeatCron()
@@ -227,7 +271,7 @@ func (s *ReminderServer) UpdateReminder(ctx context.Context, connReq *connect.Re
 	}
 
 	err = db.UpdateReminderByUser(ctx, db.ReminderUpdate{
-		ID:            req.GetId(),
+		ID:            id,
 		UserID:        caller.ID,
 		Datetime:      req.GetDatetime().AsTime(),
 		Timezone:      req.GetTimezone(),

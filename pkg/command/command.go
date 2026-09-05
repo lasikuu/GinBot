@@ -38,6 +38,9 @@ type Response struct {
 	ReRollID string
 	// File must not be silently dropped: an empty Content is not a response.
 	File *ResponseFile
+	// DirectWhenLong asks that content too long for one message be delivered
+	// privately rather than truncated. See ADR-0040.
+	DirectWhenLong bool
 }
 
 // ResponseFile carries bytes rather than a URL: see ADR-0007.
@@ -125,9 +128,13 @@ type Command struct {
 	// Clearance is the minimum required level. Not enforced in this phase.
 	Clearance pb.Clearance
 	// Slow marks a handler that may outlast Discord's three-second
-	// acknowledgement deadline, which then also decides Ephemeral.
-	Slow    bool
-	Handler Handler
+	// acknowledgement deadline, so the platform acknowledges before running it.
+	Slow bool
+	// Ephemeral asks that this command's responses be shown only to the
+	// invoker. Read before the handler runs, so a deferred interaction is
+	// acknowledged with the right visibility. See ADR-0038.
+	Ephemeral bool
+	Handler   Handler
 }
 
 type commandGroup struct {

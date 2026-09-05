@@ -122,60 +122,84 @@ func TestTriggerInstancesListIsBounded(t *testing.T) {
 	}
 }
 
-func TestTriggerIdsMustBeUUIDs(t *testing.T) {
-	valid := validTriggerUUID
-
-	tests := []struct {
-		name  string
-		field string
-		build func(id string) proto.Message
-	}{
-		{"GetTriggerReq.id", "id", func(id string) proto.Message {
-			return pb.GetTriggerReq_builder{Id: &id}.Build()
-		}},
-		{"DeleteTriggerReq.id", "id", func(id string) proto.Message {
-			return pb.DeleteTriggerReq_builder{Id: &id}.Build()
-		}},
-		{"ExecTriggerReq.id", "id", func(id string) proto.Message {
-			return pb.ExecTriggerReq_builder{Id: &id, Instance: discordInstance()}.Build()
-		}},
-		{"UpdateTriggerReq.id", "id", func(id string) proto.Message {
-			req := validUpdateTrigger()
-			req.SetId(id)
-			return req
-		}},
-		{"GetFileReq.file_id", "file_id", func(id string) proto.Message {
-			return pb.GetFileReq_builder{FileId: &id}.Build()
-		}},
-	}
+// A trigger id is a uuid or a decimal ref (ADR-0039); file_id is not a
+// user-facing handle and stays uuid-only, so the two report different rules for
+// the same input.
+func TestTriggerIdsAcceptOnlyAUUIDOrARef(t *testing.T) {
+	const refShaped = "12345"
 
 	// string.uuid is two predefined rules: the empty string reports
 	// "string.uuid_empty", everything else "string.uuid".
 	const (
+		rulePattern   = "string.pattern"
 		ruleUUID      = "string.uuid"
 		ruleUUIDEmpty = "string.uuid_empty"
 	)
 
+	tests := []struct {
+		name string
+		// field is the path requireOnlyViolation matches the violation against.
+		field string
+		// rule and emptyRule differ because string.uuid splits the empty string
+		// into its own rule id and string.pattern does not.
+		rule      string
+		emptyRule string
+		acceptRef bool
+		build     func(id string) proto.Message
+	}{
+		{"GetTriggerReq.id", "id", rulePattern, rulePattern, true, func(id string) proto.Message {
+			return pb.GetTriggerReq_builder{Id: &id}.Build()
+		}},
+		{"DeleteTriggerReq.id", "id", rulePattern, rulePattern, true, func(id string) proto.Message {
+			return pb.DeleteTriggerReq_builder{Id: &id}.Build()
+		}},
+		{"ExecTriggerReq.id", "id", rulePattern, rulePattern, true, func(id string) proto.Message {
+			return pb.ExecTriggerReq_builder{Id: &id, Instance: discordInstance()}.Build()
+		}},
+		{"UpdateTriggerReq.id", "id", rulePattern, rulePattern, true, func(id string) proto.Message {
+			req := validUpdateTrigger()
+			req.SetId(id)
+			return req
+		}},
+		{"GetFileReq.file_id", "file_id", ruleUUID, ruleUUIDEmpty, false, func(id string) proto.Message {
+			return pb.GetFileReq_builder{FileId: &id}.Build()
+		}},
+	}
+
 	malformed := []struct {
 		name string
 		id   string
-		rule string
 	}{
-		{"not a uuid at all", "12345", ruleUUID},
-		{"empty", "", ruleUUIDEmpty},
-		{"one character short", "018f0000-0000-7000-8000-00000000000", ruleUUID},
-		{"braced form", "{018f0000-0000-7000-8000-000000000001}", ruleUUID},
-		{"non-hex digit", "018f0000-0000-7000-8000-00000000000g", ruleUUID},
-		{"sql injection attempt", "' OR 1=1 --", ruleUUID},
+		{"empty", ""},
+		{"one character short", "018f0000-0000-7000-8000-00000000000"},
+		{"braced form", "{018f0000-0000-7000-8000-000000000001}"},
+		{"non-hex digit", "018f0000-0000-7000-8000-00000000000g"},
+		{"sql injection attempt", "' OR 1=1 --"},
+		{"zero ref", "0"},
+		{"negative ref", "-1"},
+		{"leading zero ref", "0123"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			requireValid(t, tt.build(valid))
+			requireValid(t, tt.build(validTriggerUUID))
+			// string.uuid accepts either case, so the ref pattern must too, or
+			// relaxing it would quietly narrow what a caller may send.
+			requireValid(t, tt.build(strings.ToUpper(validTriggerUUID)))
+
+			if tt.acceptRef {
+				requireValid(t, tt.build(refShaped))
+			} else {
+				requireOnlyViolation(t, tt.build(refShaped), tt.field, tt.rule)
+			}
 
 			for _, bad := range malformed {
 				t.Run(bad.name, func(t *testing.T) {
-					requireOnlyViolation(t, tt.build(bad.id), tt.field, bad.rule)
+					rule := tt.rule
+					if bad.id == "" {
+						rule = tt.emptyRule
+					}
+					requireOnlyViolation(t, tt.build(bad.id), tt.field, rule)
 				})
 			}
 		})

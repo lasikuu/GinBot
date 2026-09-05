@@ -62,6 +62,37 @@ func GetFile(ctx context.Context, id string) (*model.File, error) {
 	return &file, nil
 }
 
+// GetFilesByIDs is GetFile for many files in one query, keyed by id. An id
+// absent from the result was not found or was soft-deleted.
+func GetFilesByIDs(ctx context.Context, fileIDs []string) (map[string]*model.File, error) {
+	out := make(map[string]*model.File, len(fileIDs))
+	if len(fileIDs) == 0 {
+		return out, nil
+	}
+
+	rows, err := db().Query(ctx,
+		`SELECT `+model.FileColumns+` FROM file WHERE id = ANY($1) AND deleted = FALSE`,
+		fileIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query files batch: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var file model.File
+		if err := rows.Scan(file.ScanTargets()...); err != nil {
+			return nil, fmt.Errorf("scan file batch: %w", err)
+		}
+		out[file.ID] = &file
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate files batch: %w", err)
+	}
+
+	return out, nil
+}
+
 // ListOrphanFiles returns local files no live trigger references. olderThan is a
 // grace period so a blob written just before its trigger commits is not swept.
 func ListOrphanFiles(ctx context.Context, olderThan time.Time, limit int64) ([]*model.File, error) {

@@ -44,20 +44,21 @@ type CreateTriggerParams struct {
 	InstanceIDs []int64
 }
 
-func CreateTrigger(ctx context.Context, params CreateTriggerParams) (string, error) {
+// CreateTrigger returns the new trigger's id and its sequence-allocated ref.
+func CreateTrigger(ctx context.Context, params CreateTriggerParams) (id string, ref int64, err error) {
 	if len(params.InstanceIDs) == 0 {
-		return "", fmt.Errorf("create trigger: at least one instance is required")
+		return "", 0, fmt.Errorf("create trigger: at least one instance is required")
 	}
 
 	triggerUUID, err := uuid.NewV7()
 	if err != nil {
-		return "", fmt.Errorf("generate trigger uuid: %w", err)
+		return "", 0, fmt.Errorf("generate trigger uuid: %w", err)
 	}
 	triggerID := triggerUUID.String()
 
 	tx, err := db().Begin(ctx)
 	if err != nil {
-		return "", fmt.Errorf("begin trigger insert: %w", err)
+		return "", 0, fmt.Errorf("begin trigger insert: %w", err)
 	}
 	defer func() {
 		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
@@ -65,16 +66,17 @@ func CreateTrigger(ctx context.Context, params CreateTriggerParams) (string, err
 		}
 	}()
 
-	if _, err := tx.Exec(ctx,
+	if err := tx.QueryRow(ctx,
 		`INSERT INTO trigger (id, phrase, reply, file_id, user_id, chance, mode)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING ref`,
 		triggerID, params.Phrase, nullStr(params.Reply), nullStr(params.FileID), nullStr(params.UserID),
 		params.Chance, int32(params.Mode.Number()),
-	); err != nil {
+	).Scan(&ref); err != nil {
 		if isExactPhraseViolation(err) {
-			return "", ErrExactPhraseTaken
+			return "", 0, ErrExactPhraseTaken
 		}
-		return "", fmt.Errorf("insert trigger: %w", err)
+		return "", 0, fmt.Errorf("insert trigger: %w", err)
 	}
 
 	// The caller's instance list is not deduplicated upstream, so a repeated pair
@@ -86,15 +88,15 @@ func CreateTrigger(ctx context.Context, params CreateTriggerParams) (string, err
 			 ON CONFLICT DO NOTHING`,
 			triggerID, instanceID,
 		); err != nil {
-			return "", fmt.Errorf("insert trigger instance: %w", err)
+			return "", 0, fmt.Errorf("insert trigger instance: %w", err)
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("commit trigger insert: %w", err)
+		return "", 0, fmt.Errorf("commit trigger insert: %w", err)
 	}
 
-	return triggerID, nil
+	return triggerID, ref, nil
 }
 
 func GetTrigger(ctx context.Context, id string) (*model.Trigger, error) {
@@ -109,6 +111,25 @@ func GetTrigger(ctx context.Context, id string) (*model.Trigger, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan trigger: %w", err)
+	}
+
+	return &row, nil
+}
+
+// GetTriggerByRef resolves the alias described in ADR-0039. ref is global, so
+// no owner scoping is needed here.
+func GetTriggerByRef(ctx context.Context, ref int64) (*model.Trigger, error) {
+	var row model.Trigger
+	err := db().QueryRow(ctx,
+		`SELECT `+model.TriggerColumns+` FROM trigger WHERE ref = $1 AND deleted = FALSE`,
+		ref,
+	).Scan(row.ScanTargets()...)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan trigger by ref: %w", err)
 	}
 
 	return &row, nil
@@ -149,6 +170,49 @@ func GetTriggerInstances(ctx context.Context, triggerID string) ([]*pb.TriggerIn
 	}
 
 	return instances, nil
+}
+
+// GetTriggerInstancesBatch is GetTriggerInstances for many triggers in one
+// query, so a listing costs a constant number of round trips regardless of
+// row count. A trigger with no scoped instances is simply absent from the map.
+func GetTriggerInstancesBatch(ctx context.Context, triggerIDs []string) (map[string][]*pb.TriggerInstance, error) {
+	out := make(map[string][]*pb.TriggerInstance, len(triggerIDs))
+	if len(triggerIDs) == 0 {
+		return out, nil
+	}
+
+	rows, err := db().Query(ctx,
+		`SELECT trigger_instance.trigger_id, instance.platform_enum, instance.instance_meta
+		 FROM trigger_instance
+		 JOIN instance ON trigger_instance.instance_id = instance.id
+		 WHERE trigger_instance.trigger_id = ANY($1)
+		   AND instance.deleted = FALSE`,
+		triggerIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query trigger instances batch: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var triggerID string
+		var platformEnum int32
+		var instanceMeta *structpb.Struct
+		if err := rows.Scan(&triggerID, &platformEnum, &instanceMeta); err != nil {
+			return nil, fmt.Errorf("scan trigger instance batch: %w", err)
+		}
+
+		platform := pb.Platform(platformEnum)
+		out[triggerID] = append(out[triggerID], pb.TriggerInstance_builder{
+			PlatformEnum: &platform,
+			InstanceMeta: instanceMeta,
+		}.Build())
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trigger instances batch: %w", err)
+	}
+
+	return out, nil
 }
 
 // ListTriggerInstanceIDs returns raw ids for Cache.Invalidate and the handler

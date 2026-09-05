@@ -81,6 +81,63 @@ func truncateContent(content string) string {
 	return content[:cut] + ellipsis
 }
 
+// splitContent chunks content at no more than limit bytes, preferring a
+// newline boundary; a single line longer than limit is cut on a rune boundary
+// so every chunk stays valid UTF-8. See ADR-0040.
+func splitContent(content string, limit int) []string {
+	if content == "" {
+		return nil
+	}
+	if len(content) <= limit {
+		return []string{content}
+	}
+
+	var chunks []string
+	var current strings.Builder
+
+	for _, line := range strings.Split(content, "\n") {
+		joined := current.Len()
+		if joined > 0 {
+			joined++ // the "\n" a further line would need
+		}
+		joined += len(line)
+
+		if joined <= limit {
+			if current.Len() > 0 {
+				current.WriteByte('\n')
+			}
+			current.WriteString(line)
+			continue
+		}
+
+		if current.Len() > 0 {
+			chunks = append(chunks, current.String())
+			current.Reset()
+		}
+
+		remaining := line
+		for len(remaining) > limit {
+			cut := limit
+			for cut > 0 && !utf8.RuneStart(remaining[cut]) {
+				cut--
+			}
+			// Only when limit is below the 4 bytes a rune can need, where no
+			// cut is on a boundary and something must still be emitted.
+			if cut == 0 {
+				cut = limit
+			}
+			chunks = append(chunks, remaining[:cut])
+			remaining = remaining[cut:]
+		}
+		current.WriteString(remaining)
+	}
+	if current.Len() > 0 {
+		chunks = append(chunks, current.String())
+	}
+
+	return chunks
+}
+
 // Discord rejects a file with an empty filename, failing the whole send.
 const fallbackAttachmentName = "attachment"
 
@@ -255,14 +312,18 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 }
 
 // Deferring trades Discord's 3s interaction deadline for a 15-minute follow-up
-// window. Always ephemeral: visibility must be chosen before the handler runs,
-// and an ephemeral deferral cannot later be edited into a public message.
-func deferInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
+// window. Visibility is decided by the command's declared Ephemeral, read
+// before the handler runs, since an ephemeral deferral cannot later be edited
+// into a public message. See ADR-0038.
+func deferInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, ephemeral bool) bool {
+	data := &discordgo.InteractionResponseData{}
+	if ephemeral {
+		data.Flags = discordgo.MessageFlagsEphemeral
+	}
+
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Flags: discordgo.MessageFlagsEphemeral,
-		},
+		Data: data,
 	})
 	if err != nil {
 		log.Z.Error("failed to defer a slow command.", zap.Error(err))
@@ -272,29 +333,69 @@ func deferInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) bool
 	return true
 }
 
-// Edits rather than sends, or the "thinking" placeholder stays forever. Content
-// is never empty: Discord rejects an edit with neither text nor an attachment.
-func respondDeferred(s *discordgo.Session, i *discordgo.InteractionCreate, resp *command.Response) {
+// Edits rather than sends, or the "thinking" placeholder stays forever.
+// A follow-up does not inherit the deferral's visibility, so it is set again.
+func respondDeferred(s *discordgo.Session, i *discordgo.InteractionCreate, resp *command.Response, ephemeral bool) {
 	if resp == nil {
 		log.Z.Error("slow command returned no response.", zap.String("command", i.Type.String()))
 		resp = &command.Response{Content: errorMessage(nil)}
 	}
 
-	files := responseFiles(resp)
-
-	content := truncateContent(resp.Content)
-	if content == "" && len(files) == 0 {
-		content = "Done."
+	// A deferral is acknowledged before the handler runs, so its visibility is
+	// already fixed. A handler asking for private here gets public: log it, or
+	// the next such branch leaks into the channel with no trace.
+	if resp.Ephemeral && !ephemeral {
+		log.Z.Error("a public command asked for an ephemeral deferred reply and was answered publicly.",
+			zap.String("command", i.ApplicationCommandData().Name))
 	}
 
-	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content:         &content,
+	files := responseFiles(resp)
+	chunks := splitContent(resp.Content, maxChatContent)
+
+	first := ""
+	if len(chunks) > 0 {
+		first = chunks[0]
+	}
+	// Content is never empty: Discord rejects an edit with neither text nor an attachment.
+	if first == "" && len(files) == 0 {
+		first = "Done."
+	}
+
+	edit := &discordgo.WebhookEdit{
+		Content:         &first,
 		Files:           files,
 		AllowedMentions: noMentions(),
-	})
-	if err != nil {
+	}
+	if components := reRollComponents(resp); len(components) > 0 {
+		edit.Components = &components
+	}
+
+	if _, err := s.InteractionResponseEdit(i.Interaction, edit); err != nil {
 		// Already acknowledged, so this log is the only trace.
 		log.Z.Error("failed to deliver a slow command's response.", zap.Error(err))
+		return
+	}
+
+	// Guarded, not chunks[1:]: splitContent returns nil for empty content, and
+	// a file reply legitimately has none.
+	if len(chunks) < 2 {
+		return
+	}
+
+	for _, chunk := range chunks[1:] {
+		params := &discordgo.WebhookParams{
+			Content:         chunk,
+			AllowedMentions: noMentions(),
+		}
+		if ephemeral {
+			params.Flags = discordgo.MessageFlagsEphemeral
+		}
+
+		if _, err := s.FollowupMessageCreate(i.Interaction, false, params); err != nil {
+			// Already delivered in part, so this log is the only trace.
+			log.Z.Error("failed to send a follow-up chunk of a slow command's response.", zap.Error(err))
+			return
+		}
 	}
 }
 
@@ -327,6 +428,10 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 		return nil
 	}
 
+	if resp.DirectWhenLong && len(resp.Content) > maxChatContent {
+		return respondChatDirect(s, m, resp)
+	}
+
 	plan := planResponse(sourceChat, resp, "")
 
 	sent, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
@@ -342,6 +447,68 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 	}
 
 	return sent
+}
+
+// respondChatDirect delivers content too long for one channel message by DM,
+// leaving a pointer in the channel. See ADR-0040.
+func respondChatDirect(s *discordgo.Session, m *discordgo.MessageCreate, resp *command.Response) *discordgo.Message {
+	// Response.File must not be silently dropped. No caller pairs a file with
+	// DirectWhenLong today, so this reports rather than handles it.
+	if resp.File != nil {
+		log.Z.Error("a long chat response carried a file, which a DM delivery drops.",
+			zap.String("filename", resp.File.Name))
+	}
+
+	if !sendDMChunks(s, m.Author.ID, splitContent(resp.Content, maxChatContent)) {
+		sent, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+			Content:         "That's too long to post here, and I could not send it to you by DM. Check that you allow DMs from server members.",
+			Reference:       m.Reference(),
+			AllowedMentions: noMentions(),
+		})
+		if err != nil {
+			log.Z.Error("failed to report a failed DM delivery.", zap.Error(err))
+			return nil
+		}
+		return sent
+	}
+
+	sent, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+		Content:         "Sent you a DM — it was too long to post here.",
+		Reference:       m.Reference(),
+		AllowedMentions: noMentions(),
+	})
+	if err != nil {
+		log.Z.Error("failed to post the DM pointer.", zap.Error(err))
+		return nil
+	}
+
+	return sent
+}
+
+// sendDMChunks opens a DM with userID and posts every chunk in order,
+// stopping and reporting false on the first failure.
+func sendDMChunks(s *discordgo.Session, userID string, chunks []string) bool {
+	if len(chunks) == 0 {
+		return false
+	}
+
+	channel, err := s.UserChannelCreate(userID)
+	if err != nil {
+		log.Z.Warn("failed to open a DM channel for a long response.", zap.String("user_id", userID), zap.Error(err))
+		return false
+	}
+
+	for _, chunk := range chunks {
+		if _, err := s.ChannelMessageSendComplex(channel.ID, &discordgo.MessageSend{
+			Content:         chunk,
+			AllowedMentions: noMentions(),
+		}); err != nil {
+			log.Z.Warn("failed to send a chunk of a long response by DM.", zap.String("user_id", userID), zap.Error(err))
+			return false
+		}
+	}
+
+	return true
 }
 
 // Only a first roll reaches this: planResponse withholds the button from a

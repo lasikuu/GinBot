@@ -203,8 +203,9 @@ func triggerAddCommand() command.Command {
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
 		// The server's CDN fetch outlasts Discord's 3s interaction deadline.
-		Slow:    true,
-		Handler: addTrigger,
+		Slow:      true,
+		Ephemeral: true,
+		Handler:   addTrigger,
 	}
 }
 
@@ -265,7 +266,7 @@ func addTrigger(ctx context.Context, inv *command.Invocation) (*command.Response
 	}
 
 	return &command.Response{
-		Content:   fmt.Sprintf("Trigger created: `%s`.", resp.Msg.GetId()),
+		Content:   fmt.Sprintf("Trigger created: `%d` (id `%s`).", resp.Msg.GetRef(), resp.Msg.GetId()),
 		Ephemeral: true,
 	}, nil
 }
@@ -280,12 +281,14 @@ func triggerDelCommand() command.Command {
 		Args: []command.Arg{
 			{
 				Name:        "id",
-				Description: "Trigger id",
+				Description: "Trigger id or ref",
 				Type:        command.ArgString,
 				Required:    true,
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   deleteTrigger,
 	}
 }
@@ -320,7 +323,7 @@ func triggerModCommand() command.Command {
 		Args: []command.Arg{
 			{
 				Name:        "id",
-				Description: "Trigger id",
+				Description: "Trigger id or ref",
 				Type:        command.ArgString,
 				Required:    true,
 			},
@@ -352,8 +355,9 @@ func triggerModCommand() command.Command {
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
 		// Slow for addTrigger's reason: a new file argument is fetched first.
-		Slow:    true,
-		Handler: modifyTrigger,
+		Slow:      true,
+		Ephemeral: true,
+		Handler:   modifyTrigger,
 	}
 }
 
@@ -426,8 +430,8 @@ func triggerListCommand() command.Command {
 				Type:        command.ArgString,
 			},
 			{
-				Name:        "mine",
-				Description: "Only your own triggers",
+				Name:        "all",
+				Description: "List everyone's triggers on this server, not just your own",
 				Type:        command.ArgBool,
 			},
 			{
@@ -438,6 +442,10 @@ func triggerListCommand() command.Command {
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		// The N+1 per-row instance/file lookup this used to cost outlasts
+		// Discord's 3s deadline at realistic list sizes.
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   listTriggers,
 	}
 }
@@ -452,8 +460,9 @@ func listTriggers(ctx context.Context, inv *command.Invocation) (*command.Respon
 		req.Phrase = &search
 	}
 
-	if mine := inv.Bool("mine"); mine {
-		// A flag, not a user id: caller identity travels in request headers.
+	// Defaults to the caller's own triggers; `all` widens it to the instance.
+	if !inv.Bool("all") {
+		mine := true
 		req.Mine = &mine
 	}
 
@@ -478,7 +487,7 @@ func listTriggers(ctx context.Context, inv *command.Invocation) (*command.Respon
 		b.WriteByte('\n')
 	}
 
-	return &command.Response{Content: b.String(), Ephemeral: true}, nil
+	return &command.Response{Content: b.String(), Ephemeral: true, DirectWhenLong: true}, nil
 }
 
 func triggerInfoCommand() command.Command {
@@ -490,12 +499,14 @@ func triggerInfoCommand() command.Command {
 		Args: []command.Arg{
 			{
 				Name:        "id",
-				Description: "Trigger id",
+				Description: "Trigger id or ref",
 				Type:        command.ArgString,
 				Required:    true,
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   triggerInfo,
 	}
 }
@@ -539,6 +550,8 @@ func triggerStatsCommand() command.Command {
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
+		Slow:      true,
+		Ephemeral: true,
 		Handler:   triggerStats,
 	}
 }
@@ -588,13 +601,15 @@ func triggerExecCommand() command.Command {
 		Args: []command.Arg{
 			{
 				Name:        "id",
-				Description: "Trigger id",
+				Description: "Trigger id or ref",
 				Type:        command.ArgString,
 				Required:    true,
 			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
-		Handler:   execTrigger,
+		// ExecTrigger can stream a file before answering. See ADR-0038.
+		Slow:    true,
+		Handler: execTrigger,
 	}
 }
 
@@ -628,10 +643,9 @@ func execTrigger(ctx context.Context, inv *command.Invocation) (*command.Respons
 	}
 	if out == nil {
 		// A nil response makes Discord show "the application did not respond".
-		return &command.Response{
-			Content:   "That trigger has nothing to play back.",
-			Ephemeral: true,
-		}, nil
+		// Not ephemeral: a deferred reply takes its visibility from the command,
+		// so asking for private here would be discarded rather than honoured.
+		return &command.Response{Content: "That trigger has nothing to play back."}, nil
 	}
 
 	return out, nil
@@ -736,10 +750,12 @@ func triggerFileResponse(file *pb.TriggerFile, content []byte) *command.Response
 }
 
 // Nil-safe throughout: discordgo does not recover a panic raised in a handler.
+// Shows the full uuid, not just the ref: this is where a caller obtains it.
 func formatTriggerInfo(t *pb.Trigger) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "**Trigger** `%s`\n", t.GetId())
+	fmt.Fprintf(&b, "**Trigger** `%d`\n", t.GetRef())
+	fmt.Fprintf(&b, "Id: `%s`\n", t.GetId())
 	fmt.Fprintf(&b, "Phrase: %s\n", emptyDash(t.GetPhrase()))
 	fmt.Fprintf(&b, "Mode: %s\n", triggerModeName(t.GetMode()))
 	// The effective chance, never the stored column: 0 means default (ADR-0021).
@@ -769,15 +785,31 @@ func triggerReplyLine(t *pb.Trigger) string {
 	return label + ": " + value
 }
 
+// maxLineFieldRunes bounds one field within a listing line, so a single very
+// long phrase or reply cannot itself blow up the whole listing's length.
+const maxLineFieldRunes = 60
+
+// truncateLineField cuts on a rune boundary, unlike truncateContent which cuts
+// on a byte boundary sized for the whole message.
+func truncateLineField(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+
+	return string(runes[:maxRunes]) + "…"
+}
+
 func renderTriggerLine(t *pb.Trigger) string {
 	_, answer, isFile := triggerAnswer(t)
+	answer = truncateLineField(answer, maxLineFieldRunes)
 	if isFile {
 		answer = "(file) " + answer
 	}
 
-	return fmt.Sprintf("`%s` — %s — %s — %d%% — %s",
-		t.GetId(),
-		emptyDash(t.GetPhrase()),
+	return fmt.Sprintf("`%d` — %s — %s — %d%% — %s",
+		t.GetRef(),
+		emptyDash(truncateLineField(t.GetPhrase(), maxLineFieldRunes)),
 		triggerModeName(t.GetMode()),
 		trigger.EffectiveChance(t.GetChance(), t.GetMode()),
 		answer,

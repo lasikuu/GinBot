@@ -110,18 +110,20 @@ type Reminder struct {
 	ClaimedAt *time.Time
 	// DeliveryAttempts bounds retries of a permanently rejected confirm.
 	DeliveryAttempts int32
+	// Ref is a per-user display alias for ID, never an identity. See ADR-0039.
+	Ref int64
 }
 
 // ReminderColumns lists reminder columns in ScanTargets order.
 const ReminderColumns = `id, datetime, timezone, repeat_cron, destination_id, status,
 	user_id, message, parent_id, deleted, created_at, updated_at,
-	claimed_at, delivery_attempts`
+	claimed_at, delivery_attempts, ref`
 
 func (r *Reminder) ScanTargets() []any {
 	return []any{
 		&r.ID, &r.Datetime, &r.Timezone, &r.RepeatCron, &r.DestinationID, &r.Status,
 		&r.UserID, &r.Message, &r.ParentID, &r.Deleted, &r.CreatedAt, &r.UpdatedAt,
-		&r.ClaimedAt, &r.DeliveryAttempts,
+		&r.ClaimedAt, &r.DeliveryAttempts, &r.Ref,
 	}
 }
 
@@ -140,6 +142,7 @@ func (r *Reminder) ToProto(destination *pb.ReminderDestination) *pb.Reminder {
 		ParentId:    r.ParentID,
 		CreatedAt:   timestamppb.New(r.CreatedAt),
 		UpdatedAt:   timestamppb.New(r.UpdatedAt),
+		Ref:         &r.Ref,
 	}.Build()
 }
 
@@ -154,16 +157,18 @@ type Trigger struct {
 	Deleted   bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Ref is a global display alias for ID, never an identity. See ADR-0039.
+	Ref int64
 }
 
 // TriggerColumns lists trigger columns in ScanTargets order.
 const TriggerColumns = `id, phrase, reply, file_id, user_id, chance, mode,
-	deleted, created_at, updated_at`
+	deleted, created_at, updated_at, ref`
 
 func (t *Trigger) ScanTargets() []any {
 	return []any{
 		&t.ID, &t.Phrase, &t.Reply, &t.FileID, &t.UserID, &t.Chance, &t.Mode,
-		&t.Deleted, &t.CreatedAt, &t.UpdatedAt,
+		&t.Deleted, &t.CreatedAt, &t.UpdatedAt, &t.Ref,
 	}
 }
 
@@ -181,6 +186,7 @@ func (t *Trigger) ToProto(file *pb.TriggerFile, instances []*pb.TriggerInstance)
 		UpdatedAt: timestamppb.New(t.UpdatedAt),
 		Mode:      &mode,
 		File:      file,
+		Ref:       &t.Ref,
 	}.Build()
 }
 

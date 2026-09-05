@@ -279,7 +279,7 @@ func dueReminder(
 		Message:  &message,
 	}.Build()
 
-	reminderID, err = db.CreateReminder(ctx, req, userID, destinationID, fixtureReminderCap)
+	reminderID, _, err = db.CreateReminder(ctx, req, userID, destinationID, fixtureReminderCap)
 	if err != nil {
 		t.Fatalf("CreateReminder: %v", err)
 	}

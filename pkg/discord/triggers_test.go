@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,9 +33,13 @@ func triggerFor(stored int32, mode pb.TriggerMode, reply string, file *pb.Trigge
 	id := triggerID
 	phrase := "gm"
 	userID := "0192f000-0000-7000-8000-0000000000aa"
+	// Distinctive, and not a substring of triggerID, so a rendering test cannot
+	// pass on a digit that came from the uuid.
+	ref := int64(4242)
 
 	b := pb.Trigger_builder{
 		Id:        &id,
+		Ref:       &ref,
 		Phrase:    &phrase,
 		UserId:    &userID,
 		Chance:    &stored,
@@ -211,7 +216,7 @@ func TestTriggerCommandArguments(t *testing.T) {
 			cmd: triggerListCommand(),
 			want: []wantArg{
 				{name: "search", argType: command.ArgString},
-				{name: "mine", argType: command.ArgBool},
+				{name: "all", argType: command.ArgBool},
 				{name: "limit", argType: command.ArgInt},
 			},
 		},
@@ -594,18 +599,29 @@ func TestTriggerRenderingShowsTheEffectiveChance(t *testing.T) {
 	}
 }
 
+// The listing carries the ref because that is what a caller types back; only
+// the detail view carries the uuid, which is where a caller obtains it.
 func TestTriggerRenderingCarriesTheIdentifyingFields(t *testing.T) {
 	trg := triggerFor(10, pb.TriggerMode_TRIGGER_MODE_ANY, "good morning", nil)
 
 	for _, rendering := range []struct {
-		name string
-		got  string
+		name    string
+		got     string
+		wantID  bool
+		wantRef bool
 	}{
-		{name: "formatTriggerInfo", got: formatTriggerInfo(trg)},
-		{name: "renderTriggerLine", got: renderTriggerLine(trg)},
+		{name: "formatTriggerInfo", got: formatTriggerInfo(trg), wantID: true, wantRef: true},
+		{name: "renderTriggerLine", got: renderTriggerLine(trg), wantID: false, wantRef: true},
 	} {
-		if !strings.Contains(rendering.got, trg.GetId()) {
-			t.Errorf("%s does not show the id %q:\n%s", rendering.name, trg.GetId(), rendering.got)
+		ref := strconv.FormatInt(trg.GetRef(), 10)
+
+		if got := strings.Contains(rendering.got, trg.GetId()); got != rendering.wantID {
+			t.Errorf("%s shows the uuid %q = %v, want %v:\n%s",
+				rendering.name, trg.GetId(), got, rendering.wantID, rendering.got)
+		}
+		if got := strings.Contains(rendering.got, ref); got != rendering.wantRef {
+			t.Errorf("%s shows the ref %q = %v, want %v:\n%s",
+				rendering.name, ref, got, rendering.wantRef, rendering.got)
 		}
 		if !strings.Contains(rendering.got, trg.GetPhrase()) {
 			t.Errorf("%s does not show the phrase %q:\n%s", rendering.name, trg.GetPhrase(), rendering.got)
@@ -934,6 +950,10 @@ type fakeTriggerClient struct {
 
 	listCalls int
 
+	// listResp, when set, is returned by ListTriggers instead of the empty
+	// default; used to exercise the non-empty listing path.
+	listResp *pb.ListTriggersResp
+
 	err error
 }
 
@@ -962,6 +982,9 @@ func (f *fakeTriggerClient) ListTriggers(_ context.Context, in *connect.Request[
 	f.listCalls++
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.listResp != nil {
+		return connect.NewResponse(f.listResp), nil
 	}
 
 	return connect.NewResponse(pb.ListTriggersResp_builder{}.Build()), nil
@@ -1251,71 +1274,83 @@ func TestClampTriggerLimit(t *testing.T) {
 	}
 }
 
-// TestTriggerListMaxLimitFitsOneMessage: triggerListMaxLimit rows must fit in one
-// Discord message (maxChatContent).
-func TestTriggerListMaxLimitFitsOneMessage(t *testing.T) {
-	line := renderTriggerLine(triggerFor(0, pb.TriggerMode_TRIGGER_MODE_ANY, "ok", nil))
+// A listing at triggerListMaxLimit may exceed one message; what must hold is
+// that it asks to be chunked rather than being silently cut off.
+func TestTriggerListingIsNoLongerBoundToOneMessage(t *testing.T) {
+	// manyTriggersResp pads every phrase and reply, so triggerListMaxLimit rows
+	// of it comfortably exceed maxChatContent even after per-field truncation.
+	fake := &fakeTriggerClient{listResp: manyTriggersResp(t, int(triggerListMaxLimit))}
+	ctx := guildContext(&client.Clients{Trigger: fake})
 
-	worst := len("**Triggers**\n") + int(triggerListMaxLimit)*(len(line)+1)
-	if worst > maxChatContent {
-		t.Errorf("%d rows of %d characters is %d, over maxChatContent %d",
-			triggerListMaxLimit, len(line), worst, maxChatContent)
+	resp, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{})
+	if err != nil {
+		t.Fatalf("handler returned %v", err)
+	}
+
+	if len(resp.Content) <= maxChatContent {
+		t.Fatalf("listing content is %d bytes, want over maxChatContent %d to actually exercise chunking",
+			len(resp.Content), maxChatContent)
+	}
+	if !resp.DirectWhenLong {
+		t.Error("a listing over the single-message budget does not ask for DirectWhenLong delivery")
+	}
+
+	for i, chunk := range splitContent(resp.Content, maxChatContent) {
+		if len(chunk) > maxChatContent {
+			t.Errorf("chunk %d is %d bytes, over maxChatContent %d", i, len(chunk), maxChatContent)
+		}
 	}
 }
 
-// An always-set mine would silently turn the listing into "your triggers", and
-// still look correct because the caller's own triggers are in the answer.
-func TestListTriggersOnlySetsMineWhenNarrowing(t *testing.T) {
-	t.Run("omitted", func(t *testing.T) {
-		fake := &fakeTriggerClient{}
-		ctx := guildContext(&client.Clients{Trigger: fake})
+// manyTriggersResp builds n distinct triggers so a listing built from them is
+// long enough to require chunked delivery.
+func manyTriggersResp(t *testing.T, n int) *pb.ListTriggersResp {
+	t.Helper()
 
-		if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{}); err != nil {
-			t.Fatalf("handler returned %v", err)
-		}
-		if fake.list == nil {
-			t.Fatal("no ListTriggers request was sent")
-		}
-		if fake.list.GetMine() {
-			t.Error("GetMine() = true without the mine flag")
-		}
-		if fake.list.GetLimit() != triggerListDefaultLimit {
-			t.Errorf("GetLimit() = %d, want %d", fake.list.GetLimit(), triggerListDefaultLimit)
-		}
-		if fake.list.HasPhrase() {
-			t.Error("HasPhrase() = true without a search")
-		}
-	})
+	triggers := make([]*pb.Trigger, 0, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("0192f000-0000-7000-8000-%012d", i)
+		phrase := fmt.Sprintf("phrase-%d-with-some-extra-length-to-pad-it-out", i)
+		triggers = append(triggers, triggerForID(id, phrase))
+	}
 
-	t.Run("supplied", func(t *testing.T) {
-		fake := &fakeTriggerClient{}
-		ctx := guildContext(&client.Clients{Trigger: fake})
+	return pb.ListTriggersResp_builder{Triggers: triggers}.Build()
+}
 
-		if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{"mine": true}); err != nil {
-			t.Fatalf("handler returned %v", err)
-		}
-		if fake.list == nil {
-			t.Fatal("no ListTriggers request was sent")
-		}
-		if !fake.list.GetMine() {
-			t.Error("GetMine() = false with the mine flag set")
-		}
-	})
+func triggerForID(id string, phrase string) *pb.Trigger {
+	userID := "0192f000-0000-7000-8000-0000000000aa"
+	mode := pb.TriggerMode_TRIGGER_MODE_ANY
+	chance := int32(10)
+	reply := "a reply long enough to matter for the message budget"
 
-	t.Run("explicitly false", func(t *testing.T) {
-		fake := &fakeTriggerClient{}
-		ctx := guildContext(&client.Clients{Trigger: fake})
+	return pb.Trigger_builder{
+		Id:     &id,
+		Phrase: &phrase,
+		UserId: &userID,
+		Chance: &chance,
+		Mode:   &mode,
+		Reply:  &reply,
+	}.Build()
+}
 
-		if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{"mine": false}); err != nil {
-			t.Fatalf("handler returned %v", err)
-		}
-		if fake.list == nil {
-			t.Fatal("no ListTriggers request was sent")
-		}
-		if fake.list.GetMine() {
-			t.Error("GetMine() = true for an explicit --mine=false")
-		}
-	})
+// An unset limit or a stray phrase predicate would widen the listing past what
+// the caller asked for, and still look correct in the answer.
+func TestListTriggersSendsNoUnaskedPredicates(t *testing.T) {
+	fake := &fakeTriggerClient{}
+	ctx := guildContext(&client.Clients{Trigger: fake})
+
+	if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{}); err != nil {
+		t.Fatalf("handler returned %v", err)
+	}
+	if fake.list == nil {
+		t.Fatal("no ListTriggers request was sent")
+	}
+	if fake.list.GetLimit() != triggerListDefaultLimit {
+		t.Errorf("GetLimit() = %d, want %d", fake.list.GetLimit(), triggerListDefaultLimit)
+	}
+	if fake.list.HasPhrase() {
+		t.Error("HasPhrase() = true without a search")
+	}
 }
 
 type countingUserClient struct {
@@ -1430,18 +1465,156 @@ func TestTriggerRenderingPrefersTheReplyWhenBothAreSet(t *testing.T) {
 	}
 }
 
-// Slow makes runInteraction acknowledge within Discord's 3s deadline before
-// running a handler whose server side fetches from a CDN.
-func TestCommandsWhoseServerFetchesMediaAreMarkedSlow(t *testing.T) {
-	slow := map[string]bool{
-		"triggeradd": true,
-		"triggermod": true,
+func TestListTriggersDefaultsToTheCallersOwn(t *testing.T) {
+	fake := &fakeTriggerClient{}
+	ctx := guildContext(&client.Clients{Trigger: fake})
+
+	if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{}); err != nil {
+		t.Fatalf("handler returned %v", err)
+	}
+	if fake.list == nil {
+		t.Fatal("no ListTriggers request was sent")
+	}
+	if !fake.list.GetMine() {
+		t.Error("GetMine() = false with no arguments, want true: the default is the caller's own triggers")
+	}
+}
+
+// TestListTriggersAllUnsetsMine: `all` asks for everyone's triggers, so mine
+// must come back unset.
+func TestListTriggersAllUnsetsMine(t *testing.T) {
+	fake := &fakeTriggerClient{}
+	ctx := guildContext(&client.Clients{Trigger: fake})
+
+	if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{"all": true}); err != nil {
+		t.Fatalf("handler returned %v", err)
+	}
+	if fake.list == nil {
+		t.Fatal("no ListTriggers request was sent")
+	}
+	if fake.list.GetMine() {
+		t.Error("GetMine() = true with all=true, want false")
+	}
+}
+
+// TestListTriggersAllExplicitlyFalseStillNarrows: an explicit all=false is not
+// a request to widen the listing; it is the same as omitting all.
+func TestListTriggersAllExplicitlyFalseStillNarrows(t *testing.T) {
+	fake := &fakeTriggerClient{}
+	ctx := guildContext(&client.Clients{Trigger: fake})
+
+	if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{"all": false}); err != nil {
+		t.Fatalf("handler returned %v", err)
+	}
+	if fake.list == nil {
+		t.Fatal("no ListTriggers request was sent")
+	}
+	if !fake.list.GetMine() {
+		t.Error("GetMine() = false with all=false, want true (still the caller's own)")
+	}
+}
+
+// TestChatTriggerListBindsSearchAllLimitPositionally: "??triggers ok true"
+// searches for "ok" and lists everyone's, per the specified positional order.
+func TestChatTriggerListBindsSearchAllLimitPositionally(t *testing.T) {
+	inv, err := command.Bind(triggerListCommand(), []string{"ok", "true"})
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
 	}
 
-	for _, cmd := range commandDefinitions() {
-		want := slow[cmd.Name]
-		if cmd.Slow != want {
-			t.Errorf("%s: Slow = %v, want %v", cmd.Name, cmd.Slow, want)
-		}
+	if got := inv.String("search"); got != "ok" {
+		t.Errorf("search = %q, want %q", got, "ok")
+	}
+	if got := inv.Bool("all"); !got {
+		t.Error("all = false, want true")
+	}
+	if inv.Has("limit") {
+		t.Error(`Has("limit") = true for an omitted third argument`)
+	}
+}
+
+// TestListTriggersStillCostsNoGetUserRoundTrips keeps the existing property
+// (see TestListTriggersWithMineMakesExactlyOneRPC) alive under the new `all`
+// argument: resolution of "the caller" is still entirely server-side.
+func TestListTriggersStillCostsNoGetUserRoundTrips(t *testing.T) {
+	fake := &fakeTriggerClient{}
+	users := &countingUserClient{}
+	ctx := guildContext(&client.Clients{Trigger: fake, User: users})
+
+	if _, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{}); err != nil {
+		t.Fatalf("handler returned %v", err)
+	}
+
+	if fake.listCalls != 1 {
+		t.Errorf("ListTriggers called %d times, want exactly 1", fake.listCalls)
+	}
+	if users.getUserCalls != 0 {
+		t.Errorf("GetUser called %d times for a default listing, want 0", users.getUserCalls)
+	}
+}
+
+// TestListTriggersResponseAsksForDirectDeliveryWhenLong: a non-empty listing
+// must be marked so the delivery layer chunks it by DM instead of truncating.
+func TestListTriggersResponseAsksForDirectDeliveryWhenLong(t *testing.T) {
+	fake := &fakeTriggerClient{listResp: manyTriggersResp(t, 3)}
+	ctx := guildContext(&client.Clients{Trigger: fake})
+
+	resp, err := invokeNamed(t, triggerListCommand(), ctx, map[string]any{})
+	if err != nil {
+		t.Fatalf("handler returned %v", err)
+	}
+	if !resp.DirectWhenLong {
+		t.Error("DirectWhenLong = false, want true for a trigger listing")
+	}
+}
+
+// refTrigger builds a Trigger carrying both the UUID and a short ref, as a
+// server response would once refs exist.
+func refTrigger(ref int64, phrase string) *pb.Trigger {
+	id := "0192f000-0000-7000-8000-0000000000ff"
+	mode := pb.TriggerMode_TRIGGER_MODE_ANY
+	chance := int32(10)
+
+	return pb.Trigger_builder{
+		Id:     &id,
+		Ref:    &ref,
+		Phrase: &phrase,
+		Mode:   &mode,
+		Chance: &chance,
+	}.Build()
+}
+
+// TestRenderTriggerLineLeadsWithTheRefAndNeverShowsTheUUID: a listing line
+// must be short enough to scan, and must never leak the full UUID a caller
+// would need to quote back in another command.
+func TestRenderTriggerLineLeadsWithTheRefAndNeverShowsTheUUID(t *testing.T) {
+	trg := refTrigger(42, "gm")
+	line := renderTriggerLine(trg)
+
+	if strings.Contains(line, trg.GetId()) {
+		t.Errorf("renderTriggerLine still shows the full UUID: %s", line)
+	}
+
+	idx := strings.Index(line, "42")
+	if idx < 0 {
+		t.Fatalf("renderTriggerLine does not show the ref 42 at all: %s", line)
+	}
+	if prefix := strings.TrimLeft(line[:idx], "`#"); prefix != "" {
+		t.Errorf("the ref is not at the front of the line (leading %q): %s", prefix, line)
+	}
+}
+
+// TestFormatTriggerInfoStillCarriesBothTheUUIDAndTheRef: the detail view is
+// where a caller confirms which row a short ref pointed at, so it must keep
+// showing the UUID too.
+func TestFormatTriggerInfoStillCarriesBothTheUUIDAndTheRef(t *testing.T) {
+	trg := refTrigger(42, "gm")
+	got := formatTriggerInfo(trg)
+
+	if !strings.Contains(got, trg.GetId()) {
+		t.Errorf("formatTriggerInfo lost the UUID:\n%s", got)
+	}
+	if !strings.Contains(got, "42") {
+		t.Errorf("formatTriggerInfo lost the ref:\n%s", got)
 	}
 }

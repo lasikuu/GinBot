@@ -220,7 +220,7 @@ func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd co
 	}
 
 	if cmd.Slow {
-		if !deferInteraction(s, i) {
+		if !deferInteraction(s, i, cmd.Ephemeral) {
 			// Nothing can be delivered against an unacknowledged interaction,
 			// so running the handler would apply a change it cannot report.
 			return
@@ -233,7 +233,7 @@ func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd co
 			return
 		}
 
-		respondDeferred(s, i, resp)
+		respondDeferred(s, i, resp, cmd.Ephemeral)
 
 		return
 	}
@@ -289,6 +289,20 @@ func mentionsBot(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 	// Older Discord clients wrote a nickname mention as <@!id>.
 	return strings.Contains(m.Content, "<@"+self+">") ||
 		strings.Contains(m.Content, "<@!"+self+">")
+}
+
+// stripSelfMention removes only the bot's own mention token, both forms
+// (<@id> and the legacy nickname <@!id>), leaving every other user's and
+// role's mention (<@&id>) untouched. See ADR-0041.
+func stripSelfMention(content string, selfID string) string {
+	if selfID == "" {
+		return content
+	}
+
+	content = strings.ReplaceAll(content, "<@"+selfID+">", "")
+	content = strings.ReplaceAll(content, "<@!"+selfID+">", "")
+
+	return content
 }
 
 // triggerAttemptTimeout is the outer budget for one attempt; triggerFileTimeout
@@ -395,8 +409,17 @@ func attemptTrigger(s *discordgo.Session, m *discordgo.MessageCreate, forced boo
 		return
 	}
 
-	// Raw content: matching and spoiler stripping are the server's (ADR-0019).
-	phrase := m.Content
+	// See ADR-0041.
+	var selfID string
+	if s.State != nil && s.State.User != nil {
+		selfID = s.State.User.ID
+	}
+	phrase := stripSelfMention(m.Content, selfID)
+	if strings.TrimSpace(phrase) == "" {
+		// The server refuses an empty phrase; a mention-only message must not
+		// cost a round trip to learn that.
+		return
+	}
 
 	// No caller identity in the request; it travels as a header. The forced-fire
 	// limiter is server-side, where a second client cannot bypass it.

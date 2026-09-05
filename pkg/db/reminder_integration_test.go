@@ -90,7 +90,7 @@ func (f *reminderFixture) create(t *testing.T, fireAt time.Time, repeatCron stri
 	if repeatCron != "" {
 		b.RepeatCron = &repeatCron
 	}
-	id, err := CreateReminder(ctx, b.Build(), f.userID, f.destinationID, fixtureReminderCap)
+	id, _, err := CreateReminder(ctx, b.Build(), f.userID, f.destinationID, fixtureReminderCap)
 	if err != nil {
 		t.Fatalf("CreateReminder: %v", err)
 	}
@@ -1071,12 +1071,12 @@ func TestCreateReminderRefusesAtTheCap(t *testing.T) {
 	})
 
 	for i := 0; i < cap; i++ {
-		if _, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap); err != nil {
+		if _, _, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap); err != nil {
 			t.Fatalf("CreateReminder %d of %d: %v", i+1, cap, err)
 		}
 	}
 
-	if _, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap); err != ErrReminderCapReached {
+	if _, _, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap); err != ErrReminderCapReached {
 		t.Errorf("create past the cap err = %v, want ErrReminderCapReached", err)
 	}
 
@@ -1127,7 +1127,7 @@ func TestCreateReminderCapHoldsUnderConcurrency(t *testing.T) {
 			defer done.Done()
 			start.Wait() // release together to maximise contention
 
-			_, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap)
+			_, _, err := CreateReminder(ctx, req, f.userID, f.destinationID, cap)
 			switch err {
 			case nil:
 				mu.Lock()

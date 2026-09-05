@@ -22,6 +22,7 @@ func healthCheckCommand() command.Command {
 		Name:        "healthcheck",
 		Aliases:     chatAliases("healthcheck"),
 		Description: "Health check of services such as DB.",
+		Slow:        true,
 		Handler:     healthCheck,
 	}
 }

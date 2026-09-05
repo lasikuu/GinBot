@@ -1066,10 +1066,14 @@ func (m *migrator) passReminders() error {
 		if err != nil {
 			return err
 		}
+		// reminder.ref is NOT NULL with no sequence default: it is per-user, so
+		// it is allocated here the way db.CreateReminder does. Safe unlocked
+		// because the whole import runs in one transaction.
 		if _, err := m.tx.Exec(m.ctx,
 			`INSERT INTO reminder
-			   (id, datetime, timezone, repeat_cron, destination_id, status, user_id, message, created_at, updated_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			   (id, datetime, timezone, repeat_cron, destination_id, status, user_id, message, created_at, updated_at, ref)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+			         (SELECT COALESCE(MAX(ref),0)+1 FROM reminder WHERE user_id = $7))`,
 			id.String(), mustTime(row[1]), tz, cron, destinationID,
 			int32(pb.ReminderStatus_REMINDER_STATUS_PENDING.Number()),
 			userID, nullable(row[2]), mustTime(row[7]), mustTime(row[8])); err != nil {

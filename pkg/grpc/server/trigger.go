@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"slices"
+	"strconv"
 
 	"connectrpc.com/connect"
 	"github.com/lasikuu/GinBot/internal/model"
@@ -116,6 +117,28 @@ func resolveInstance(ctx context.Context, instance *pb.TriggerInstance) (int64, 
 	if err != nil {
 		log.Z.Error("failed to resolve trigger instance", zap.Error(err))
 		return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve instance"))
+	}
+
+	return row.ID, nil
+}
+
+// resolveTriggerID accepts either a canonical uuid or a positive decimal ref
+// (see ADR-0039). A ref that resolves to nothing returns the same NotFound the
+// caller's own visibility check would, so resolution itself cannot enumerate
+// refs: it must fail exactly like an ordinary missing id.
+func resolveTriggerID(ctx context.Context, raw string) (string, error) {
+	ref, convErr := strconv.ParseInt(raw, 10, 64)
+	if convErr != nil || ref <= 0 {
+		return raw, nil
+	}
+
+	row, err := db.GetTriggerByRef(ctx, ref)
+	if errors.Is(err, db.ErrNotFound) {
+		return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
+	}
+	if err != nil {
+		log.Z.Error("failed to resolve trigger ref", zap.Error(err))
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve trigger"))
 	}
 
 	return row.ID, nil
@@ -370,7 +393,12 @@ func (s *TriggerServer) ExecTrigger(ctx context.Context, connReq *connect.Reques
 		return nil, err
 	}
 
-	row, err := db.GetTrigger(ctx, req.GetId())
+	id, err := resolveTriggerID(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+
+	row, err := db.GetTrigger(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
@@ -414,7 +442,12 @@ func (s *TriggerServer) GetTrigger(ctx context.Context, connReq *connect.Request
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	row, err := db.GetTrigger(ctx, req.GetId())
+	id, err := resolveTriggerID(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+
+	row, err := db.GetTrigger(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
@@ -501,23 +534,42 @@ func (s *TriggerServer) ListTriggers(ctx context.Context, connReq *connect.Reque
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triggers"))
 	}
 
+	triggerIDs := make([]string, 0, len(rows))
+	fileIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		triggerIDs = append(triggerIDs, row.ID)
+		if row.FileID != nil && *row.FileID != "" {
+			fileIDs = append(fileIDs, *row.FileID)
+		}
+	}
+
+	instancesByTrigger, err := db.GetTriggerInstancesBatch(ctx, triggerIDs)
+	if err != nil {
+		log.Z.Error("failed to load trigger instances", zap.Error(err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triggers"))
+	}
+
+	filesByID, err := db.GetFilesByIDs(ctx, fileIDs)
+	if err != nil {
+		log.Z.Error("failed to load trigger files", zap.Error(err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triggers"))
+	}
+
 	out := make([]*pb.Trigger, 0, len(rows))
 	for _, row := range rows {
 		var file *pb.TriggerFile
 		if row.FileID != nil && *row.FileID != "" {
-			file, err = s.buildTriggerFile(ctx, *row.FileID)
-			if err != nil {
-				return nil, err
+			fileRow, ok := filesByID[*row.FileID]
+			if !ok {
+				// file_id is a foreign key, so a missing row means an out-of-band
+				// hard delete; buildTriggerFile treats the single-row case the same.
+				log.Z.Error("trigger references a missing file row", zap.String("file_id", *row.FileID))
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triggers"))
 			}
+			file = fileRow.ToProto(displayFilename(fileRow))
 		}
 
-		instances, instErr := db.GetTriggerInstances(ctx, row.ID)
-		if instErr != nil {
-			log.Z.Error("failed to load trigger instances", zap.Error(instErr))
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triggers"))
-		}
-
-		out = append(out, row.ToProto(file, instances))
+		out = append(out, row.ToProto(file, instancesByTrigger[row.ID]))
 	}
 
 	return connect.NewResponse(pb.ListTriggersResp_builder{
@@ -569,7 +621,7 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, connReq *connect.Requ
 		return nil, err
 	}
 
-	triggerID, err := db.CreateTrigger(ctx, db.CreateTriggerParams{
+	triggerID, ref, err := db.CreateTrigger(ctx, db.CreateTriggerParams{
 		Phrase:      req.GetPhrase(),
 		Reply:       req.GetReply(),
 		FileID:      fileID,
@@ -592,7 +644,8 @@ func (s *TriggerServer) CreateTrigger(ctx context.Context, connReq *connect.Requ
 	}
 
 	return connect.NewResponse(pb.CreateTriggerResp_builder{
-		Id: &triggerID,
+		Id:  &triggerID,
+		Ref: &ref,
 	}.Build()), nil
 }
 
@@ -609,8 +662,13 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
+	id, err := resolveTriggerID(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+
 	// Ownership first, or an unauthorised caller still causes a CDN download and a blob write.
-	current, err := db.GetTrigger(ctx, req.GetId())
+	current, err := db.GetTrigger(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}
@@ -624,7 +682,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 	}
 
 	update := db.TriggerUpdate{
-		ID:     req.GetId(),
+		ID:     id,
 		UserID: caller.ID,
 	}
 
@@ -683,7 +741,7 @@ func (s *TriggerServer) UpdateTrigger(ctx context.Context, connReq *connect.Requ
 	}
 
 	// Read before the write; afterwards the old scope is unrecoverable.
-	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, req.GetId())
+	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, id)
 	if err != nil {
 		log.Z.Error("failed to load trigger scope for invalidation", zap.Error(err))
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update trigger"))
@@ -720,14 +778,19 @@ func (s *TriggerServer) DeleteTrigger(ctx context.Context, connReq *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
+	id, err := resolveTriggerID(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+
 	// Read before the write; afterwards the scope is unrecoverable.
-	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, req.GetId())
+	scopedIDs, err := db.ListTriggerInstanceIDs(ctx, id)
 	if err != nil {
 		log.Z.Error("failed to load trigger scope for invalidation", zap.Error(err))
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete trigger"))
 	}
 
-	err = db.SoftDeleteTriggerByUser(ctx, req.GetId(), caller.ID)
+	err = db.SoftDeleteTriggerByUser(ctx, id, caller.ID)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("trigger not found"))
 	}

@@ -34,19 +34,20 @@ type ClaimedReminder struct {
 
 var ErrReminderCapReached = errors.New("reminder cap reached")
 
-// CreateReminder inserts a reminder and returns its UUIDv7, refusing with
-// ErrReminderCapReached at maxActive. The cap is enforced under a per-owner
-// advisory lock: READ COMMITTED hides a concurrent insert from the count.
+// CreateReminder inserts a reminder and returns its UUIDv7 and its
+// per-user-allocated ref, refusing with ErrReminderCapReached at maxActive.
+// The cap and the ref allocation share one per-owner advisory lock: READ
+// COMMITTED hides a concurrent insert from both the count and the MAX(ref).
 func CreateReminder(
 	ctx context.Context,
 	req *pb.CreateReminderReq,
 	userID string,
 	destinationID int64,
 	maxActive int64,
-) (string, error) {
+) (id string, ref int64, err error) {
 	reminderUUID, err := uuid.NewV7()
 	if err != nil {
-		return "", fmt.Errorf("generate reminder uuid: %w", err)
+		return "", 0, fmt.Errorf("generate reminder uuid: %w", err)
 	}
 	reminderID := reminderUUID.String()
 
@@ -55,7 +56,7 @@ func CreateReminder(
 
 	tx, err := db().Begin(ctx)
 	if err != nil {
-		return "", fmt.Errorf("begin reminder insert: %w", err)
+		return "", 0, fmt.Errorf("begin reminder insert: %w", err)
 	}
 	defer func() {
 		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
@@ -66,24 +67,31 @@ func CreateReminder(
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, userID,
 	); err != nil {
-		return "", fmt.Errorf("lock reminder owner: %w", err)
+		return "", 0, fmt.Errorf("lock reminder owner: %w", err)
 	}
 
 	var active int64
 	if err := tx.QueryRow(ctx, activeReminderCountSQL,
 		userID, int32(pb.ReminderStatus_REMINDER_STATUS_PENDING.Number()),
 	).Scan(&active); err != nil {
-		return "", fmt.Errorf("count active reminders: %w", err)
+		return "", 0, fmt.Errorf("count active reminders: %w", err)
 	}
 	if active >= maxActive {
-		return "", ErrReminderCapReached
+		return "", 0, ErrReminderCapReached
+	}
+
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(ref), 0) + 1 FROM reminder WHERE user_id = $1`, userID,
+	).Scan(&ref); err != nil {
+		return "", 0, fmt.Errorf("allocate reminder ref: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO reminder
-		     (id, datetime, timezone, repeat_cron, destination_id, message, user_id, parent_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		     (id, ref, datetime, timezone, repeat_cron, destination_id, message, user_id, parent_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		reminderID,
+		ref,
 		datetime,
 		req.GetTimezone(),
 		nullStr(req.GetRepeatCron()),
@@ -92,14 +100,14 @@ func CreateReminder(
 		userID,
 		nullStr(req.GetParentId()),
 	); err != nil {
-		return "", fmt.Errorf("insert reminder: %w", err)
+		return "", 0, fmt.Errorf("insert reminder: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("commit reminder insert: %w", err)
+		return "", 0, fmt.Errorf("commit reminder insert: %w", err)
 	}
 
-	return reminderID, nil
+	return reminderID, ref, nil
 }
 
 func GetReminder(ctx context.Context, id string) (*model.Reminder, error) {
@@ -114,6 +122,25 @@ func GetReminder(ctx context.Context, id string) (*model.Reminder, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan reminder: %w", err)
+	}
+
+	return &reminder, nil
+}
+
+// GetReminderByRef resolves the alias described in ADR-0039, scoped to userID
+// since a reminder's ref is only unique per owner.
+func GetReminderByRef(ctx context.Context, userID string, ref int64) (*model.Reminder, error) {
+	var reminder model.Reminder
+	err := db().QueryRow(ctx,
+		`SELECT `+model.ReminderColumns+` FROM reminder WHERE user_id = $1 AND ref = $2 AND deleted = FALSE`,
+		userID, ref,
+	).Scan(reminder.ScanTargets()...)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan reminder by ref: %w", err)
 	}
 
 	return &reminder, nil

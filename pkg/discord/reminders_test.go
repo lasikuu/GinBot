@@ -1,6 +1,8 @@
 package discord
 
 import (
+	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/lasikuu/GinBot/pkg/command"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
+	"github.com/lasikuu/GinBot/pkg/grpc/client"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -311,5 +314,116 @@ func TestRemindermodDocumentsTheClearSentinel(t *testing.T) {
 	if !strings.Contains(arg.Description, clearRepeatSentinel) {
 		t.Errorf("remindermod's repeat description does not document the %q sentinel: %q",
 			clearRepeatSentinel, arg.Description)
+	}
+}
+
+// TestRemindersCommandHasNoAllArgument: unlike /trigger list, reminders are
+// always the caller's own, so there is nothing for an `all` flag to widen.
+func TestRemindersCommandHasNoAllArgument(t *testing.T) {
+	for _, arg := range remindersCommand().Args {
+		if arg.Name == "all" {
+			t.Error("remindersCommand() declares an `all` argument, which reminders have no use for")
+		}
+	}
+}
+
+// manyRemindersResp builds n reminders long enough that a rendered listing
+// exceeds a single Discord message.
+func manyRemindersResp(t *testing.T, n int) *pb.ListRemindersResp {
+	t.Helper()
+
+	platform := pb.Platform_PLATFORM_DISCORD
+	reminders := make([]*pb.Reminder, 0, n)
+	for i := 0; i < n; i++ {
+		id := reminderIDFor(i)
+		message := paddedReminderMessage(i)
+		status := pb.ReminderStatus_REMINDER_STATUS_PENDING
+
+		reminders = append(reminders, pb.Reminder_builder{
+			Id:       &id,
+			Datetime: timestamppb.New(time.Date(2026, 8, 22, 15, 0, 0, 0, time.UTC)),
+			Message:  &message,
+			Status:   &status,
+			Destination: pb.ReminderDestination_builder{
+				PlatformEnum: &platform,
+			}.Build(),
+		}.Build())
+	}
+
+	return pb.ListRemindersResp_builder{Reminders: reminders}.Build()
+}
+
+func reminderIDFor(i int) string {
+	return "0192f000-0000-7000-8000-" + strings.Repeat("0", 11) + string(rune('a'+i%26))
+}
+
+func paddedReminderMessage(i int) string {
+	return strings.Repeat("padding ", 10) + "message " + strconv.Itoa(i)
+}
+
+// TestListRemindersResponseAsksForDirectDeliveryWhenLong: a reminder listing
+// must be marked so the delivery layer chunks it by DM instead of truncating.
+func TestListRemindersResponseAsksForDirectDeliveryWhenLong(t *testing.T) {
+	fake := &fakeReminderClient{listResp: manyRemindersResp(t, reminderListLimit)}
+	ctx := withClients(withOrigin(context.Background(), "guild-1", "channel-1"), &client.Clients{Reminder: fake})
+
+	resp, err := invokeNamed(t, remindersCommand(), ctx, map[string]any{})
+	if err != nil {
+		t.Fatalf("handler returned %v", err)
+	}
+	if len(resp.Content) <= maxChatContent {
+		t.Fatalf("listing content is %d bytes, want over maxChatContent %d: the flag would be untested",
+			len(resp.Content), maxChatContent)
+	}
+	if !resp.DirectWhenLong {
+		t.Error("DirectWhenLong = false, want true for a reminder listing")
+	}
+}
+
+// refReminder builds a Reminder carrying both the UUID and a short ref.
+func refReminder(ref int64) *pb.Reminder {
+	id := "0192f000-0000-7000-8000-000000000001"
+	message := "stretch"
+	status := pb.ReminderStatus_REMINDER_STATUS_PENDING
+
+	return pb.Reminder_builder{
+		Id:       &id,
+		Ref:      &ref,
+		Datetime: timestamppb.New(time.Date(2026, 8, 22, 15, 0, 0, 0, time.UTC)),
+		Message:  &message,
+		Status:   &status,
+	}.Build()
+}
+
+// TestRenderReminderLineLeadsWithTheRefAndNeverShowsTheUUID mirrors the
+// trigger listing's property: a scannable line, no full UUID leaked.
+func TestRenderReminderLineLeadsWithTheRefAndNeverShowsTheUUID(t *testing.T) {
+	r := refReminder(7)
+	line := renderReminderLine(r)
+
+	if strings.Contains(line, r.GetId()) {
+		t.Errorf("renderReminderLine still shows the full UUID: %s", line)
+	}
+
+	idx := strings.Index(line, "7")
+	if idx < 0 {
+		t.Fatalf("renderReminderLine does not show the ref 7 at all: %s", line)
+	}
+	if prefix := strings.TrimLeft(line[:idx], "`#"); prefix != "" {
+		t.Errorf("the ref is not at the front of the line (leading %q): %s", prefix, line)
+	}
+}
+
+// TestFormatReminderInfoStillCarriesBothTheUUIDAndTheRef: the detail view
+// must keep showing the UUID alongside the new ref.
+func TestFormatReminderInfoStillCarriesBothTheUUIDAndTheRef(t *testing.T) {
+	r := refReminder(7)
+	got := formatReminderInfo(r)
+
+	if !strings.Contains(got, r.GetId()) {
+		t.Errorf("formatReminderInfo lost the UUID:\n%s", got)
+	}
+	if !strings.Contains(got, "7") {
+		t.Errorf("formatReminderInfo lost the ref:\n%s", got)
 	}
 }

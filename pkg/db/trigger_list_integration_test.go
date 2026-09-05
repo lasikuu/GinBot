@@ -19,7 +19,7 @@ func (f *triggerFixture) createWithReply(t *testing.T, phrase, reply string, mod
 	t.Helper()
 	ctx := context.Background()
 
-	id, err := CreateTrigger(ctx, CreateTriggerParams{
+	id, _, err := CreateTrigger(ctx, CreateTriggerParams{
 		Phrase:      phrase,
 		Reply:       reply,
 		UserID:      f.userID,

@@ -75,6 +75,19 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
 - Colloquial Finnish chat aliases for the digit rolls: `??tuplilla` and `??tuplil` alongside
   `??tuplat`, and the same for `triples`, `quads`, `quints` and `sexts`. Discord allows one name per
   locale, so these are chat-only; the slash commands are unchanged.
+- **Triggers and reminders gain a short numeric `ref`**, aliasing the uuid identity: `/triggers`,
+  `/reminders` and their `info` views lead with it, and every id-taking command accepts either shape.
+  The uuid stays the sole wire identity; `ref` is resolved to it at the server handler boundary and
+  never crosses beyond that. See [ADR 0039](adr/0039-short-reference-numbers-alias-uuid-identities.md).
+- A `Slow` command may now answer publicly. Visibility is declared statically via
+  `Command.Ephemeral`, read before the handler runs, rather than a deferred acknowledgement always
+  defaulting to ephemeral — which let `/triggerexec` and the digit rolls become `Slow` without
+  losing their public reply. See [ADR 0038](adr/0038-command-visibility-is-declared-statically.md).
+- `/triggers` and `/reminders` no longer truncate a long listing. A chat invocation is delivered by
+  DM instead when it would otherwise be cut, and a slash invocation is chunked across follow-up
+  messages. See [ADR 0040](adr/0040-long-listings-degrade-to-a-direct-message.md).
+- `/triggers` replaces its `mine` argument with `all`: the listing now defaults to your own
+  triggers on the server, and `all` widens it to everyone's.
 
 ### Fixed
 
@@ -117,6 +130,14 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
   conflict with `ON CONFLICT DO NOTHING` instead of letting the constraint raise, so a client
   re-registering itself before each reverse-stream attempt — at startup and on every reconnect —
   is silent. `Register` still answers `AlreadyExists`.
+- **`/trigger list` no longer risks "the application did not respond".** `ListTriggers` queried once
+  per row for its file and its scoped instances; it now batches both across the whole result set, so
+  the RPC costs a constant number of queries regardless of how many triggers are returned. The
+  command is also marked `Slow` as a backstop.
+- Mentioning the bot (`@Rin ok`) now force-fires an exact-mode trigger. The Discord client sent the
+  raw message content, mention token included, so an exact-mode pattern like `(?i)^ok$` could never
+  match; it now strips its own mention before matching. See
+  [ADR 0041](adr/0041-the-discord-client-strips-its-own-mention.md).
 
 ## [0.1.0] - 2025-01-04
 

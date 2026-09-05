@@ -49,7 +49,9 @@ func digitRollCommands() []command.Command {
 			Name:        roll.name,
 			Aliases:     chatAliases(roll.name),
 			Description: roll.description,
-			Handler:     digitRollHandler(roll),
+			// Public, and Slow no longer forces Ephemeral. See ADR-0038.
+			Slow:    true,
+			Handler: digitRollHandler(roll),
 		})
 	}
 
@@ -88,6 +90,7 @@ func numberCommand() command.Command {
 				Default:     numberDefaultUpper,
 			},
 		},
+		Slow:    true,
 		Handler: number,
 	}
 }
@@ -160,6 +163,8 @@ func number(ctx context.Context, inv *command.Invocation) (*command.Response, er
 		return nil, err
 	}
 
+	// No ReRollID: a re-roll re-binds with default arguments, so the control
+	// would silently ignore the caller's bounds.
 	return &command.Response{
 		Content: "**" + resp.Msg.GetNumber() + "** \U0001F3B2",
 	}, nil

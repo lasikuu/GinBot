@@ -292,10 +292,13 @@ func TestCreateReminderRefusedAtPerUserCap(t *testing.T) {
 	pending := int32(pb.ReminderStatus_REMINDER_STATUS_PENDING.Number())
 	for i := 0; i < maxActiveRemindersPerUser-1; i++ {
 		rid := uuidV7(t)
+		// ref has no database default for reminder (unlike trigger): it is
+		// unique per user_id, so a raw seed insert must supply one itself.
+		ref := int64(i + 1000)
 		if _, err := pool.Exec(context.Background(),
-			`INSERT INTO reminder (id, datetime, timezone, destination_id, status, user_id)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			rid, future, "Europe/Helsinki", destinationID, pending, ownerID,
+			`INSERT INTO reminder (id, ref, datetime, timezone, destination_id, status, user_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			rid, ref, future, "Europe/Helsinki", destinationID, pending, ownerID,
 		); err != nil {
 			t.Fatalf("seed reminder %d: %v", i, err)
 		}

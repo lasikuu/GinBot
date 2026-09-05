@@ -31,7 +31,8 @@ var (
 
 	_ func(*Registry, string, []string) (Command, []string, bool) = (*Registry).ResolveChat
 
-	_ = Response{Content: "", Ephemeral: false, ReRollID: "", File: nil}
+	// DirectWhenLong: content too long for one message goes by DM instead of truncating.
+	_ = Response{Content: "", Ephemeral: false, ReRollID: "", File: nil, DirectWhenLong: false}
 	// Content is []byte, not a URL: see ADR-0007.
 	_ = ResponseFile{Name: "", MIMEType: "", Content: []byte(nil)}
 	_ = Arg{Name: "", Description: "", Type: ArgString, Required: false, Default: nil}
@@ -44,7 +45,11 @@ var (
 		Group:       "",
 		Sub:         "",
 		Clearance:   pb.Clearance_CLEARANCE_UNSPECIFIED,
-		Handler:     nil,
+		Slow:        false,
+		// Ephemeral is read before the handler runs, so a deferred command is
+		// acknowledged with the right visibility.
+		Ephemeral: false,
+		Handler:   nil,
 	}
 )
 
