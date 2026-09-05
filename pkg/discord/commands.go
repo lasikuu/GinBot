@@ -2,6 +2,7 @@ package discord
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -32,6 +33,17 @@ var commandLocalizations = map[string]localization{
 	"triples": {
 		names: map[discordgo.Locale]string{discordgo.Finnish: "triplat"},
 	},
+}
+
+// Discord holds one name per locale, so a list of colloquial forms cannot live
+// in commandLocalizations. These reach the chat surface only; the slash surface
+// is unchanged (ADR-0009).
+var commandChatAliases = map[string][]string{
+	"doubles": {"tuplat", "tuplilla", "tuplil"},
+	"triples": {"triplat", "triploilla", "triploil"},
+	"quads":   {"quadit", "quadeilla", "quadeil"},
+	"quints":  {"quintit", "quinteillä", "quinteil"},
+	"sexts":   {"sextit", "sexteillä", "sexteil"},
 }
 
 // A Discord group parent is an ApplicationCommand needing its own description,
@@ -172,17 +184,38 @@ func commandDefinitions() []command.Command {
 }
 
 // Lets a localised slash name work as a chat command too, so ??tuplat behaves
-// like ??doubles.
-func localizedAliases(name string) []string {
-	names := commandLocalizations[name].names
-	if len(names) == 0 {
+// like ??doubles, and adds the colloquial forms Discord cannot express.
+func chatAliases(name string) []string {
+	localized := commandLocalizations[name].names
+	colloquial := commandChatAliases[name]
+
+	aliases := make([]string, 0, len(localized)+len(colloquial))
+	// The two sources overlap, and Registry.Register refuses a key declared
+	// twice — which initCommands turns into a failed start.
+	seen := make(map[string]struct{}, len(localized)+len(colloquial))
+
+	appendUnique := func(alias string) {
+		key := strings.ToLower(strings.TrimSpace(alias))
+		if _, duplicate := seen[key]; duplicate {
+			return
+		}
+		seen[key] = struct{}{}
+		aliases = append(aliases, alias)
+	}
+
+	// Sorted before merging, not just after: dedupe keeps the first spelling of
+	// a folded key, and map order would otherwise decide which one that is.
+	for _, alias := range slices.Sorted(maps.Values(localized)) {
+		appendUnique(alias)
+	}
+	for _, alias := range colloquial {
+		appendUnique(alias)
+	}
+
+	if len(aliases) == 0 {
 		return nil
 	}
 
-	aliases := make([]string, 0, len(names))
-	for _, localized := range names {
-		aliases = append(aliases, localized)
-	}
 	// Sorted, so the registered command is identical on every start.
 	slices.Sort(aliases)
 

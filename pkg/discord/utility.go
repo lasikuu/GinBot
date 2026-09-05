@@ -20,7 +20,7 @@ const healthCheckTimeout = 10 * time.Second
 func healthCheckCommand() command.Command {
 	return command.Command{
 		Name:        "healthcheck",
-		Aliases:     localizedAliases("healthcheck"),
+		Aliases:     chatAliases("healthcheck"),
 		Description: "Health check of services such as DB.",
 		Handler:     healthCheck,
 	}

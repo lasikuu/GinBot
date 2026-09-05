@@ -569,8 +569,9 @@ func TestApplicationCommandsPreserveLocalizations(t *testing.T) {
 	}
 }
 
-// TestLocalizedNamesResolveAsAliases: ??tuplat must reach doubles.
-func TestLocalizedNamesResolveAsAliases(t *testing.T) {
+// TestChatAliasesResolve: ??tuplat and ??tuplilla must both reach doubles,
+// from the localization side table and the chat-only one respectively.
+func TestChatAliasesResolve(t *testing.T) {
 	registry := newTestRegistry(t)
 
 	tests := []struct {
@@ -579,7 +580,21 @@ func TestLocalizedNamesResolveAsAliases(t *testing.T) {
 	}{
 		{alias: "tuplat", want: "doubles"},
 		{alias: "TUPLAT", want: "doubles"},
+		{alias: "tuplilla", want: "doubles"},
+		{alias: "tuplil", want: "doubles"},
 		{alias: "triplat", want: "triples"},
+		{alias: "triploilla", want: "triples"},
+		{alias: "triploil", want: "triples"},
+		{alias: "quadit", want: "quads"},
+		{alias: "quadeilla", want: "quads"},
+		{alias: "quadeil", want: "quads"},
+		{alias: "quintit", want: "quints"},
+		{alias: "quinteillä", want: "quints"},
+		{alias: "QUINTEILLÄ", want: "quints"},
+		{alias: "quinteil", want: "quints"},
+		{alias: "sextit", want: "sexts"},
+		{alias: "sexteillä", want: "sexts"},
+		{alias: "sexteil", want: "sexts"},
 		{alias: "ヘルスチェック", want: "healthcheck"},
 	}
 
@@ -593,6 +608,88 @@ func TestLocalizedNamesResolveAsAliases(t *testing.T) {
 				t.Errorf("alias %q resolved to %q, want %q", tt.alias, cmd.Name, tt.want)
 			}
 		})
+	}
+
+	// An alias added to the table without a case above must still resolve.
+	for name, aliases := range commandChatAliases {
+		for _, alias := range aliases {
+			cmd, ok := registry.Lookup(alias)
+			if !ok {
+				t.Errorf("declared alias %q of %q does not resolve", alias, name)
+				continue
+			}
+			if cmd.Name != name {
+				t.Errorf("declared alias %q of %q resolved to %q", alias, name, cmd.Name)
+			}
+		}
+	}
+}
+
+// TestChatAliases: the two sources overlap, so the merge has to fold and
+// de-duplicate; the order is fixed so the registered command is identical on
+// every start.
+func TestChatAliases(t *testing.T) {
+	tests := []struct {
+		command string
+		want    []string
+	}{
+		{command: "doubles", want: []string{"tuplat", "tuplil", "tuplilla"}},
+		{command: "triples", want: []string{"triplat", "triploil", "triploilla"}},
+		{command: "quads", want: []string{"quadeil", "quadeilla", "quadit"}},
+		{command: "quints", want: []string{"quinteil", "quinteillä", "quintit"}},
+		{command: "sexts", want: []string{"sexteil", "sexteillä", "sextit"}},
+		{command: "healthcheck", want: []string{"ヘルスチェック"}},
+		{command: "ping", want: nil},
+		{command: "nosuchcommand", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			got := chatAliases(tt.command)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("chatAliases(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+			if tt.want == nil && got != nil {
+				t.Errorf("chatAliases(%q) = %v, want nil", tt.command, got)
+			}
+			if !slices.IsSorted(got) {
+				t.Errorf("chatAliases(%q) = %q, which is not sorted", tt.command, got)
+			}
+		})
+	}
+}
+
+// TestCommandAliasesAreDeclaredOnce: Register refuses a folded key a command
+// declares twice, and initCommands turns that into a log.Z.Fatal at startup —
+// so a de-duplication miss in chatAliases is a boot failure, not a wrong answer.
+func TestCommandAliasesAreDeclaredOnce(t *testing.T) {
+	for _, cmd := range commandDefinitions() {
+		t.Run(cmd.Name, func(t *testing.T) {
+			seen := make(map[string]string, 1+len(cmd.Aliases))
+			for _, key := range append([]string{cmd.Name}, cmd.Aliases...) {
+				folded := strings.ToLower(strings.TrimSpace(key))
+				if first, duplicate := seen[folded]; duplicate {
+					t.Errorf("declares %q twice, as %q and %q", folded, first, key)
+				}
+				seen[folded] = key
+			}
+
+			if err := command.NewRegistry().Register(cmd); err != nil {
+				t.Errorf("cannot register on its own: %v", err)
+			}
+		})
+	}
+}
+
+// TestChatAliasesMatchRegisteredCommands: a key matching no command means a
+// rename dropped the aliases silently.
+func TestChatAliasesMatchRegisteredCommands(t *testing.T) {
+	registry := newTestRegistry(t)
+
+	for name := range commandChatAliases {
+		if _, ok := registry.Lookup(name); !ok {
+			t.Errorf("commandChatAliases has key %q, which is not a registered command", name)
+		}
 	}
 }
 

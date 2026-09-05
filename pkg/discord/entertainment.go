@@ -47,7 +47,7 @@ func digitRollCommands() []command.Command {
 	for _, roll := range digitRolls {
 		commands = append(commands, command.Command{
 			Name:        roll.name,
-			Aliases:     localizedAliases(roll.name),
+			Aliases:     chatAliases(roll.name),
 			Description: roll.description,
 			Handler:     digitRollHandler(roll),
 		})

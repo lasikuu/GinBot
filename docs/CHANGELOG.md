@@ -66,6 +66,9 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
 - A roll from the die button names whoever clicked it, in a code span after the number. The reply is
   an ordinary channel message with no "used /doubles" attribution of its own, so nothing else said
   who rolled.
+- Colloquial Finnish chat aliases for the digit rolls: `??tuplilla` and `??tuplil` alongside
+  `??tuplat`, and the same for `triples`, `quads`, `quints` and `sexts`. Discord allows one name per
+  locale, so these are chat-only; the slash commands are unchanged.
 
 ### Fixed
 
