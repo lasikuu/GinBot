@@ -48,13 +48,48 @@ func fixedCallerResolver() interceptor.CallerResolver {
 	}
 }
 
+// handlerJoinTimeout outlasts the server's sender drain, which a handler waits
+// out before returning.
+const handlerJoinTimeout = 10 * time.Second
+
+// joinedReverseServer counts in-flight stream handlers. net/http2 abandons
+// handler goroutines when their connection dies and httptest's Close does not
+// join them, so the handlers this test parks otherwise unwind — logging through
+// the package-global log.Z on the way out — after it has returned and a later
+// test has swapped that global.
+type joinedReverseServer struct {
+	*server.ReverseServer
+	inFlight sync.WaitGroup
+}
+
+func (s *joinedReverseServer) OpenClientActionStream(ctx context.Context, stream *connect.BidiStream[pb.OpenClientActionStreamReq, pb.OpenClientActionStreamResp]) error {
+	s.inFlight.Add(1)
+	defer s.inFlight.Done()
+
+	return s.ReverseServer.OpenClientActionStream(ctx, stream)
+}
+
+func (s *joinedReverseServer) joinHandlers(t *testing.T) {
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		s.inFlight.Wait()
+	}()
+
+	select {
+	case <-joined:
+	case <-time.After(handlerJoinTimeout):
+		t.Errorf("stream handlers were still running %v after shutdown; they outlive this test and race every later one on log.Z", handlerJoinTimeout)
+	}
+}
+
 // newRealReverseH2CServer mounts the real ReverseServer behind production's
 // recovery, validation and clearance interceptors over plaintext h2c.
 // OriginInterceptor is omitted: a reverse stream carries no origin headers.
 func newRealReverseH2CServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
-	reverseServer := server.NewReverseServer()
+	reverseServer := &joinedReverseServer{ReverseServer: server.NewReverseServer()}
 
 	handlerOpts := []connect.HandlerOption{
 		connect.WithInterceptors(
@@ -78,10 +113,11 @@ func newRealReverseH2CServer(t *testing.T) *httptest.Server {
 	srv.Config.Protocols = &protocols
 	srv.Start()
 	t.Cleanup(srv.Close)
-	// Registered after srv.Close so LIFO runs it first, the ordering
-	// cmd/ginbot-server also depends on: httptest's Close waits for in-flight
-	// handlers without cancelling their contexts, and nothing else unparks a
-	// stream handler blocked in Receive.
+	// LIFO, so these run before srv.Close, in reverse of the order registered:
+	// Shutdown first — the ordering cmd/ginbot-server also depends on, since
+	// nothing else unparks a stream handler blocked in Receive — then the join,
+	// which only ends once every handler it unparked has finished unwinding.
+	t.Cleanup(func() { reverseServer.joinHandlers(t) })
 	t.Cleanup(reverseServer.Shutdown)
 
 	return srv
