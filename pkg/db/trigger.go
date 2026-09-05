@@ -23,6 +23,9 @@ import (
 // identified by constraint rather than by matching the error message.
 const exactPhraseConstraint = "uq_trigger_exact_phrase"
 
+// pgUniqueViolation is the SQLSTATE for a unique constraint violation.
+const pgUniqueViolation = "23505"
+
 var ErrExactPhraseTaken = errors.New("exact phrase already exists")
 
 func isExactPhraseViolation(err error) bool {

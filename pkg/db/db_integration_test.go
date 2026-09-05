@@ -237,8 +237,11 @@ func TestCreateUserIsAtomic(t *testing.T) {
 	}
 
 	// platform_user has UNIQUE(platform_enum, platform_uid), so this must fail.
-	if _, err := CreateUser(ctx, "second", pb.Platform_PLATFORM_DISCORD, platformUID, nil, "en"); err == nil {
-		t.Fatal("expected duplicate platform identity to fail")
+	// ErrAlreadyExists specifically: Register maps it to AlreadyExists, and any
+	// other error reaches the caller as Internal.
+	_, err = CreateUser(ctx, "second", pb.Platform_PLATFORM_DISCORD, platformUID, nil, "en")
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("duplicate CreateUser = %v, want ErrAlreadyExists", err)
 	}
 
 	var after int

@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lasikuu/GinBot/internal/model"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/log"
@@ -18,16 +17,8 @@ import (
 // ErrNotFound is returned when a lookup matches no row.
 var ErrNotFound = errors.New("not found")
 
-// ErrAlreadyExists is returned when an insert violates a unique constraint.
+// ErrAlreadyExists is returned when an insert conflicts with an existing row.
 var ErrAlreadyExists = errors.New("already exists")
-
-// pgUniqueViolation is the SQLSTATE for a unique constraint violation.
-const pgUniqueViolation = "23505"
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
-}
 
 // CreateUser writes user_account and its platform_user identity in one
 // transaction, so a failed second insert cannot orphan an account.
@@ -65,15 +56,19 @@ func CreateUser(
 		return "", fmt.Errorf("insert user_account: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx,
+	// DO NOTHING rather than letting the constraint raise: a platform client
+	// re-registers on every reconnect, and a raised 23505 logs a Postgres ERROR.
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO platform_user (user_id, platform_enum, platform_uid, user_meta)
-		 VALUES ($1, $2, $3, $4)`,
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (platform_enum, platform_uid) DO NOTHING`,
 		userID, platformEnum.Number(), platformUserID, userMetadata,
-	); err != nil {
-		if isUniqueViolation(err) {
-			return "", fmt.Errorf("platform identity already registered: %w", ErrAlreadyExists)
-		}
+	)
+	if err != nil {
 		return "", fmt.Errorf("insert platform_user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return "", fmt.Errorf("platform identity already registered: %w", ErrAlreadyExists)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

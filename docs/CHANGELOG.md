@@ -112,6 +112,11 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
 - A missing `.env` no longer reports `error loading environment vars` on startup. No image carries
   one and containers configure from the environment, so every containerised binary logged it on
   every start. A `.env` that exists but cannot be read is still reported.
+- Registering an already-registered platform identity no longer makes Postgres log `duplicate key
+  value violates unique constraint "unique_platform_user_enum_uid"`. `db.CreateUser` detects the
+  conflict with `ON CONFLICT DO NOTHING` instead of letting the constraint raise, so a client
+  re-registering itself before each reverse-stream attempt — at startup and on every reconnect —
+  is silent. `Register` still answers `AlreadyExists`.
 
 ## [0.1.0] - 2025-01-04
 
