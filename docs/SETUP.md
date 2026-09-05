@@ -468,6 +468,7 @@ component.
 | Symptom | Cause |
 |---|---|
 | `failed to connect to database` | The container is not up, or `GINBOT_DB_*` in `.env` disagrees with `docker-compose.dev.yml`. |
+| Nothing from `.env` takes effect, and nothing is reported | A missing `.env` is silent by design, since containers configure from the environment. It is read from the working directory, so launch from the repository root. |
 | `failed to read ca pem` | `GINBOT_GRPC_TLS=true` but certificates were never generated, or you launched from outside the repository root. |
 | `x509: certificate is valid for …, not …` | The host you dial has no SAN in `cert/server-ext.conf`. Add it and regenerate; there is no verification bypass. |
 | Slash commands do not appear | They register globally, which propagates slowly. Wait, or restart the Discord client. |

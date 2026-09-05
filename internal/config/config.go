@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -25,10 +27,15 @@ var LogLevel zapcore.Level
 // Options is nil until SetEnv runs.
 var Options *OptionsModel
 
+// loadEnvReport prefixes the only output LoadEnv produces. Printed, not logged:
+// InitializeLogger has not run yet.
+const loadEnvReport = "error loading environment vars:"
+
 func LoadEnv() {
-	var err = godotenv.Load()
-	if err != nil {
-		fmt.Println("error loading environment vars:", err)
+	// Containers carry no .env and configure from the real environment, so only
+	// a present-but-unreadable file is worth reporting.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fmt.Println(loadEnvReport, err)
 	}
 
 	loadEnvironment()

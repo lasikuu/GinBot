@@ -109,6 +109,9 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
 - Stale operational docs: `docker-compose.prod.yml` runs published GHCR images and has no `build:`
   block, so `up --build` no longer applies; the dev compose keeps its data in a named volume. Both
   `docs/SETUP.md` and the compose file's own comments said otherwise.
+- A missing `.env` no longer reports `error loading environment vars` on startup. No image carries
+  one and containers configure from the environment, so every containerised binary logged it on
+  every start. A `.env` that exists but cannot be read is still reported.
 
 ## [0.1.0] - 2025-01-04
 
