@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
@@ -25,29 +26,34 @@ func BuildPattern(phrase string, mode pb.TriggerMode) string {
 	return "(?i)" + wordBoundaryBefore(phrase) + quoted + wordBoundaryAfter(phrase)
 }
 
-// wordBoundaryBefore returns the leading \b, or "" when the phrase starts with
-// a non-word character and the anchor would make it unfireable ("++rep", ":)").
+// wordBoundaryBefore returns the leading boundary group, or "" when the phrase
+// starts with a non-word character and the anchor would make it unfireable
+// ("++rep", ":)"). RE2's \b is ASCII-only, so the boundary is spelled out as a
+// Unicode-aware class instead.
 func wordBoundaryBefore(phrase string) string {
-	if r, _ := utf8.DecodeRuneInString(phrase); isASCIIWord(r) {
-		return `\b`
+	if r, _ := utf8.DecodeRuneInString(phrase); isWordRune(r) {
+		return `(?:^|` + nonWordClass + `)`
 	}
 	return ""
 }
 
+// wordBoundaryAfter returns the trailing boundary group, or "" when the phrase
+// ends with a non-word character and the anchor would make it unfireable.
 func wordBoundaryAfter(phrase string) string {
-	if r, _ := utf8.DecodeLastRuneInString(phrase); isASCIIWord(r) {
-		return `\b`
+	if r, _ := utf8.DecodeLastRuneInString(phrase); isWordRune(r) {
+		return `(?:$|` + nonWordClass + `)`
 	}
 	return ""
 }
 
-// isASCIIWord mirrors Go's regexp \b, which is ASCII-only: "ä" is not a word
-// character here either.
-func isASCIIWord(r rune) bool {
-	return r == '_' ||
-		(r >= '0' && r <= '9') ||
-		(r >= 'a' && r <= 'z') ||
-		(r >= 'A' && r <= 'Z')
+const nonWordClass = `[^\p{L}\p{N}\p{M}_]`
+
+// isWordRune must classify exactly what nonWordClass excludes: a phrase edge the
+// two disagree on gets no anchor and silently falls back to substring matching.
+// Hence \p{N} rather than unicode.IsDigit, which is Nd only ("cat²" would have
+// fired inside "a cat²s"), and \p{M} so a decomposed "hyvä" keeps its anchor.
+func isWordRune(r rune) bool {
+	return unicode.In(r, unicode.L, unicode.N, unicode.M) || r == '_'
 }
 
 // Compile runs at trigger creation or cache load, never per message.

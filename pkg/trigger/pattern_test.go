@@ -10,14 +10,17 @@ import (
 )
 
 func TestBuildPattern(t *testing.T) {
+	const wordBoundary = `(?:^|[^\p{L}\p{N}\p{M}_])`
+	const wordBoundaryEnd = `(?:$|[^\p{L}\p{N}\p{M}_])`
+
 	tests := []struct {
 		name string
 		mode pb.TriggerMode
 		want string
 	}{
 		{"exact", pb.TriggerMode_TRIGGER_MODE_EXACT, `(?i)^` + regexp.QuoteMeta("a.b") + `$`},
-		{"any", pb.TriggerMode_TRIGGER_MODE_ANY, `(?i)\b` + regexp.QuoteMeta("a.b") + `\b`},
-		{"unspecified same as any", pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED, `(?i)\b` + regexp.QuoteMeta("a.b") + `\b`},
+		{"any", pb.TriggerMode_TRIGGER_MODE_ANY, "(?i)" + wordBoundary + regexp.QuoteMeta("a.b") + wordBoundaryEnd},
+		{"unspecified same as any", pb.TriggerMode_TRIGGER_MODE_UNSPECIFIED, "(?i)" + wordBoundary + regexp.QuoteMeta("a.b") + wordBoundaryEnd},
 	}
 
 	const phrase = "a.b"
@@ -66,16 +69,23 @@ func TestAnyModeQuotesMetacharacters(t *testing.T) {
 }
 
 func TestAnyModeDropsUnsatisfiableWordBoundaries(t *testing.T) {
+	const wordBoundary = `(?:^|[^\p{L}\p{N}\p{M}_])`
+	const wordBoundaryEnd = `(?:$|[^\p{L}\p{N}\p{M}_])`
+
 	tests := []struct {
 		name   string
 		phrase string
 		want   string
 	}{
-		{"word on both edges keeps both", "cat", `(?i)\bcat\b`},
-		{"non-word trailing edge drops the trailing anchor", "c++", `(?i)\bc\+\+`},
-		{"non-word leading edge drops the leading anchor", "++rep", `(?i)\+\+rep\b`},
+		{"word on both edges keeps both", "cat", "(?i)" + wordBoundary + "cat" + wordBoundaryEnd},
+		{"non-word trailing edge drops the trailing anchor", "c++", "(?i)" + wordBoundary + `c\+\+`},
+		{"non-word leading edge drops the leading anchor", "++rep", `(?i)\+\+rep` + wordBoundaryEnd},
 		{"non-word on both edges drops both", ":)", `(?i):\)`},
-		{"non-ascii edges are non-word to Go's \\b", "äö", `(?i)äö`},
+		{
+			name:   "non-ascii word runes keep both boundaries, unlike ASCII-only \\b",
+			phrase: "äö",
+			want:   "(?i)" + wordBoundary + "äö" + wordBoundaryEnd,
+		},
 	}
 
 	for _, tt := range tests {
@@ -110,6 +120,91 @@ func TestAnyModePunctuationPhrasesFireInProse(t *testing.T) {
 			}
 			if got := re.MatchString(tt.message); got != tt.want {
 				t.Errorf("any-mode %q matching %q = %v, want %v", tt.phrase, tt.message, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAnyModeUnicodeWordBoundaryMatrix is the specified matrix for the
+// Unicode-aware boundary: RE2's \b was ASCII-only, so "hyvä" used to fire
+// inside "hyväksyä" and "äcatä" used to fire on "cat".
+func TestAnyModeUnicodeWordBoundaryMatrix(t *testing.T) {
+	tests := []struct {
+		phrase  string
+		message string
+		want    bool
+	}{
+		{"cat", "a cat here", true},
+		{"cat", "cat", true},
+		{"cat", "cat cat", true},
+		{"cat", "wow, cat.", true},
+		{"cat", "category theory", false},
+		{"cat", "äcatä", false},
+		{"hyvä", "hyvä juttu", true},
+		{"hyvä", "no hyvä", true},
+		{"hyvä", "hyväksyä", false},
+		{"äö", "äö", true},
+		{"äö", "käöp", false},
+		{"c++", "c++ rocks", true},
+		{"c++", "abc++ here", false},
+		{"++rep", "++rep", true},
+		{":)", "well :)", true},
+		// \p{N} is Nd+Nl+No; a helper using unicode.IsDigit sees only Nd, drops
+		// the anchor entirely, and silently falls back to substring matching.
+		{"cat²", "a cat² here", true},
+		{"cat²", "a cat²s", false},
+		{"½cup", "add ½cup now", true},
+		{"½cup", "x½cupy", false},
+		{"Ⅷ", "chapter Ⅷ", true},
+		{"Ⅷ", "aⅧb", false},
+		// Decomposed: the phrase ends in a combining mark, which is part of the
+		// word rather than a delimiter.
+		{"hyva\u0308", "hyva\u0308 juttu", true},
+		{"hyva\u0308", "hyva\u0308ksya\u0308", false},
+		{"cat", "cat\u0301egory", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.phrase+"/"+tt.message, func(t *testing.T) {
+			re, err := Compile(tt.phrase, pb.TriggerMode_TRIGGER_MODE_ANY)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", tt.phrase, err)
+			}
+			if got := re.MatchString(tt.message); got != tt.want {
+				t.Errorf("any-mode %q matching %q = %v, want %v", tt.phrase, tt.message, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAnyModeBoundaryGroupsConsumeADelimiterButStillMatch: the boundary
+// groups consume the delimiter character rather than being zero-width, so a
+// phrase right at either edge of the string, and two occurrences separated
+// by only one delimiter, must still be found by MatchString (the only
+// production consumer; a non-overlapping FindAll-style scan would behave
+// differently, but nothing in this codebase does that).
+func TestAnyModeBoundaryGroupsConsumeADelimiterButStillMatch(t *testing.T) {
+	re, err := Compile("cat", pb.TriggerMode_TRIGGER_MODE_ANY)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{"occurrence at the very start of the string", "cat is nice", true},
+		{"occurrence at the very end of the string", "I love cat", true},
+		{"the whole string is exactly the phrase", "cat", true},
+		{"two occurrences separated by one delimiter", "cat cat", true},
+		{"adjacent with no delimiter is one unbroken word, not two hits", "catcat", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := re.MatchString(tt.message); got != tt.want {
+				t.Errorf("MatchString(%q) = %v, want %v", tt.message, got, tt.want)
 			}
 		})
 	}
