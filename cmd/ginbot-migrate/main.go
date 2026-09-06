@@ -809,13 +809,16 @@ func (m *migrator) passFiles() error {
 			return err
 		}
 		err = m.tx.QueryRow(m.ctx,
-			`INSERT INTO file (id, category, path, mime_type, byte_size, file_hash)
-			 VALUES ($1,$2,$3,$4,$5,$6)
+			`INSERT INTO file (id, category, path, mime_type, byte_size, file_hash, original_filename)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7)
 			 ON CONFLICT (file_hash) WHERE deleted = FALSE
-			     DO UPDATE SET file_hash = file.file_hash
+			     DO UPDATE SET file_hash = file.file_hash,
+			                   original_filename = CASE WHEN file.original_filename = ''
+			                                            THEN EXCLUDED.original_filename
+			                                            ELSE file.original_filename END
 			 RETURNING id, (xmax = 0)`,
 			fileUUID.String(), db.FileCategoryLocal, key,
-			http.DetectContentType(content), int32(len(content)), hash).Scan(&id, &inserted)
+			http.DetectContentType(content), int32(len(content)), hash, name).Scan(&id, &inserted)
 		if err != nil {
 			return err
 		}

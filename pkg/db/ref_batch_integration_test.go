@@ -123,7 +123,7 @@ func TestGetFilesByIDsReturnsOneEntryPerFoundIDAndOmitsMissing(t *testing.T) {
 	suffix := time.Now().Format("150405.000000000")
 
 	hashA := "batch-file-a-" + suffix
-	idA, _, err := GetOrCreateFileByHash(ctx, hashA, "trigger/aa/"+hashA, "image/png", 10)
+	idA, _, err := GetOrCreateFileByHash(ctx, hashA, "trigger/aa/"+hashA, "image/png", 10, "batch-a.png")
 	if err != nil {
 		t.Fatalf("create file A: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestGetFilesByIDsReturnsOneEntryPerFoundIDAndOmitsMissing(t *testing.T) {
 	})
 
 	hashB := "batch-file-b-" + suffix
-	idB, _, err := GetOrCreateFileByHash(ctx, hashB, "trigger/bb/"+hashB, "image/gif", 20)
+	idB, _, err := GetOrCreateFileByHash(ctx, hashB, "trigger/bb/"+hashB, "image/gif", 20, "")
 	if err != nil {
 		t.Fatalf("create file B: %v", err)
 	}
@@ -158,6 +158,9 @@ func TestGetFilesByIDsReturnsOneEntryPerFoundIDAndOmitsMissing(t *testing.T) {
 	if got[idA] == nil || got[idA].MimeType != "image/png" {
 		t.Errorf("got[idA] = %+v, want the file A row", got[idA])
 	}
+	if got[idA] != nil && got[idA].OriginalFilename != "batch-a.png" {
+		t.Errorf("got[idA].OriginalFilename = %q, want %q", got[idA].OriginalFilename, "batch-a.png")
+	}
 	if got[idB] == nil || got[idB].MimeType != "image/gif" {
 		t.Errorf("got[idB] = %+v, want the file B row", got[idB])
 	}
@@ -172,7 +175,7 @@ func TestGetFilesByIDsExcludesSoftDeletedFiles(t *testing.T) {
 	ctx := context.Background()
 	hash := "batch-file-deleted-" + time.Now().Format("150405.000000000")
 
-	id, _, err := GetOrCreateFileByHash(ctx, hash, "trigger/dd/"+hash, "image/png", 10)
+	id, _, err := GetOrCreateFileByHash(ctx, hash, "trigger/dd/"+hash, "image/png", 10, "")
 	if err != nil {
 		t.Fatalf("create file: %v", err)
 	}
@@ -234,7 +237,7 @@ func TestGetFilesByIDsQueryCountIsConstant(t *testing.T) {
 
 	few := make([]string, 0, 1)
 	hash := "count-few-" + suffix
-	id, _, err := GetOrCreateFileByHash(ctx, hash, "trigger/ff/"+hash, "image/png", 10)
+	id, _, err := GetOrCreateFileByHash(ctx, hash, "trigger/ff/"+hash, "image/png", 10, "")
 	if err != nil {
 		t.Fatalf("create file: %v", err)
 	}
@@ -249,7 +252,7 @@ func TestGetFilesByIDsQueryCountIsConstant(t *testing.T) {
 	for i := 0; i < 15; i++ {
 		h := "count-many-" + suffix + "-"
 		h += time.Now().Format("000000000")
-		fid, _, err := GetOrCreateFileByHash(ctx, h, "trigger/gg/"+h, "image/png", 10)
+		fid, _, err := GetOrCreateFileByHash(ctx, h, "trigger/gg/"+h, "image/png", 10, "")
 		if err != nil {
 			t.Fatalf("create file %d: %v", i, err)
 		}

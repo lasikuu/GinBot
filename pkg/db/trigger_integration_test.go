@@ -342,7 +342,7 @@ func TestGetOrCreateFileByHashDedupesByHash(t *testing.T) {
 	ctx := context.Background()
 	hash := "hash-" + time.Now().Format("150405.000000000")
 
-	id1, inserted1, err := GetOrCreateFileByHash(ctx, hash, "trigger/xx/"+hash, "image/png", 1024)
+	id1, inserted1, err := GetOrCreateFileByHash(ctx, hash, "trigger/xx/"+hash, "image/png", 1024, "first.png")
 	if err != nil {
 		t.Fatalf("first GetOrCreateFileByHash: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestGetOrCreateFileByHashDedupesByHash(t *testing.T) {
 		t.Error("first call inserted = false, want true")
 	}
 
-	id2, inserted2, err := GetOrCreateFileByHash(ctx, hash, "trigger/xx/"+hash, "image/png", 1024)
+	id2, inserted2, err := GetOrCreateFileByHash(ctx, hash, "trigger/xx/"+hash, "image/png", 1024, "second.png")
 	if err != nil {
 		t.Fatalf("second GetOrCreateFileByHash: %v", err)
 	}
@@ -372,6 +372,64 @@ func TestGetOrCreateFileByHashDedupesByHash(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("file rows for hash %q = %d, want 1", hash, count)
+	}
+
+	stored, err := GetFile(ctx, id1)
+	if err != nil {
+		t.Fatalf("GetFile after dedupe: %v", err)
+	}
+	if stored.OriginalFilename != "first.png" {
+		t.Errorf("original_filename = %q after a dedupe conflict, want the first uploader's %q to win",
+			stored.OriginalFilename, "first.png")
+	}
+}
+
+// TestGetOrCreateFileByHashFillsAnEmptyStoredNameOnConflict: the first
+// uploader's name wins only when it is non-empty; a row created with no name
+// (e.g. before this column existed) must still pick up a later upload's name.
+func TestGetOrCreateFileByHashFillsAnEmptyStoredNameOnConflict(t *testing.T) {
+	ctx := context.Background()
+	hash := "hash-fill-" + time.Now().Format("150405.000000000")
+
+	id1, inserted1, err := GetOrCreateFileByHash(ctx, hash, "trigger/yy/"+hash, "image/png", 1024, "")
+	if err != nil {
+		t.Fatalf("first GetOrCreateFileByHash: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db().Exec(context.Background(), `DELETE FROM file WHERE id = $1`, id1); err != nil {
+			t.Errorf("cleanup file %s: %v", id1, err)
+		}
+	})
+	if !inserted1 {
+		t.Fatal("first call inserted = false, want true")
+	}
+
+	before, err := GetFile(ctx, id1)
+	if err != nil {
+		t.Fatalf("GetFile before the conflicting call: %v", err)
+	}
+	if before.OriginalFilename != "" {
+		t.Fatalf("test premise broken: original_filename = %q, want empty before the second call", before.OriginalFilename)
+	}
+
+	id2, inserted2, err := GetOrCreateFileByHash(ctx, hash, "trigger/yy/"+hash, "image/png", 1024, "late-name.png")
+	if err != nil {
+		t.Fatalf("second GetOrCreateFileByHash: %v", err)
+	}
+	if inserted2 {
+		t.Error("second call inserted = true, want false (dedupe)")
+	}
+	if id2 != id1 {
+		t.Errorf("second call id = %q, want %q (same as the first)", id2, id1)
+	}
+
+	after, err := GetFile(ctx, id1)
+	if err != nil {
+		t.Fatalf("GetFile after the conflicting call: %v", err)
+	}
+	if after.OriginalFilename != "late-name.png" {
+		t.Errorf("original_filename = %q, want the later call's %q since the stored name was empty",
+			after.OriginalFilename, "late-name.png")
 	}
 }
 
@@ -484,7 +542,7 @@ func TestListOrphanFilesExcludesFilesReferencedByALiveTrigger(t *testing.T) {
 	suffix := f.suffix
 
 	orphanHash := "orphan-hash-" + suffix
-	orphanID, _, err := GetOrCreateFileByHash(ctx, orphanHash, "trigger/oo/"+orphanHash, "image/png", 100)
+	orphanID, _, err := GetOrCreateFileByHash(ctx, orphanHash, "trigger/oo/"+orphanHash, "image/png", 100, "")
 	if err != nil {
 		t.Fatalf("create orphan file: %v", err)
 	}
@@ -495,7 +553,7 @@ func TestListOrphanFilesExcludesFilesReferencedByALiveTrigger(t *testing.T) {
 	})
 
 	referencedHash := "referenced-hash-" + suffix
-	referencedID, _, err := GetOrCreateFileByHash(ctx, referencedHash, "trigger/rr/"+referencedHash, "image/png", 100)
+	referencedID, _, err := GetOrCreateFileByHash(ctx, referencedHash, "trigger/rr/"+referencedHash, "image/png", 100, "")
 	if err != nil {
 		t.Fatalf("create referenced file: %v", err)
 	}

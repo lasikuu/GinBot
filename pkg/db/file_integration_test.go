@@ -13,7 +13,7 @@ func TestGetFileReturnsTheStoredRowAndErrNotFoundOnceDeleted(t *testing.T) {
 	ctx := context.Background()
 	hash := "getfile-hash-" + time.Now().Format("150405.000000000")
 
-	id, inserted, err := GetOrCreateFileByHash(ctx, hash, "trigger/gf/"+hash, "image/gif", 555)
+	id, inserted, err := GetOrCreateFileByHash(ctx, hash, "trigger/gf/"+hash, "image/gif", 555, "getfile.gif")
 	if err != nil {
 		t.Fatalf("GetOrCreateFileByHash: %v", err)
 	}
@@ -38,6 +38,9 @@ func TestGetFileReturnsTheStoredRowAndErrNotFoundOnceDeleted(t *testing.T) {
 	}
 	if row.FileHash != hash {
 		t.Errorf("file_hash = %q, want %q", row.FileHash, hash)
+	}
+	if row.OriginalFilename != "getfile.gif" {
+		t.Errorf("original_filename = %q, want %q", row.OriginalFilename, "getfile.gif")
 	}
 	if row.Category != FileCategoryLocal {
 		t.Errorf("category = %d, want %d (FileCategoryLocal)", row.Category, FileCategoryLocal)
@@ -65,7 +68,7 @@ func TestFileVisibleToCallerScopesByOwnerOrInstance(t *testing.T) {
 	ctx := context.Background()
 
 	hash := "visible-hash-" + owner.suffix
-	fileID, _, err := GetOrCreateFileByHash(ctx, hash, "trigger/vv/"+hash, "image/png", 10)
+	fileID, _, err := GetOrCreateFileByHash(ctx, hash, "trigger/vv/"+hash, "image/png", 10, "")
 	if err != nil {
 		t.Fatalf("GetOrCreateFileByHash: %v", err)
 	}

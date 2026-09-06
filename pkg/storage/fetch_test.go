@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -318,6 +319,151 @@ func TestFetcherRefusesNon2xxResponse(t *testing.T) {
 	_, err := fetcher.Fetch(context.Background(), server.URL+"/missing")
 	if err == nil {
 		t.Error("Fetch against a 404 response succeeded, want an error")
+	}
+}
+
+func TestFilenameFromURLTakesTheLastPathSegment(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"a simple filename", "https://cdn.discordapp.com/media/pic.png", "pic.png"},
+		{"a query string is not part of the path", "https://cdn.discordapp.com/media/pic.png?ex=1&sig=2", "pic.png"},
+		{"nested directories keep only the last segment", "https://cdn.discordapp.com/a/b/c/pic.png", "pic.png"},
+		{"a trailing slash leaves an empty segment", "https://cdn.discordapp.com/media/", ""},
+		{"no path segment at all", "https://cdn.discordapp.com", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(tt.url)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tt.url, err)
+			}
+			if got := filenameFromURL(u); got != tt.want {
+				t.Errorf("filenameFromURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFilenameFromURLDecodesThePercentEscapedSegmentButNotBeforeSplitting: the
+// segment is split on the last raw '/' before decoding, so an encoded "%2F"
+// cannot smuggle back in a path separator once decoded.
+func TestFilenameFromURLDecodesThePercentEscapedSegmentButNotBeforeSplitting(t *testing.T) {
+	u, err := url.Parse("https://cdn.discordapp.com/media/na%C3%AFve%20file.png")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got, want := filenameFromURL(u), "naïve file.png"; got != want {
+		t.Errorf("filenameFromURL(%q) = %q, want %q (percent-decoded)", u, got, want)
+	}
+
+	smuggled, err := url.Parse("https://cdn.discordapp.com/media/evil%2F..%2Fpic.png")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := filenameFromURL(smuggled); strings.ContainsAny(got, "/\\") {
+		t.Errorf("filenameFromURL(%q) = %q, an encoded %%2F reintroduced a path separator", smuggled, got)
+	}
+}
+
+// TestFilenameFromURLFallsBackToTheRawSegmentOnADecodeError: url.Parse itself
+// already decodes u.Path once, so "%2525" (an escaped literal '%') survives
+// parsing as a literal '%' in the segment; filenameFromURL's own decode pass
+// then meets "%of" (not valid hex) and must fall back rather than propagate
+// the error or produce garbage.
+func TestFilenameFromURLFallsBackToTheRawSegmentOnADecodeError(t *testing.T) {
+	u, err := url.Parse("https://cdn.discordapp.com/media/50%25off.png")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got, want := filenameFromURL(u), "50%off.png"; got != want {
+		t.Errorf("filenameFromURL(%q) = %q, want the fallback %q", u, got, want)
+	}
+}
+
+func TestSanitizeFilenameDropsSeparatorsAndControlRunes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"forward slash is dropped", "a/b.png", "ab.png"},
+		{"backslash is dropped", `a\b.png`, "ab.png"},
+		{"a control rune (tab) is dropped", "a\tb.png", "ab.png"},
+		{"a newline is dropped", "a\nb.png", "ab.png"},
+		{"surrounding whitespace is trimmed", "  pic.png  ", "pic.png"},
+		{"an ordinary name is untouched", "pic.png", "pic.png"},
+		{"fully stripped input yields the empty string", "\t\n", ""},
+		{"only separators yields the empty string", "//\\\\", ""},
+		// unicode.IsControl is Cc only, so these survive it and would let an
+		// attachment named "pic<RLO>gnp.exe" display as "pic.png".
+		{"a right-to-left override is dropped", "pic\u202egnp.exe", "picgnp.exe"},
+		{"a zero-width space is dropped", "a\u200bb.png", "ab.png"},
+		{"a byte order mark is dropped", "\ufeffpic.png", "pic.png"},
+		{"a line separator is dropped", "a\u2028b.png", "ab.png"},
+		{"a paragraph separator is dropped", "a\u2029b.png", "ab.png"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeFilename(tt.in); got != tt.want {
+				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeFilenameAppliesTheRuneCap(t *testing.T) {
+	longBase := strings.Repeat("a", maxFilenameRunes+50)
+	got := sanitizeFilename(longBase + ".png")
+	if runes := len([]rune(got)); runes != maxFilenameRunes {
+		t.Errorf("sanitizeFilename produced %d runes, want the cap of %d", runes, maxFilenameRunes)
+	}
+	if !strings.HasSuffix(got, ".png") {
+		t.Errorf("sanitizeFilename(%q) = %q, lost the extension under the cap", longBase+".png", got)
+	}
+}
+
+func TestTruncateFilenamePreservingExtNoEllipsisAndExactCap(t *testing.T) {
+	tests := []struct {
+		name     string
+		in       string
+		maxRunes int
+		want     string
+	}{
+		{"under the cap is untouched", "pic.png", 128, "pic.png"},
+		{"exactly at the cap is untouched", strings.Repeat("a", 10), 10, strings.Repeat("a", 10)},
+		{
+			name:     "over the cap keeps the extension whole, no ellipsis",
+			in:       strings.Repeat("a", 20) + ".png",
+			maxRunes: 10,
+			want:     strings.Repeat("a", 6) + ".png",
+		},
+		{
+			name:     "an extension alone at or over the cap falls back to a plain cut",
+			in:       "x." + strings.Repeat("y", 20),
+			maxRunes: 10,
+			want:     "x." + strings.Repeat("y", 8),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateFilenamePreservingExt(tt.in, tt.maxRunes)
+			if got != tt.want {
+				t.Errorf("truncateFilenamePreservingExt(%q, %d) = %q, want %q", tt.in, tt.maxRunes, got, tt.want)
+			}
+			if strings.Contains(got, "…") {
+				t.Errorf("truncateFilenamePreservingExt(%q, %d) = %q, this layer must never add an ellipsis (unlike pkg/discord's display truncation)",
+					tt.in, tt.maxRunes, got)
+			}
+			if runes := len([]rune(got)); runes != tt.maxRunes && len([]rune(tt.in)) > tt.maxRunes {
+				t.Errorf("result is %d runes, want exactly the cap of %d", runes, tt.maxRunes)
+			}
+		})
 	}
 }
 

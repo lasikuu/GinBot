@@ -327,3 +327,22 @@ func TestFileToProtoDifferentFilenamesForTheSameRow(t *testing.T) {
 		t.Errorf("second call filename = %q, want %q", second.GetFilename(), "second.gif")
 	}
 }
+
+// A reorder of one list and not the other keeps the counts equal, so the
+// positions have to be pinned too.
+func TestFileScanTargetsWriteOriginalFilenameToTheRightField(t *testing.T) {
+	f := &File{}
+	targets := f.ScanTargets()
+
+	const originalFilenamePosition = 6 // id, category, path, mime_type, byte_size, file_hash, original_filename
+	ptr, ok := targets[originalFilenamePosition].(*string)
+	if !ok {
+		t.Fatalf("ScanTargets()[%d] has type %T, want *string for original_filename", originalFilenamePosition, targets[originalFilenamePosition])
+	}
+
+	*ptr = "picture.png"
+	if f.OriginalFilename != "picture.png" {
+		t.Errorf("writing through ScanTargets()[%d] set %q, want it to reach File.OriginalFilename (got %q)",
+			originalFilenamePosition, "picture.png", f.OriginalFilename)
+	}
+}

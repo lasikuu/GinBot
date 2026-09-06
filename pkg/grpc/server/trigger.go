@@ -28,7 +28,7 @@ const regexClearanceFloor = pb.Clearance_CLEARANCE_MODERATOR
 
 const triggerFileKeyPrefix = "trigger/"
 
-// mimeExtensions maps a sniffed MIME type to an extension; no original filename is stored.
+// mimeExtensions is displayFilename's fallback for a file with no stored original_filename.
 var mimeExtensions = map[string]string{
 	"image/png":  ".png",
 	"image/jpeg": ".jpg",
@@ -187,6 +187,9 @@ func callerScopedInstance(ctx context.Context, requested *pb.TriggerInstance) (i
 }
 
 func displayFilename(file *model.File) string {
+	if file.OriginalFilename != "" {
+		return file.OriginalFilename
+	}
 	return file.ID + mimeExtensions[file.MimeType]
 }
 
@@ -226,7 +229,7 @@ func (s *TriggerServer) fetchAndStoreFile(ctx context.Context, fileURL string) (
 	// Fan-out by the first two hex characters of the hash, per pkg/storage's key layout.
 	key := triggerFileKeyPrefix + fetched.Hash[:2] + "/" + fetched.Hash
 
-	fileID, inserted, err := db.GetOrCreateFileByHash(ctx, fetched.Hash, key, fetched.MIMEType, int32(len(fetched.Content)))
+	fileID, inserted, err := db.GetOrCreateFileByHash(ctx, fetched.Hash, key, fetched.MIMEType, int32(len(fetched.Content)), fetched.Filename)
 	if err != nil {
 		log.Z.Error("failed to resolve trigger file row", zap.Error(err))
 		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store file"))

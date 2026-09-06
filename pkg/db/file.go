@@ -17,12 +17,17 @@ const FileCategoryLocal int32 = 2
 // GetOrCreateFileByHash reports inserted so the caller knows whether it must
 // also write the blob. The upsert targets uq_file_hash, a partial index on
 // deleted = FALSE; DO UPDATE because DO NOTHING returns no row for RETURNING.
+// The first uploader's originalFilename wins: the CASE only overwrites an empty
+// stored name. file rows are global and deduped by content hash, so that fill is
+// visible to every guild already pointing at the row — accepted, because the
+// alternative is a per-guild name column for a value only ever displayed.
 func GetOrCreateFileByHash(
 	ctx context.Context,
 	hash string,
 	path string,
 	mimeType string,
 	byteSize int32,
+	originalFilename string,
 ) (id string, inserted bool, err error) {
 	fileUUID, err := uuid.NewV7()
 	if err != nil {
@@ -30,12 +35,15 @@ func GetOrCreateFileByHash(
 	}
 
 	err = db().QueryRow(ctx,
-		`INSERT INTO file (id, category, path, mime_type, byte_size, file_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO file (id, category, path, mime_type, byte_size, file_hash, original_filename)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (file_hash) WHERE deleted = FALSE
-		     DO UPDATE SET file_hash = file.file_hash
+		     DO UPDATE SET file_hash = file.file_hash,
+		                   original_filename = CASE WHEN file.original_filename = ''
+		                                            THEN EXCLUDED.original_filename
+		                                            ELSE file.original_filename END
 		 RETURNING id, (xmax = 0) AS inserted`,
-		fileUUID.String(), FileCategoryLocal, path, mimeType, byteSize, hash,
+		fileUUID.String(), FileCategoryLocal, path, mimeType, byteSize, hash, originalFilename,
 	).Scan(&id, &inserted)
 	if err != nil {
 		return "", false, fmt.Errorf("get or create file by hash: %w", err)

@@ -254,29 +254,31 @@ func NewRepostMsgRef(instanceUID, destinationUID, messageUID, authorUID string) 
 }
 
 type File struct {
-	ID        string
-	Category  int32
-	Path      string
-	MimeType  string
-	ByteSize  int32
-	FileHash  string
-	Deleted   bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID               string
+	Category         int32
+	Path             string
+	MimeType         string
+	ByteSize         int32
+	FileHash         string
+	OriginalFilename string
+	Deleted          bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // FileColumns lists file columns in ScanTargets order.
 const FileColumns = `id, category, path, mime_type, byte_size, file_hash,
-	deleted, created_at, updated_at`
+	original_filename, deleted, created_at, updated_at`
 
 func (f *File) ScanTargets() []any {
 	return []any{
 		&f.ID, &f.Category, &f.Path, &f.MimeType, &f.ByteSize, &f.FileHash,
-		&f.Deleted, &f.CreatedAt, &f.UpdatedAt,
+		&f.OriginalFilename, &f.Deleted, &f.CreatedAt, &f.UpdatedAt,
 	}
 }
 
-// ToProto takes filename because the original name is not a stored column.
+// ToProto takes filename so a caller can pass displayFilename's fallback
+// rather than duplicating it here.
 func (f *File) ToProto(filename string) *pb.TriggerFile {
 	byteSize := int64(f.ByteSize)
 	return pb.TriggerFile_builder{

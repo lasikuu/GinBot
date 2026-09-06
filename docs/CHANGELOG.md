@@ -88,9 +88,26 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
   messages. See [ADR 0040](adr/0040-long-listings-degrade-to-a-direct-message.md).
 - `/triggers` replaces its `mine` argument with `all`: the listing now defaults to your own
   triggers on the server, and `all` widens it to everyone's.
+- **`/triggers` gains an `offset` argument for paging past its `limit`, which is now up to 100**
+  (was 25; the default stays 15).
+- **A trigger file keeps its original upload filename.** `file` gains an `original_filename`
+  column, populated from the sanitised source filename on new uploads and by `cmd/ginbot-migrate`
+  for a legacy import; `/triggers` and `/triggerinfo` show it (truncated to 20 characters,
+  extension preserved) instead of the synthesised `<uuid>.<ext>`, and the Discord attachment name
+  is the full original. A database migrated before this change is backfilled by the new, hand-run
+  `cmd/ginbot-migrate/backfill_original_filename.sql`, which stores the legacy on-disk name
+  verbatim — so it carries the old bot's `_<suffix>` or `<uuid>_` noise rather than a pristine
+  upload name.
+- **Trigger and stats output uses `` ` `` code spans for phrases and filenames, and a middle dot
+  (`·`) instead of an em dash between fields.** An empty field renders as `-`.
 
 ### Fixed
 
+- **ANY-mode trigger matching used ASCII-only word boundaries.** A phrase starting or ending in a
+  non-ASCII letter — Finnish `hyvä`, for instance — had no anchor on that side and degraded toward
+  substring matching, so it could fire inside a longer word (`hyväksyä`). The boundary is now a
+  Unicode-aware character class instead of `\b`, covering letters, every numeric category, and
+  combining marks, so a decomposed `hyvä` is anchored too.
 - A reverse-stream handler could block forever on a client message that never came, so the server
   could not shut down cleanly and was killed after the grace period.
 - A failed send left a client holding a registry slot and a full buffer for a stream it could no

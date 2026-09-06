@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/lasikuu/GinBot/internal/model"
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
+	"github.com/lasikuu/GinBot/pkg/storage"
 	"github.com/lasikuu/GinBot/pkg/trigger"
 )
 
@@ -197,6 +199,58 @@ func TestGetFileRefusesInsufficientClearanceWithNoChunksSent(t *testing.T) {
 	requireCode(t, err, connect.CodePermissionDenied)
 	if len(chunks) != 0 {
 		t.Errorf("%d chunks arrived for a caller below the clearance floor, want 0", len(chunks))
+	}
+}
+
+// TestDisplayFilenamePrefersTheStoredOriginalName is the single source of the
+// name in buildTriggerFile, ListTriggers and the GetFile meta chunk.
+func TestDisplayFilenamePrefersTheStoredOriginalName(t *testing.T) {
+	tests := []struct {
+		name string
+		file *model.File
+		want string
+	}{
+		{
+			name: "a stored original filename is used as-is",
+			file: &model.File{ID: "018f0000-0000-7000-8000-000000000001", MimeType: "image/png", OriginalFilename: "cat.png"},
+			want: "cat.png",
+		},
+		{
+			name: "an empty original filename falls back to the id plus a mapped extension",
+			file: &model.File{ID: "018f0000-0000-7000-8000-000000000002", MimeType: "image/gif", OriginalFilename: ""},
+			want: "018f0000-0000-7000-8000-000000000002.gif",
+		},
+		{
+			name: "an unmapped mime type contributes no extension, so the fallback is a bare id",
+			file: &model.File{ID: "018f0000-0000-7000-8000-000000000003", MimeType: "application/octet-stream", OriginalFilename: ""},
+			want: "018f0000-0000-7000-8000-000000000003",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := displayFilename(tt.file); got != tt.want {
+				t.Errorf("displayFilename(%+v) = %q, want %q", tt.file, got, tt.want)
+			}
+		})
+	}
+}
+
+// mimeExtensions is the fallback's only source of an extension, so a type
+// storage accepts but the map omits renders every nameless attachment of that
+// type without one.
+func TestDisplayFilenameCoversEveryAllowedMIMEType(t *testing.T) {
+	for _, mimeType := range storage.AllowedMIMETypes() {
+		t.Run(mimeType, func(t *testing.T) {
+			file := &model.File{ID: "018f0000-0000-7000-8000-0000000000ab", MimeType: mimeType}
+			got := displayFilename(file)
+			if got == file.ID {
+				t.Fatalf("displayFilename(mime=%q) = %q, want an extension appended", mimeType, got)
+			}
+			if want := file.ID + mimeExtensions[mimeType]; got != want {
+				t.Errorf("displayFilename(mime=%q) = %q, want %q", mimeType, got, want)
+			}
+		})
 	}
 }
 

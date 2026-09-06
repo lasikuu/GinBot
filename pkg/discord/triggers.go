@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,7 +32,7 @@ const (
 
 const (
 	triggerListDefaultLimit int64 = 15
-	triggerListMaxLimit     int64 = 25
+	triggerListMaxLimit     int64 = 100
 
 	triggerStatsDefaultLimit int64 = 10
 	triggerStatsMaxLimit     int64 = 25
@@ -440,6 +441,11 @@ func triggerListCommand() command.Command {
 					triggerListMaxLimit, triggerListDefaultLimit),
 				Type: command.ArgInt,
 			},
+			{
+				Name:        "offset",
+				Description: "Skip this many triggers, for paging past the limit",
+				Type:        command.ArgInt,
+			},
 		},
 		Clearance: pb.Clearance_CLEARANCE_REGISTERED,
 		// The N+1 per-row instance/file lookup this used to cost outlasts
@@ -455,6 +461,9 @@ func listTriggers(ctx context.Context, inv *command.Invocation) (*command.Respon
 	limit := clampTriggerLimit(inv, triggerListDefaultLimit, triggerListMaxLimit)
 
 	req := pb.ListTriggersReq_builder{Limit: &limit}
+	if offset := triggerListOffset(inv); offset > 0 {
+		req.Offset = &offset
+	}
 	if search != "" {
 		// Phrase only: the server ANDs its filters.
 		req.Phrase = &search
@@ -756,31 +765,50 @@ func formatTriggerInfo(t *pb.Trigger) string {
 
 	fmt.Fprintf(&b, "**Trigger** `%d`\n", t.GetRef())
 	fmt.Fprintf(&b, "Id: `%s`\n", t.GetId())
-	fmt.Fprintf(&b, "Phrase: %s\n", emptyDash(t.GetPhrase()))
+	fmt.Fprintf(&b, "Phrase: %s\n", codeOrNone(t.GetPhrase()))
 	fmt.Fprintf(&b, "Mode: %s\n", triggerModeName(t.GetMode()))
 	// The effective chance, never the stored column: 0 means default (ADR-0021).
 	fmt.Fprintf(&b, "Chance: %d%%\n", trigger.EffectiveChance(t.GetChance(), t.GetMode()))
 	fmt.Fprintf(&b, "%s\n", triggerReplyLine(t))
-	fmt.Fprintf(&b, "Created: %s\n", renderReminderStamp(t.HasCreatedAt(), t.GetCreatedAt().AsTime()))
-	fmt.Fprintf(&b, "Updated: %s", renderReminderStamp(t.HasUpdatedAt(), t.GetUpdatedAt().AsTime()))
+	fmt.Fprintf(&b, "Created: %s\n", triggerStamp(t.HasCreatedAt(), t.GetCreatedAt().AsTime()))
+	fmt.Fprintf(&b, "Updated: %s", triggerStamp(t.HasUpdatedAt(), t.GetUpdatedAt().AsTime()))
 
 	return b.String()
 }
 
+// triggerStamp is renderReminderStamp with orNone's placeholder, so no trigger
+// output can reach emptyDash.
+func triggerStamp(present bool, instant time.Time) string {
+	if !present {
+		return triggerNonePlaceholder
+	}
+
+	return timestampTag(instant, timestampRelative)
+}
+
 // Text wins over a file: the server checks the reply first when a row has both.
+// The value is returned raw so a file genuinely named "-" is not mistaken for a
+// missing one; each caller formats before applying orNone.
 func triggerAnswer(t *pb.Trigger) (label string, value string, isFile bool) {
 	if reply := t.GetReply(); reply != "" {
 		return "Reply", reply, false
 	}
 	if file := t.GetFile(); file != nil {
-		return "File", emptyDash(file.GetFilename()), true
+		return "File", file.GetFilename(), true
 	}
 
-	return "Reply", emptyDash(""), false
+	return "Reply", "", false
 }
 
+// triggerReplyLine backticks the filename, not a plain-text reply: a reply is
+// prose, and a long one reads worse wrapped in a code span.
 func triggerReplyLine(t *pb.Trigger) string {
-	label, value, _ := triggerAnswer(t)
+	label, value, isFile := triggerAnswer(t)
+	if isFile {
+		value = codeOrNone(truncateDisplayFilename(value, maxDisplayFilenameRunes))
+	} else {
+		value = orNone(value)
+	}
 
 	return label + ": " + value
 }
@@ -800,16 +828,67 @@ func truncateLineField(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "…"
 }
 
-func renderTriggerLine(t *pb.Trigger) string {
-	_, answer, isFile := triggerAnswer(t)
-	answer = truncateLineField(answer, maxLineFieldRunes)
-	if isFile {
-		answer = "(file) " + answer
+// maxDisplayFilenameRunes caps a filename as printed by /triggers and
+// /triggerinfo; the stored name and the Discord attachment itself
+// (triggerFileResponse) keep the full length.
+const maxDisplayFilenameRunes = 20
+
+// truncateDisplayFilename returns at most maxRunes runes, ellipsis included,
+// keeping the extension whole unless it alone would fill the budget.
+func truncateDisplayFilename(name string, maxRunes int) string {
+	runes := []rune(name)
+	if len(runes) <= maxRunes || maxRunes < 1 {
+		return name
 	}
 
-	return fmt.Sprintf("`%d` — %s — %s — %d%% — %s",
+	ext := filepath.Ext(name)
+	extRunes := []rune(ext)
+	if len(extRunes) >= maxRunes {
+		return string(runes[:maxRunes-1]) + "…"
+	}
+
+	base := runes[:len(runes)-len(extRunes)]
+
+	return string(base[:maxRunes-len(extRunes)-1]) + "…" + ext
+}
+
+const triggerSeparator = " · "
+
+const triggerNonePlaceholder = "-"
+
+func orNone(s string) string {
+	if s == "" {
+		return triggerNonePlaceholder
+	}
+	return s
+}
+
+// codeSpan wraps s as Discord inline code. An embedded backtick would close
+// the span early, so it is stripped first, mirroring attributeRoll.
+func codeSpan(s string) string {
+	return "`" + strings.ReplaceAll(s, "`", "") + "`"
+}
+
+// codeOrNone renders a phrase or filename: backtick-wrapped when present, or
+// orNone's placeholder when empty. The placeholder itself is never backticked.
+func codeOrNone(s string) string {
+	if s == "" {
+		return orNone(s)
+	}
+	return codeSpan(s)
+}
+
+func renderTriggerLine(t *pb.Trigger) string {
+	_, answer, isFile := triggerAnswer(t)
+	if isFile {
+		answer = "(file) " + codeOrNone(truncateDisplayFilename(answer, maxDisplayFilenameRunes))
+	} else {
+		answer = orNone(truncateLineField(answer, maxLineFieldRunes))
+	}
+
+	return fmt.Sprintf("`%d`"+triggerSeparator+"%s"+triggerSeparator+"%s"+triggerSeparator+"%d%%"+triggerSeparator+"%s",
 		t.GetRef(),
-		emptyDash(truncateLineField(t.GetPhrase(), maxLineFieldRunes)),
+		codeOrNone(truncateLineField(t.GetPhrase(), maxLineFieldRunes)),
 		triggerModeName(t.GetMode()),
 		trigger.EffectiveChance(t.GetChance(), t.GetMode()),
 		answer,
@@ -826,9 +905,9 @@ func formatTriggerStats(stats []*pb.TriggerStat, kind pb.ActionType) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**Top triggers by %s**\n", label)
 	for i, stat := range stats {
-		fmt.Fprintf(&b, "%d. %s — %d — %d%%\n",
+		fmt.Fprintf(&b, "%d. %s"+triggerSeparator+"%d"+triggerSeparator+"%d%%\n",
 			i+1,
-			emptyDash(stat.GetPhrase()),
+			codeOrNone(stat.GetPhrase()),
 			stat.GetCount(),
 			trigger.EffectiveChance(stat.GetChance(), stat.GetMode()),
 		)
@@ -887,6 +966,17 @@ func clampTriggerLimit(inv *command.Invocation, defaultLimit int64, maxLimit int
 	}
 
 	return limit
+}
+
+// triggerListOffset returns 0 for an absent or negative value; pkg/db floors
+// a negative offset itself, but a negative Offset here would still round-trip
+// as a set field rather than an unset one.
+func triggerListOffset(inv *command.Invocation) int64 {
+	if offset := inv.Int("offset"); offset > 0 {
+		return offset
+	}
+
+	return 0
 }
 
 func invalidModeError() error {

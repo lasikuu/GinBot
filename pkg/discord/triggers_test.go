@@ -218,6 +218,7 @@ func TestTriggerCommandArguments(t *testing.T) {
 				{name: "search", argType: command.ArgString},
 				{name: "all", argType: command.ArgBool},
 				{name: "limit", argType: command.ArgInt},
+				{name: "offset", argType: command.ArgInt},
 			},
 		},
 		{
@@ -1274,6 +1275,90 @@ func TestClampTriggerLimit(t *testing.T) {
 	}
 }
 
+// TestTriggerListLimitConstants pins the literal values: TestClampTriggerLimit
+// above exercises clampTriggerLimit correctly even if triggerListMaxLimit
+// regressed to its old value of 25, since it references the constant rather
+// than a literal.
+func TestTriggerListLimitConstants(t *testing.T) {
+	if triggerListMaxLimit != 100 {
+		t.Errorf("triggerListMaxLimit = %d, want 100", triggerListMaxLimit)
+	}
+	if triggerListDefaultLimit != 15 {
+		t.Errorf("triggerListDefaultLimit = %d, want 15", triggerListDefaultLimit)
+	}
+	if triggerStatsDefaultLimit != 10 {
+		t.Errorf("triggerStatsDefaultLimit = %d, want 10", triggerStatsDefaultLimit)
+	}
+	if triggerStatsMaxLimit != 25 {
+		t.Errorf("triggerStatsMaxLimit = %d, want 25", triggerStatsMaxLimit)
+	}
+}
+
+func TestTriggerListOffset(t *testing.T) {
+	cmd := triggerListCommand()
+
+	tests := []struct {
+		name string
+		args map[string]any
+		want int64
+	}{
+		{name: "omitted is zero", args: map[string]any{}, want: 0},
+		{name: "zero is zero", args: map[string]any{"offset": int64(0)}, want: 0},
+		{name: "negative is zero", args: map[string]any{"offset": int64(-3)}, want: 0},
+		{name: "positive is honoured", args: map[string]any{"offset": int64(40)}, want: 40},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inv, err := command.BindNamed(cmd, tt.args)
+			if err != nil {
+				t.Fatalf("BindNamed: %v", err)
+			}
+			if got := triggerListOffset(inv); got != tt.want {
+				t.Errorf("triggerListOffset() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestListTriggersSetsOffsetOnlyWhenPositive: ListTriggersReq.offset is a
+// paging cursor, so an unused one must arrive unset rather than an explicit
+// zero, which a naive server-side check could mistake for "start at row 0"
+// versus "no offset requested" in some future filter.
+func TestListTriggersSetsOffsetOnlyWhenPositive(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       map[string]any
+		wantHasOff bool
+		wantOffset int64
+	}{
+		{name: "omitted leaves it unset", args: map[string]any{}, wantHasOff: false},
+		{name: "zero leaves it unset", args: map[string]any{"offset": int64(0)}, wantHasOff: false},
+		{name: "negative leaves it unset", args: map[string]any{"offset": int64(-5)}, wantHasOff: false},
+		{name: "positive is sent", args: map[string]any{"offset": int64(30)}, wantHasOff: true, wantOffset: 30},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeTriggerClient{}
+			ctx := guildContext(&client.Clients{Trigger: fake})
+
+			if _, err := invokeNamed(t, triggerListCommand(), ctx, tt.args); err != nil {
+				t.Fatalf("handler returned %v", err)
+			}
+			if fake.list == nil {
+				t.Fatal("no ListTriggers request was sent")
+			}
+			if got := fake.list.HasOffset(); got != tt.wantHasOff {
+				t.Errorf("HasOffset() = %v, want %v", got, tt.wantHasOff)
+			}
+			if tt.wantHasOff && fake.list.GetOffset() != tt.wantOffset {
+				t.Errorf("GetOffset() = %d, want %d", fake.list.GetOffset(), tt.wantOffset)
+			}
+		})
+	}
+}
+
 // A listing at triggerListMaxLimit may exceed one message; what must hold is
 // that it asks to be chunked rather than being silently cut off.
 func TestTriggerListingIsNoLongerBoundToOneMessage(t *testing.T) {
@@ -1616,5 +1701,200 @@ func TestFormatTriggerInfoStillCarriesBothTheUUIDAndTheRef(t *testing.T) {
 	}
 	if !strings.Contains(got, "42") {
 		t.Errorf("formatTriggerInfo lost the ref:\n%s", got)
+	}
+}
+
+func TestOrNone(t *testing.T) {
+	if got := orNone(""); got != triggerNonePlaceholder {
+		t.Errorf("orNone(\"\") = %q, want %q", got, triggerNonePlaceholder)
+	}
+	if got := orNone("hello"); got != "hello" {
+		t.Errorf("orNone(%q) = %q, want it unchanged", "hello", got)
+	}
+}
+
+func TestCodeSpanStripsEmbeddedBackticks(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello", "`hello`"},
+		{"a single embedded backtick is dropped, not escaped", "he`llo", "`hello`"},
+		{"multiple backticks are all dropped", "``a``b``", "`ab`"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codeSpan(tt.input); got != tt.want {
+				t.Errorf("codeSpan(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCodeSpanNeverLetsAPhraseEscapeTheCodeSpan: phrases are arbitrary user
+// input rendered into a Discord message, so an unescaped backtick must never
+// let the rest of the phrase render as raw markdown outside the span.
+func TestCodeSpanNeverLetsAPhraseEscapeTheCodeSpan(t *testing.T) {
+	tests := []string{
+		"a`b`*bold*",
+		"*bold* _italic_ ~strike~ |spoiler|",
+		"`",
+	}
+
+	for _, phrase := range tests {
+		t.Run(phrase, func(t *testing.T) {
+			got := codeSpan(phrase)
+			if strings.Count(got, "`") != 2 {
+				t.Fatalf("codeSpan(%q) = %q, does not open and close with exactly one backtick pair", phrase, got)
+			}
+			inner := got[1 : len(got)-1]
+			if strings.Contains(inner, "`") {
+				t.Errorf("codeSpan(%q) = %q, an embedded backtick survived inside the span", phrase, got)
+			}
+		})
+	}
+}
+
+func TestCodeOrNone(t *testing.T) {
+	if got := codeOrNone(""); got != triggerNonePlaceholder {
+		t.Errorf(`codeOrNone("") = %q, want the placeholder unbackticked`, got)
+	}
+	if got, want := codeOrNone("gm"), "`gm`"; got != want {
+		t.Errorf("codeOrNone(%q) = %q, want %q", "gm", got, want)
+	}
+}
+
+func TestTruncateDisplayFilenameKeepsTheExtension(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"under the cap is untouched", "cat.png", "cat.png"},
+		{
+			name: "exactly at the cap is untouched",
+			in:   strings.Repeat("a", maxDisplayFilenameRunes-4) + ".png",
+			want: strings.Repeat("a", maxDisplayFilenameRunes-4) + ".png",
+		},
+		{
+			name: "over the cap keeps the extension whole and ellipsizes the base",
+			in:   "a-very-long-original-filename.png",
+			want: "a-very-long-ori….png",
+		},
+		{
+			name: "an extension alone at or over the cap falls back to a plain cut",
+			in:   "x." + strings.Repeat("y", 25),
+			want: "x." + strings.Repeat("y", 17) + "…",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truncateDisplayFilename(tt.in, maxDisplayFilenameRunes); got != tt.want {
+				t.Errorf("truncateDisplayFilename(%q, %d) = %q, want %q", tt.in, maxDisplayFilenameRunes, got, tt.want)
+			}
+		})
+	}
+}
+
+// Both branches promise the same cap; only one of them keeps the extension.
+func TestTruncateDisplayFilenameNeverExceedsTheCap(t *testing.T) {
+	for _, name := range []string{
+		"a-very-long-original-filename.png",
+		"x." + strings.Repeat("y", 25),
+		strings.Repeat("z", 40),
+		strings.Repeat("ä", 40) + ".jpeg",
+	} {
+		got := truncateDisplayFilename(name, maxDisplayFilenameRunes)
+		if runes := len([]rune(got)); runes != maxDisplayFilenameRunes {
+			t.Errorf("truncateDisplayFilename(%q) is %d runes, want exactly %d: %q",
+				name, runes, maxDisplayFilenameRunes, got)
+		}
+	}
+}
+
+// TestTriggerOutputHasNoEmDash is the explicit requirement: a regression here
+// is silent, since an em dash renders fine and nothing else would flag it.
+func TestTriggerOutputHasNoEmDash(t *testing.T) {
+	const emDash = "\u2014"
+
+	withReply := renderTriggerLine(triggerFor(10, pb.TriggerMode_TRIGGER_MODE_ANY, "good morning", nil))
+	withFile := renderTriggerLine(triggerFor(0, pb.TriggerMode_TRIGGER_MODE_ANY, "", triggerFileFor(triggerFileID, "cat.png", "image/png")))
+	stats := formatTriggerStats([]*pb.TriggerStat{
+		statFor(triggerID, "gm", 41),
+	}, pb.ActionType_ACTION_TYPE_TRIGGER_OCCURRED)
+
+	for name, rendered := range map[string]string{
+		"renderTriggerLine with a reply": withReply,
+		"renderTriggerLine with a file":  withFile,
+		"formatTriggerStats":             stats,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if strings.Contains(rendered, emDash) {
+				t.Errorf("%s contains an em dash, which trigger output must not use:\n%s", name, rendered)
+			}
+			if !strings.Contains(rendered, triggerSeparator) {
+				t.Errorf("%s does not use the middle-dot separator %q:\n%s", name, triggerSeparator, rendered)
+			}
+		})
+	}
+
+	// formatTriggerInfo has no separator to assert, but it reaches the timestamp
+	// and answer renderers, which are where an em dash would leak back in.
+	for name, rendered := range map[string]string{
+		"formatTriggerInfo populated": formatTriggerInfo(triggerFor(10, pb.TriggerMode_TRIGGER_MODE_ANY, "good morning", nil)),
+		"formatTriggerInfo empty":     formatTriggerInfo(pb.Trigger_builder{}.Build()),
+		"formatTriggerInfo nil":       formatTriggerInfo(nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if strings.Contains(rendered, emDash) {
+				t.Errorf("%s contains an em dash, which trigger output must not use:\n%s", name, rendered)
+			}
+		})
+	}
+}
+
+// TestRenderTriggerLineBackticksThePhraseAndTheFilenameNotTheReply: a reply
+// is prose and must render plain, but the phrase and a file's displayed
+// filename must be backticked and truncated.
+func TestRenderTriggerLineBackticksThePhraseAndTheFilenameNotTheReply(t *testing.T) {
+	replyLine := renderTriggerLine(triggerFor(10, pb.TriggerMode_TRIGGER_MODE_ANY, "good morning", nil))
+	if !strings.Contains(replyLine, "`gm`") {
+		t.Errorf("the phrase is not backticked: %s", replyLine)
+	}
+	if strings.Contains(replyLine, "`good morning`") {
+		t.Errorf("the text reply was backticked, but a reply is prose, not code: %s", replyLine)
+	}
+
+	longName := "a-very-long-original-filename-for-a-trigger.png"
+	fileLine := renderTriggerLine(triggerFor(0, pb.TriggerMode_TRIGGER_MODE_ANY, "", triggerFileFor(triggerFileID, longName, "image/png")))
+	if !strings.Contains(fileLine, "(file) `") {
+		t.Errorf("a file answer is not marked and backticked: %s", fileLine)
+	}
+	if strings.Contains(fileLine, longName) {
+		t.Errorf("the full untruncated filename leaked into the listing line: %s", fileLine)
+	}
+	if !strings.HasSuffix(strings.TrimRight(fileLine, "\n"), "`") {
+		t.Errorf("the truncated filename's code span is not closed at the end of the line: %s", fileLine)
+	}
+}
+
+// TestTriggerFileResponseKeepsTheFullFilenameEvenWhenDisplayWouldTruncateIt:
+// the Discord attachment name must never be shortened by the display-only
+// truncation, since that would corrupt the file a caller actually downloads.
+func TestTriggerFileResponseKeepsTheFullFilenameEvenWhenDisplayWouldTruncateIt(t *testing.T) {
+	longName := "a-very-long-original-filename-for-a-trigger-attachment.png"
+	if len([]rune(longName)) <= maxDisplayFilenameRunes {
+		t.Fatalf("test premise broken: %q is not longer than the display cap of %d runes", longName, maxDisplayFilenameRunes)
+	}
+
+	resp := triggerFileResponse(triggerFileFor(triggerFileID, longName, "image/png"), []byte("content"))
+	if resp == nil || resp.File == nil {
+		t.Fatal("triggerFileResponse produced no file")
+	}
+	if resp.File.Name != longName {
+		t.Errorf("attachment Name = %q, want the full untruncated %q", resp.File.Name, longName)
 	}
 }

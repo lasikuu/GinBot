@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // MaxFileBytes matches Discord's baseline per-guild upload limit of 8 MiB.
@@ -198,11 +200,63 @@ func stripMIMEParams(mimeType string) string {
 	return mimeType
 }
 
-// filenameFromURL returns the last path segment of u; url.URL.Path excludes the query.
+// maxFilenameRunes bounds a fetched file's display name: this value ends up
+// as a Discord attachment name, and a CDN URL segment has no natural bound.
+const maxFilenameRunes = 128
+
+// filenameFromURL returns the last path segment of u, percent-decoded and
+// sanitised. url.URL.Path excludes the query; the segment is taken before
+// decoding so a smuggled "%2F" cannot reintroduce a path separator.
 func filenameFromURL(u *url.URL) string {
 	path := u.Path
 	if idx := strings.LastIndexByte(path, '/'); idx >= 0 {
 		path = path[idx+1:]
 	}
-	return path
+
+	decoded, err := url.PathUnescape(path)
+	if err != nil {
+		decoded = path
+	}
+
+	return sanitizeFilename(decoded)
+}
+
+// sanitizeFilename strips anything that could smuggle a path or misrepresent
+// the name it renders as; an empty result is a valid "unknown". Cf and the line
+// separators are dropped alongside the control runes: unicode.IsControl is Cc
+// only, so U+202E alone would survive to reverse "pic<RLO>gnp.exe" into
+// "pic.png" in the attachment Discord offers for download.
+func sanitizeFilename(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r == '/' || r == '\\' || unicode.IsControl(r) ||
+			unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+
+	trimmed := truncateFilenamePreservingExt(strings.TrimSpace(b.String()), maxFilenameRunes)
+
+	return strings.TrimSpace(trimmed)
+}
+
+// truncateFilenamePreservingExt keeps the extension whole unless it alone
+// would exceed maxRunes, in which case it falls back to a plain cut.
+func truncateFilenamePreservingExt(name string, maxRunes int) string {
+	runes := []rune(name)
+	if len(runes) <= maxRunes {
+		return name
+	}
+
+	ext := filepath.Ext(name)
+	extRunes := []rune(ext)
+	if len(extRunes) >= maxRunes {
+		return string(runes[:maxRunes])
+	}
+
+	base := runes[:len(runes)-len(extRunes)]
+	keep := maxRunes - len(extRunes)
+
+	return string(base[:keep]) + ext
 }
