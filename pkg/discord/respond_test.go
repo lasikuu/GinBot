@@ -177,8 +177,8 @@ func TestReRollComponents(t *testing.T) {
 	}
 }
 
-// TestPlanResponse pins the delivery decision for all three invocation paths.
-// A button click is acknowledged without editing the clicked message.
+// TestPlanResponse pins the message shape for all three invocation paths.
+// Delivery is asserted against real HTTP traffic in reroll_dispatch_test.go.
 func TestPlanResponse(t *testing.T) {
 	rolled := &command.Response{Content: "444", ReRollID: reRollID("triples")}
 
@@ -187,46 +187,36 @@ func TestPlanResponse(t *testing.T) {
 		source         commandSource
 		resp           *command.Response
 		invokerName    string
-		wantResponse   discordgo.InteractionResponseType
 		wantContent    string
-		wantReply      bool
 		wantComponents int
 	}{
 		{
 			name:           "a slash command answers with the content",
 			source:         sourceSlash,
 			resp:           rolled,
-			wantResponse:   discordgo.InteractionResponseChannelMessageWithSource,
 			wantContent:    "444",
-			wantReply:      false,
 			wantComponents: 1,
 		},
 		{
-			name:           "a chat command has no interaction to answer",
+			name:           "a chat command carries the same button",
 			source:         sourceChat,
 			resp:           rolled,
-			wantResponse:   interactionNone,
 			wantContent:    "444",
-			wantReply:      true,
 			wantComponents: 1,
 		},
 		{
-			name:           "a button click is acknowledged without editing the clicked message",
+			name:           "a button click names the clicker and withholds the button",
 			source:         sourceReRoll,
 			resp:           rolled,
 			invokerName:    "kohana",
-			wantResponse:   discordgo.InteractionResponseDeferredMessageUpdate,
 			wantContent:    "444 `kohana`",
-			wantReply:      true,
 			wantComponents: 0,
 		},
 		{
 			name:           "a response that asks for no re-roll gets no control",
 			source:         sourceSlash,
 			resp:           &command.Response{Content: "7"},
-			wantResponse:   discordgo.InteractionResponseChannelMessageWithSource,
 			wantContent:    "7",
-			wantReply:      false,
 			wantComponents: 0,
 		},
 	}
@@ -235,17 +225,8 @@ func TestPlanResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			plan := planResponse(tt.source, tt.resp, tt.invokerName)
 
-			if plan.interactionResponse == discordgo.InteractionResponseUpdateMessage {
-				t.Error("plan edits the clicked message in place")
-			}
-			if plan.interactionResponse != tt.wantResponse {
-				t.Errorf("interactionResponse = %d, want %d", plan.interactionResponse, tt.wantResponse)
-			}
 			if plan.content != tt.wantContent {
 				t.Errorf("content = %q, want %q", plan.content, tt.wantContent)
-			}
-			if plan.replyInChannel != tt.wantReply {
-				t.Errorf("replyInChannel = %v, want %v", plan.replyInChannel, tt.wantReply)
 			}
 			if len(plan.components) != tt.wantComponents {
 				t.Errorf("components = %d, want %d", len(plan.components), tt.wantComponents)

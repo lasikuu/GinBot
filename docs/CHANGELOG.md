@@ -111,6 +111,11 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
   schedule is now advanced from the reminder's stored time, so a missed window costs one late
   delivery and the original day and time resume. Existing reminders keep whatever day they have
   drifted to; re-setting the time once puts them back for good.
+- **Clicking the 🎲 re-roll button behaved as though it were a fresh command.** The reply did not
+  name whoever clicked, it carried another button so clicks chained without end, and the click
+  produced a new message rather than quietly acknowledging. A click is now acknowledged in place,
+  leaving the original roll and its button alone, and the new roll is posted as a reply naming the
+  clicker and carrying no button of its own.
 - **ANY-mode trigger matching used ASCII-only word boundaries.** A phrase starting or ending in a
   non-ASCII letter — Finnish `hyvä`, for instance — had no anchor on that side and degraded toward
   substring matching, so it could fire inside a longer word (`hyväksyä`). The boundary is now a

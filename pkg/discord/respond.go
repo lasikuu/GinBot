@@ -196,19 +196,13 @@ const (
 	sourceReRoll
 )
 
-// Discord numbers its callback types from 1, so zero is free to mean "not an
-// interaction".
-const interactionNone discordgo.InteractionResponseType = 0
-
-// responsePlan is how one command result reaches the channel.
+// responsePlan is what one command result puts in a message. How that message
+// is delivered belongs to the caller, which is the only party that knows
+// whether it holds an interaction to answer.
 type responsePlan struct {
-	interactionResponse discordgo.InteractionResponseType
-	content             string
-	// replyInChannel sends the content as its own channel message rather than
-	// in the interaction callback.
-	replyInChannel bool
-	components     []discordgo.MessageComponent
-	files          []*discordgo.File
+	content    string
+	components []discordgo.MessageComponent
+	files      []*discordgo.File
 }
 
 // A re-roll reply is an ordinary channel message, so it carries none of the
@@ -223,33 +217,20 @@ func attributeRoll(content string, invokerName string) string {
 	return content + " `" + strings.ReplaceAll(invokerName, "`", "") + "`"
 }
 
-// A re-roll is the odd one out: an interaction callback carries no
-// message_reference, so it can never be a reply. The click is acknowledged and
-// the new roll follows as a separate reply, without a button of its own.
+// A re-roll is the odd one out: it alone names its invoker, and it alone
+// withholds the button, so clicking one starts no chain.
 func planResponse(source commandSource, resp *command.Response, invokerName string) responsePlan {
-	switch source {
-	case sourceReRoll:
+	if source == sourceReRoll {
 		return responsePlan{
-			interactionResponse: discordgo.InteractionResponseDeferredMessageUpdate,
-			content:             attributeRoll(resp.Content, invokerName),
-			replyInChannel:      true,
-			files:               responseFiles(resp),
-		}
-	case sourceChat:
-		return responsePlan{
-			interactionResponse: interactionNone,
-			content:             resp.Content,
-			replyInChannel:      true,
-			components:          reRollComponents(resp),
-			files:               responseFiles(resp),
+			content: attributeRoll(resp.Content, invokerName),
+			files:   responseFiles(resp),
 		}
 	}
 
 	return responsePlan{
-		interactionResponse: discordgo.InteractionResponseChannelMessageWithSource,
-		content:             resp.Content,
-		components:          reRollComponents(resp),
-		files:               responseFiles(resp),
+		content:    resp.Content,
+		components: reRollComponents(resp),
+		files:      responseFiles(resp),
 	}
 }
 
@@ -259,55 +240,85 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 		return
 	}
 
-	source := sourceSlash
-	invokerName := ""
-	if i.Type == discordgo.InteractionMessageComponent {
-		source = sourceReRoll
-		if user := interactionUser(i); user != nil {
-			invokerName = user.Username
-		}
-	}
-	plan := planResponse(source, resp, invokerName)
+	plan := planResponse(sourceSlash, resp, "")
 
-	response := &discordgo.InteractionResponse{Type: plan.interactionResponse}
-	if !plan.replyInChannel {
-		response.Data = &discordgo.InteractionResponseData{
+	response := &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
 			Content:         truncateContent(plan.content),
 			Components:      plan.components,
 			Files:           plan.files,
 			AllowedMentions: noMentions(),
-		}
-		if resp.Ephemeral {
-			response.Data.Flags = discordgo.MessageFlagsEphemeral
-		}
+		},
+	}
+	if resp.Ephemeral {
+		response.Data.Flags = discordgo.MessageFlagsEphemeral
 	}
 
-	// Acknowledge first: the callback has three seconds, and the send below is
-	// a second round trip that can outlast them.
 	if err := s.InteractionRespond(i.Interaction, response); err != nil {
 		log.Z.Error("failed to respond to command.", zap.Error(err))
 	}
+}
 
-	if !plan.replyInChannel {
+// deferReRoll acknowledges a component click without editing it: an edit here
+// would land on the clicked message and strip its button, so the new roll is
+// posted separately, by respondReRoll.
+func deferReRoll(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredMessageUpdate,
+	})
+	if err != nil {
+		log.Z.Error("failed to acknowledge a re-roll click.", zap.Error(err))
+		return false
+	}
+
+	return true
+}
+
+func respondReRoll(s *discordgo.Session, i *discordgo.InteractionCreate, resp *command.Response) {
+	if resp == nil {
+		log.Z.Error("re-roll command returned no response.")
 		return
 	}
+
+	invokerName := ""
+	if user := interactionUser(i); user != nil {
+		invokerName = user.Username
+	}
+	plan := planResponse(sourceReRoll, resp, invokerName)
 
 	reference := clickedMessageReference(i)
 	if reference == nil {
 		log.Z.Warn("component interaction carried no message.", zap.String("interaction", i.ID))
 	}
 
-	// Ephemeral is dropped: a plain channel message has no such flag.
+	// Ephemeral is dropped: a plain channel message has no such flag. See ADR-0010.
 	_, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
 		Content:         truncateContent(plan.content),
-		Components:      plan.components,
 		Files:           plan.files,
 		Reference:       reference,
 		AllowedMentions: noMentions(),
 	})
 	if err != nil {
-		// Already acknowledged, so this log is the only trace.
+		// A DeferredMessageUpdate shows no loading state, so without this the
+		// click is silent to the clicker. Deleting the clicked message reaches
+		// here every time: the reference is sent with fail_if_not_exists.
 		log.Z.Error("failed to send re-roll reply.", zap.Error(err))
+		respondReRollError(s, i, err)
+	}
+}
+
+// respondReRollError reports privately, by follow-up: the click was already
+// acknowledged, so InteractionResponseEdit here would land on the clicked
+// message instead of reaching only the clicker.
+func respondReRollError(s *discordgo.Session, i *discordgo.InteractionCreate, err error) {
+	_, followupErr := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		Content:         errorMessage(err),
+		Flags:           discordgo.MessageFlagsEphemeral,
+		AllowedMentions: noMentions(),
+	})
+	if followupErr != nil {
+		log.Z.Error("failed to send a re-roll failure follow-up.", zap.Error(followupErr))
 	}
 }
 

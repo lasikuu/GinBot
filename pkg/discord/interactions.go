@@ -159,7 +159,7 @@ func handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cli
 			return
 		}
 
-		runInteraction(s, i, cmd, inv, clients)
+		runReRoll(s, i, cmd, inv, clients)
 	}
 }
 
@@ -246,6 +246,34 @@ func runInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, cmd co
 	}
 
 	respondCommand(s, i, resp)
+}
+
+// A re-roll never takes the Slow deferral path, whatever the command declares:
+// that deferral posts a "thinking" message rather than silently acknowledging
+// the click, and answers by editing, which would put a second button on the
+// reply. It is acknowledged before the handler runs all the same, since the
+// handler makes an RPC and the callback deadline is still three seconds.
+func runReRoll(s *discordgo.Session, i *discordgo.InteractionCreate, cmd command.Command, inv *command.Invocation, clients *client.Clients) {
+	ctx, err := interactionContext(i, clients)
+	if err != nil {
+		respondError(s, i, err)
+		return
+	}
+
+	if !deferReRoll(s, i) {
+		// Nothing can be delivered against an unacknowledged interaction, so
+		// running the handler would apply a change it cannot report.
+		return
+	}
+
+	resp, handlerErr := cmd.Handler(ctx, inv)
+	if handlerErr != nil {
+		log.Z.Error("re-roll command failed.", zap.String("command", cmd.Name), zap.Error(handlerErr))
+		respondReRollError(s, i, handlerErr)
+		return
+	}
+
+	respondReRoll(s, i, resp)
 }
 
 // messageContentRequired reports whether the privileged MESSAGE_CONTENT intent
