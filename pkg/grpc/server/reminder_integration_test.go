@@ -14,7 +14,6 @@ import (
 	pb "github.com/lasikuu/GinBot/pkg/gen/ginbot/v1"
 	"github.com/lasikuu/GinBot/pkg/grpc/callermeta"
 	"github.com/lasikuu/GinBot/pkg/grpc/interceptor"
-	"github.com/lasikuu/GinBot/pkg/reminder"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -379,7 +378,8 @@ func TestConfirmDeliveryFinalisesAOneShot(t *testing.T) {
 	}
 }
 
-// Compared against an independently computed NextOccurrence, in the reminder's timezone.
+// The oracle is hand-computed rather than taken from NextOccurrenceAfter, so
+// this test constrains the production path instead of restating it.
 func TestConfirmDeliveryRescheduledARepeatToItsNextOccurrence(t *testing.T) {
 	h, pool := liveReminderHarness(t)
 
@@ -395,9 +395,13 @@ func TestConfirmDeliveryRescheduledARepeatToItsNextOccurrence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load Europe/Helsinki: %v", err)
 	}
-	wantNext, err := reminder.NextOccurrence(schedule, time.Now(), loc)
-	if err != nil {
-		t.Fatalf("NextOccurrence: %v", err)
+	// A fixed anchor makes the expected reschedule the 09:00 Helsinki that
+	// follows it, with no dependence on when the suite happens to run.
+	anchor := time.Now().In(loc).AddDate(0, 0, -1)
+	setReminderDatetime(t, pool, id, anchor)
+	wantNext := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 9, 0, 0, 0, loc)
+	for !wantNext.After(time.Now().In(loc)) {
+		wantNext = wantNext.AddDate(0, 0, 1)
 	}
 
 	delivered := true
@@ -424,6 +428,151 @@ func TestConfirmDeliveryRescheduledARepeatToItsNextOccurrence(t *testing.T) {
 	}
 	if claimedAt != nil {
 		t.Errorf("claimed_at = %v, want NULL after a reschedule", claimedAt)
+	}
+	if got := countActionRecords(t, pool, ownerID, pb.ActionType_ACTION_TYPE_REMINDER_DELIVERED); got != 1 {
+		t.Errorf("REMINDER_DELIVERED action records = %d, want 1", got)
+	}
+}
+
+// setReminderDatetime must run after markSent, which stamps its own value.
+func setReminderDatetime(t *testing.T, pool *pgxpool.Pool, id string, datetime time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE reminder SET datetime = $1 WHERE id = $2`, datetime.UTC(), id); err != nil {
+		t.Fatalf("seed reminder datetime: %v", err)
+	}
+}
+
+func setReminderTimezone(t *testing.T, pool *pgxpool.Pool, id string, timezone string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE reminder SET timezone = $1 WHERE id = $2`, timezone, id); err != nil {
+		t.Fatalf("seed reminder timezone: %v", err)
+	}
+}
+
+func setReminderRepeatCron(t *testing.T, pool *pgxpool.Pool, id string, repeatCron string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE reminder SET repeat_cron = $1 WHERE id = $2`, repeatCron, id); err != nil {
+		t.Fatalf("seed reminder repeat_cron: %v", err)
+	}
+}
+
+// The reminder's clock time must survive confirmation whenever "now" falls,
+// which is exactly what anchoring on time.Now() destroys.
+func TestConfirmDeliveryReschedulesFromTheScheduledTimeNotTheConfirmationInstant(t *testing.T) {
+	h, pool := liveReminderHarness(t)
+
+	ownerUID, ownerID := registeredCaller(t, h, pool, "anchor-owner")
+	cleanupActionRecords(t, pool, ownerID)
+
+	id := createReminderVia(t, h, pool, ownerUID, uniqueUID("anchor"), "@every 24h")
+	markSent(t, pool, id)
+
+	// Asia/Tokyo carries no DST, so the wall-clock comparison below cannot be
+	// confounded by a transition; the DST cases are covered in pkg/reminder.
+	loc, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatalf("load Asia/Tokyo: %v", err)
+	}
+	setReminderTimezone(t, pool, id, "Asia/Tokyo")
+	anchor := time.Now().In(loc).Add(-49 * time.Hour).Truncate(time.Second)
+	setReminderDatetime(t, pool, id, anchor)
+
+	delivered := true
+	if _, err := h.Reminder.ConfirmDelivery(
+		callerCtx(pb.Platform_PLATFORM_DISCORD, ownerUID),
+		pb.ConfirmDeliveryReq_builder{Id: &id, Delivered: &delivered}.Build(),
+	); err != nil {
+		t.Fatalf("ConfirmDelivery: %v", err)
+	}
+
+	_, datetime, _ := reminderState(t, pool, id)
+	gotLocal := datetime.In(loc)
+	wantH, wantM, wantS := anchor.Clock()
+	gotH, gotM, gotS := gotLocal.Clock()
+	if gotH != wantH || gotM != wantM || gotS != wantS {
+		t.Errorf("rescheduled clock time = %02d:%02d:%02d, want %02d:%02d:%02d (the anchor's); "+
+			"confirming late must not shift the schedule by the delay",
+			gotH, gotM, gotS, wantH, wantM, wantS)
+	}
+	if !datetime.After(time.Now().UTC()) {
+		t.Errorf("rescheduled datetime %v is not in the future", datetime)
+	}
+}
+
+// The direct regression for the reported incident: a Friday 21:00 JST reminder
+// confirmed at an arbitrary later instant must land back on a Friday at 21:00.
+func TestConfirmDeliveryWeeklyRepeatSurvivesADelayedConfirmationOnADifferentWeekday(t *testing.T) {
+	h, pool := liveReminderHarness(t)
+
+	ownerUID, ownerID := registeredCaller(t, h, pool, "jst-owner")
+	cleanupActionRecords(t, pool, ownerID)
+
+	id := createReminderVia(t, h, pool, ownerUID, uniqueUID("jst"), "@every 168h")
+	markSent(t, pool, id)
+
+	loc, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatalf("load Asia/Tokyo: %v", err)
+	}
+	anchor := time.Date(2020, 1, 3, 21, 0, 0, 0, loc) // a Friday
+	if anchor.Weekday() != time.Friday {
+		t.Fatalf("test fixture broken: %v is not a Friday", anchor)
+	}
+	setReminderTimezone(t, pool, id, "Asia/Tokyo")
+	setReminderDatetime(t, pool, id, anchor)
+
+	delivered := true
+	if _, err := h.Reminder.ConfirmDelivery(
+		callerCtx(pb.Platform_PLATFORM_DISCORD, ownerUID),
+		pb.ConfirmDeliveryReq_builder{Id: &id, Delivered: &delivered}.Build(),
+	); err != nil {
+		t.Fatalf("ConfirmDelivery: %v", err)
+	}
+
+	_, datetime, _ := reminderState(t, pool, id)
+	gotJST := datetime.In(loc)
+	if gotJST.Weekday() != time.Friday {
+		t.Errorf("weekday = %v, want Friday; the delayed confirmation moved the reminder off its day", gotJST.Weekday())
+	}
+	if h, m, _ := gotJST.Clock(); h != 21 || m != 0 {
+		t.Errorf("clock = %02d:%02d JST, want 21:00; the delayed confirmation moved the reminder's clock time", h, m)
+	}
+	if !datetime.After(time.Now().UTC()) {
+		t.Errorf("rescheduled datetime %v is not in the future", datetime)
+	}
+}
+
+// CreateReminder and UpdateReminder both refuse a repeat_cron that never
+// matches, so only a raw write reaches this; it must still leave SENT.
+func TestConfirmDeliveryMarksDeliveredWhenTheScheduleNeverFiresAgain(t *testing.T) {
+	h, pool := liveReminderHarness(t)
+
+	ownerUID, ownerID := registeredCaller(t, h, pool, "never-fires-owner")
+	cleanupActionRecords(t, pool, ownerID)
+
+	id := createReminderVia(t, h, pool, ownerUID, uniqueUID("never"), "")
+	// Feb 30th never occurs; robfig searches five years and gives up.
+	setReminderRepeatCron(t, pool, id, "0 0 30 2 *")
+	markSent(t, pool, id)
+
+	delivered := true
+	if _, err := h.Reminder.ConfirmDelivery(
+		callerCtx(pb.Platform_PLATFORM_DISCORD, ownerUID),
+		pb.ConfirmDeliveryReq_builder{Id: &id, Delivered: &delivered}.Build(),
+	); err != nil {
+		t.Fatalf("ConfirmDelivery: %v", err)
+	}
+
+	status, _, claimedAt := reminderState(t, pool, id)
+	if status != int32(pb.ReminderStatus_REMINDER_STATUS_DELIVERED.Number()) {
+		t.Errorf("status = %d, want DELIVERED (%d); a dead schedule must not leave the reminder stuck in SENT",
+			status, pb.ReminderStatus_REMINDER_STATUS_DELIVERED.Number())
+	}
+	if claimedAt != nil {
+		t.Errorf("claimed_at = %v, want NULL once the reminder left SENT", claimedAt)
 	}
 	if got := countActionRecords(t, pool, ownerID, pb.ActionType_ACTION_TYPE_REMINDER_DELIVERED); got != 1 {
 		t.Errorf("REMINDER_DELIVERED action records = %d, want 1", got)

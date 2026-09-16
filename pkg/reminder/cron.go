@@ -88,3 +88,95 @@ func NextOccurrence(spec string, after time.Time, loc *time.Location) (time.Time
 
 	return next.In(loc), nil
 }
+
+// maxScheduleAdvanceSteps bounds the calendar walk. Only specs that cleared
+// ValidateRepeatInterval reach it, so at the 10-minute DM floor it spans a
+// month of staleness; @every takes the arithmetic path and never steps.
+const maxScheduleAdvanceSteps = 30 * 24 * 6
+
+// NextOccurrenceAfter returns the first fire time strictly after now, advancing
+// from anchor rather than from now so a late confirmation cannot permanently
+// shift a repeat's phase; a missed window yields one catch-up. phaseLost
+// reports that the anchor was unusable and now was substituted for it.
+func NextOccurrenceAfter(spec string, anchor time.Time, now time.Time, loc *time.Location) (next time.Time, phaseLost bool, err error) {
+	schedule, err := parseCron(spec)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+
+	next, phaseLost, err = advanceSchedule(schedule, anchor.In(loc), now.In(loc))
+	if err != nil {
+		return time.Time{}, false, err
+	}
+
+	return next.In(loc), phaseLost, nil
+}
+
+func advanceSchedule(schedule cron.Schedule, anchor time.Time, now time.Time) (time.Time, bool, error) {
+	// An @every schedule is a bare t.Add(delay) with no calendar of its own, so
+	// its occurrences are arithmetic. Stepping them one period at a time would
+	// exhaust the bound below on an ordinary outage, because the legacy import
+	// produced @every rows without applying the interval floors.
+	if delay, fixed := constantDelay(schedule); fixed {
+		if next, ok := advanceByDelay(anchor, now, delay); ok {
+			return next, false, nil
+		}
+
+		return advanceFromNow(schedule, now)
+	}
+
+	next := anchor
+	for range maxScheduleAdvanceSteps {
+		next = schedule.Next(next)
+		if next.IsZero() {
+			return time.Time{}, false, fmt.Errorf("repeat schedule never fires again")
+		}
+		if next.After(now) {
+			return next, false, nil
+		}
+	}
+
+	return advanceFromNow(schedule, now)
+}
+
+// advanceFromNow abandons the anchor's phase. A reminder that fires on the
+// wrong day beats one stuck behind an anchor too stale to advance from.
+func advanceFromNow(schedule cron.Schedule, now time.Time) (time.Time, bool, error) {
+	next := schedule.Next(now)
+	if next.IsZero() {
+		return time.Time{}, false, fmt.Errorf("repeat schedule never fires again")
+	}
+
+	return next, true, nil
+}
+
+func constantDelay(schedule cron.Schedule) (time.Duration, bool) {
+	fixed, ok := schedule.(cron.ConstantDelaySchedule)
+	if !ok || fixed.Delay <= 0 {
+		return 0, false
+	}
+
+	return fixed.Delay, true
+}
+
+// advanceByDelay jumps straight to the first occurrence after now. The initial
+// step mirrors ConstantDelaySchedule.Next, which discards the sub-second part
+// of its argument; every later one lands on a whole multiple of delay.
+func advanceByDelay(anchor time.Time, now time.Time, delay time.Duration) (time.Time, bool) {
+	first := anchor.Add(delay - time.Duration(anchor.Nanosecond()))
+	if first.After(now) {
+		return first, true
+	}
+
+	next := first.Add((now.Sub(first)/delay + 1) * delay)
+	// Sub saturates and the multiplication can overflow on an absurd anchor.
+	// Either way a non-future result means the arithmetic cannot be trusted.
+	if !next.After(now) {
+		return time.Time{}, false
+	}
+
+	return next, true
+}

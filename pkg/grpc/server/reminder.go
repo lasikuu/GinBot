@@ -340,7 +340,7 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, connReq *connect.R
 	var advanced bool
 	if reminderRow.RepeatCron != nil && *reminderRow.RepeatCron != "" {
 		loc := reminderLocation(reminderRow.Timezone)
-		next, nextErr := reminder.NextOccurrence(*reminderRow.RepeatCron, time.Now(), loc)
+		next, phaseLost, nextErr := reminder.NextOccurrenceAfter(*reminderRow.RepeatCron, reminderRow.Datetime, time.Now(), loc)
 		if nextErr != nil {
 			// Close the reminder out rather than leave it stuck at SENT.
 			log.Z.Warn("repeating reminder has no next occurrence, marking delivered",
@@ -351,6 +351,12 @@ func (s *ReminderServer) ConfirmDelivery(ctx context.Context, connReq *connect.R
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to confirm delivery"))
 			}
 		} else {
+			if phaseLost {
+				log.Z.Warn("repeat anchor was too stale to advance from; rescheduled from now",
+					zap.String("reminder_id", req.GetId()),
+					zap.String("repeat_cron", *reminderRow.RepeatCron),
+					zap.Time("anchor", reminderRow.Datetime))
+			}
 			advanced, err = db.RescheduleReminderIfSent(ctx, req.GetId(), next)
 			if err != nil {
 				log.Z.Error("failed to reschedule repeating reminder", zap.Error(err))

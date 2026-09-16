@@ -103,6 +103,14 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
 
 ### Fixed
 
+- **A repeating reminder drifted onto a different weekday and clock time.** The next occurrence was
+  computed from the instant delivery happened to be confirmed rather than from the reminder's own
+  scheduled time, and an `@every` schedule — which every reminder imported from the old bot uses —
+  has no calendar of its own to correct that. One deploy or one late confirmation therefore moved
+  the reminder permanently, so a weekly Friday 21:00 reminder could settle onto Tuesdays. The
+  schedule is now advanced from the reminder's stored time, so a missed window costs one late
+  delivery and the original day and time resume. Existing reminders keep whatever day they have
+  drifted to; re-setting the time once puts them back for good.
 - **ANY-mode trigger matching used ASCII-only word boundaries.** A phrase starting or ending in a
   non-ASCII letter — Finnish `hyvä`, for instance — had no anchor on that side and degraded toward
   substring matching, so it could fire inside a longer word (`hyväksyä`). The boundary is now a
