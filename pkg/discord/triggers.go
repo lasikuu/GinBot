@@ -864,7 +864,7 @@ func orNone(s string) string {
 }
 
 // codeSpan wraps s as Discord inline code. An embedded backtick would close
-// the span early, so it is stripped first, mirroring attributeRoll.
+// the span early, so it is stripped first.
 func codeSpan(s string) string {
 	return "`" + strings.ReplaceAll(s, "`", "") + "`"
 }

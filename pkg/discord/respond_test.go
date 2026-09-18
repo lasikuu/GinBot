@@ -186,7 +186,7 @@ func TestPlanResponse(t *testing.T) {
 		name           string
 		source         commandSource
 		resp           *command.Response
-		invokerName    string
+		invokerID      string
 		wantContent    string
 		wantComponents int
 	}{
@@ -208,8 +208,8 @@ func TestPlanResponse(t *testing.T) {
 			name:           "a button click names the clicker and withholds the button",
 			source:         sourceReRoll,
 			resp:           rolled,
-			invokerName:    "kohana",
-			wantContent:    "444 `kohana`",
+			invokerID:      "user-1",
+			wantContent:    "444 <@user-1>",
 			wantComponents: 0,
 		},
 		{
@@ -223,7 +223,7 @@ func TestPlanResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan := planResponse(tt.source, tt.resp, tt.invokerName)
+			plan := planResponse(tt.source, tt.resp, tt.invokerID)
 
 			if plan.content != tt.wantContent {
 				t.Errorf("content = %q, want %q", plan.content, tt.wantContent)
@@ -239,41 +239,35 @@ func TestPlanResponse(t *testing.T) {
 // with no attribution of its own, so the name is the only trace of who clicked.
 func TestAttributeRollNamesTheClicker(t *testing.T) {
 	tests := []struct {
-		name        string
-		content     string
-		invokerName string
-		want        string
+		name      string
+		content   string
+		invokerID string
+		want      string
 	}{
 		{
-			name:        "the name follows the number in a code span",
-			content:     "**44**",
-			invokerName: "kohana",
-			want:        "**44** `kohana`",
+			name:      "a mention of the clicker follows the number",
+			content:   "**44**",
+			invokerID: "user-1",
+			want:      "**44** <@user-1>",
 		},
 		{
-			name:        "a backtick cannot escape the code span",
-			content:     "**44**",
-			invokerName: "ko`hana",
-			want:        "**44** `kohana`",
+			name:      "an unidentified clicker leaves the content alone",
+			content:   "**44**",
+			invokerID: "",
+			want:      "**44**",
 		},
 		{
-			name:        "an unidentified clicker leaves the content alone",
-			content:     "**44**",
-			invokerName: "",
-			want:        "**44**",
-		},
-		{
-			name:        "an attachment-only response stays empty",
-			content:     "",
-			invokerName: "kohana",
-			want:        "",
+			name:      "an attachment-only response stays empty",
+			content:   "",
+			invokerID: "user-1",
+			want:      "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := attributeRoll(tt.content, tt.invokerName); got != tt.want {
-				t.Errorf("attributeRoll(%q, %q) = %q, want %q", tt.content, tt.invokerName, got, tt.want)
+			if got := attributeRoll(tt.content, tt.invokerID); got != tt.want {
+				t.Errorf("attributeRoll(%q, %q) = %q, want %q", tt.content, tt.invokerID, got, tt.want)
 			}
 		})
 	}

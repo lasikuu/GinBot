@@ -30,6 +30,16 @@ func testComponentInteraction(customID string, clickerID string, clickerUsername
 	}}
 }
 
+// The DM shape: Member is nil and User carries the clicker, which is the branch
+// interactionUser exists for.
+func testDMComponentInteraction(customID string, clickerID string, clickerUsername string) *discordgo.InteractionCreate {
+	i := testComponentInteraction(customID, clickerID, clickerUsername)
+	i.Member = nil
+	i.User = &discordgo.User{ID: clickerID, Username: clickerUsername}
+
+	return i
+}
+
 // findRequest returns the first captured request matching method and a path
 // substring, so a test can distinguish the callback, a channel message send
 // and a webhook follow-up/edit, which all hit different endpoints.
@@ -113,10 +123,13 @@ func TestButtonClickPostsReRollNamingTheClickerWithNoButtonAndLeavesTheClickedMe
 		t.Fatal("no channel message was posted for the re-roll")
 	}
 	// fakeEntertainmentClient always rolls "5", which digitRollHandler bolds as
-	// an all-digits-match; the name follows the number.
-	if content, _ := channelPost.body["content"].(string); content != "**5** `Clicker`" {
-		t.Errorf("content = %q, want \"**5** `Clicker`\": the number then the clicker's name in a code span", content)
+	// an all-digits-match; a mention of the clicker follows the number.
+	if content, _ := channelPost.body["content"].(string); content != "**5** <@user-2>" {
+		t.Errorf("content = %q, want \"**5** <@user-2>\": the number then a mention of the clicker", content)
 	}
+	// The attribution is a mention, so it renders as a display name; suppressing
+	// mention parsing is the only thing keeping it from pinging on every click.
+	requireMentionsSuppressed(t, requests)
 	if ids := reRollButtonCustomIDs(channelPost.body["components"]); len(ids) != 0 {
 		t.Errorf("re-roll reply carries buttons %v, want none: a re-roll must not chain", ids)
 	}
@@ -149,6 +162,43 @@ func TestButtonClickPostsReRollNamingTheClickerWithNoButtonAndLeavesTheClickedMe
 	if callbackIndex < 0 || channelIndex < 0 || callbackIndex > channelIndex {
 		t.Errorf("callback (index %d) did not precede the channel post (index %d); "+
 			"the click must be acknowledged before the handler runs", callbackIndex, channelIndex)
+	}
+}
+
+// Every digit roll shares one re-roll dispatch, and the clicker is resolved from
+// whichever of Member.User or User the interaction carries, so the attribution
+// must hold for all five commands in both the guild and the DM shape.
+func TestEveryDigitRollReRollMentionsTheClicker(t *testing.T) {
+	setTestRegistry(t)
+
+	shapes := []struct {
+		name  string
+		build func(string, string, string) *discordgo.InteractionCreate
+	}{
+		{name: "guild", build: testComponentInteraction},
+		{name: "dm", build: testDMComponentInteraction},
+	}
+
+	for _, roll := range digitRolls {
+		for _, shape := range shapes {
+			t.Run(roll.name+"/"+shape.name, func(t *testing.T) {
+				transport := &captureTransport{}
+				s := testSessionWithTransport(transport)
+				i := shape.build(reRollID(roll.name), "user-9", "Clicker")
+
+				handleInteraction(s, i, &client.Clients{Entertainment: &fakeEntertainmentClient{}})
+
+				requests := transport.all()
+				post, ok := findRequest(requests, http.MethodPost, "/channels/"+i.ChannelID+"/messages")
+				if !ok {
+					t.Fatal("no channel message was posted for the re-roll")
+				}
+				if content, _ := post.body["content"].(string); content != "**5** <@user-9>" {
+					t.Errorf("content = %q, want \"**5** <@user-9>\": a mention, not the username", content)
+				}
+				requireMentionsSuppressed(t, requests)
+			})
+		}
 	}
 }
 

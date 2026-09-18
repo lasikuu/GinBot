@@ -63,9 +63,9 @@ compatibility path from any earlier build. Stored data is unaffected — `instan
   release tags.
 - A `.dockerignore`. The build context is the repository root and the Dockerfile copies all of it,
   so `.env`, `cert/*.pem` and the `/rin` export were previously baked into any image built by hand.
-- A roll from the die button names whoever clicked it, in a code span after the number. The reply is
-  an ordinary channel message with no "used /doubles" attribution of its own, so nothing else said
-  who rolled.
+- A roll from the die button names whoever clicked it, with a silent mention after the number, so it
+  renders their display name without pinging them. The reply is an ordinary channel message with no
+  "used /doubles" attribution of its own, so nothing else said who rolled.
 - **A fired trigger can be taken back.** Whoever's message fired it has seven seconds to answer
   `no`, `ei` or `del` in the same channel; the bot's response and the undo message are both deleted.
   Only that author, only that channel, only once. Deleting the undo message needs

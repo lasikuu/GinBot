@@ -205,24 +205,24 @@ type responsePlan struct {
 	files      []*discordgo.File
 }
 
-// A re-roll reply is an ordinary channel message, so it carries none of the
-// "used /doubles" attribution Discord puts above a slash response and is not a
-// reply to the clicker: without the name beside the number, nothing says who
-// rolled. A backtick in the name would escape the code span.
-func attributeRoll(content string, invokerName string) string {
-	if content == "" || invokerName == "" {
+// attributeRoll names the clicker: a re-roll reply is a plain channel message
+// carrying none of the "used /doubles" attribution Discord puts above a slash
+// response. invokerID is a snowflake, never caller input, and the mention stays
+// silent only because every send here passes noMentions().
+func attributeRoll(content string, invokerID string) string {
+	if content == "" || invokerID == "" {
 		return content
 	}
 
-	return content + " `" + strings.ReplaceAll(invokerName, "`", "") + "`"
+	return content + " <@" + invokerID + ">"
 }
 
 // A re-roll is the odd one out: it alone names its invoker, and it alone
 // withholds the button, so clicking one starts no chain.
-func planResponse(source commandSource, resp *command.Response, invokerName string) responsePlan {
+func planResponse(source commandSource, resp *command.Response, invokerID string) responsePlan {
 	if source == sourceReRoll {
 		return responsePlan{
-			content: attributeRoll(resp.Content, invokerName),
+			content: attributeRoll(resp.Content, invokerID),
 			files:   responseFiles(resp),
 		}
 	}
@@ -281,11 +281,11 @@ func respondReRoll(s *discordgo.Session, i *discordgo.InteractionCreate, resp *c
 		return
 	}
 
-	invokerName := ""
+	invokerID := ""
 	if user := interactionUser(i); user != nil {
-		invokerName = user.Username
+		invokerID = user.ID
 	}
-	plan := planResponse(sourceReRoll, resp, invokerName)
+	plan := planResponse(sourceReRoll, resp, invokerID)
 
 	reference := clickedMessageReference(i)
 	if reference == nil {
