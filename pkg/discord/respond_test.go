@@ -231,7 +231,25 @@ func TestPlanResponse(t *testing.T) {
 			if len(plan.components) != tt.wantComponents {
 				t.Errorf("components = %d, want %d", len(plan.components), tt.wantComponents)
 			}
+			if plan.allowedMentions == nil {
+				t.Error("plan carries no allow-list; a mention in the content would ping")
+			}
 		})
+	}
+}
+
+// TestResponsePlanMentionsIsFailClosed: AllowedMentions is omitempty in every
+// discordgo send struct, so a plan that left the field nil would drop it from
+// the payload and Discord would then parse every mention in the content.
+func TestResponsePlanMentionsIsFailClosed(t *testing.T) {
+	parse := responsePlan{}.mentions().Parse
+	if parse == nil || len(parse) != 0 {
+		t.Errorf("zero-value plan mentions().Parse = %v, want an empty non-nil list", parse)
+	}
+
+	own := &discordgo.MessageAllowedMentions{Users: []string{"user-1"}}
+	if got := (responsePlan{allowedMentions: own}).mentions(); got != own {
+		t.Errorf("mentions() = %v, want the plan's own allow-list", got)
 	}
 }
 

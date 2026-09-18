@@ -203,12 +203,26 @@ type responsePlan struct {
 	content    string
 	components []discordgo.MessageComponent
 	files      []*discordgo.File
+	// Travels with the content because the content may carry a mention:
+	// attributeRoll mints one, and only the allow-list keeps it silent.
+	allowedMentions *discordgo.MessageAllowedMentions
+}
+
+// mentions is fail-closed. AllowedMentions is omitempty in every discordgo send
+// struct, so a nil field drops it from the payload and Discord then parses every
+// mention in the content.
+func (p responsePlan) mentions() *discordgo.MessageAllowedMentions {
+	if p.allowedMentions == nil {
+		return noMentions()
+	}
+
+	return p.allowedMentions
 }
 
 // attributeRoll names the clicker: a re-roll reply is a plain channel message
 // carrying none of the "used /doubles" attribution Discord puts above a slash
 // response. invokerID is a snowflake, never caller input, and the mention stays
-// silent only because every send here passes noMentions().
+// silent only because the plan carries an allow-list that parses nothing.
 func attributeRoll(content string, invokerID string) string {
 	if content == "" || invokerID == "" {
 		return content
@@ -222,15 +236,17 @@ func attributeRoll(content string, invokerID string) string {
 func planResponse(source commandSource, resp *command.Response, invokerID string) responsePlan {
 	if source == sourceReRoll {
 		return responsePlan{
-			content: attributeRoll(resp.Content, invokerID),
-			files:   responseFiles(resp),
+			content:         attributeRoll(resp.Content, invokerID),
+			files:           responseFiles(resp),
+			allowedMentions: noMentions(),
 		}
 	}
 
 	return responsePlan{
-		content:    resp.Content,
-		components: reRollComponents(resp),
-		files:      responseFiles(resp),
+		content:         resp.Content,
+		components:      reRollComponents(resp),
+		files:           responseFiles(resp),
+		allowedMentions: noMentions(),
 	}
 }
 
@@ -248,7 +264,7 @@ func respondCommand(s *discordgo.Session, i *discordgo.InteractionCreate, resp *
 			Content:         truncateContent(plan.content),
 			Components:      plan.components,
 			Files:           plan.files,
-			AllowedMentions: noMentions(),
+			AllowedMentions: plan.mentions(),
 		},
 	}
 	if resp.Ephemeral {
@@ -297,7 +313,7 @@ func respondReRoll(s *discordgo.Session, i *discordgo.InteractionCreate, resp *c
 		Content:         truncateContent(plan.content),
 		Files:           plan.files,
 		Reference:       reference,
-		AllowedMentions: noMentions(),
+		AllowedMentions: plan.mentions(),
 	})
 	if err != nil {
 		// A DeferredMessageUpdate shows no loading state, so without this the
@@ -450,7 +466,7 @@ func respondChat(s *discordgo.Session, m *discordgo.MessageCreate, resp *command
 		Components:      plan.components,
 		Files:           plan.files,
 		Reference:       m.Reference(),
-		AllowedMentions: noMentions(),
+		AllowedMentions: plan.mentions(),
 	})
 	if err != nil {
 		log.Z.Error("failed to respond to chat command.", zap.Error(err))
